@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "char3d": { "command": "/home/reyhan/projects/char3d-engine/run_mcp.sh" }
+  }
+}
