@@ -178,7 +178,9 @@ animation until phase 3 adds clips).
 Works on **any humanoid rig**: char3d `basic`, char3d `rigify`, and imported skeletons
 with common naming (Mixamo `mixamorig:LeftArm`, CMU BVH `LeftUpLeg`, Unreal `thigh_l`,
 ...). Non-basic rigs are driven through a hidden proportion-matched basic rig and a
-world-space retarget, so the same pose/clip looks the same everywhere.
+world-space retarget, so the same pose/clip looks the same everywhere. Rigs whose rest
+pose has bent elbows (MPFB/MakeHuman rest with forearms ~45° forward) are normalised to a
+straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig.
 
 - `apply_pose(armature, pose)` — library: rest, t_pose, relaxed, wave, cheer,
   point_forward, hands_on_hips, thinking, crouch, sit, fight_stance, run_pose.

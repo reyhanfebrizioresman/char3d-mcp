@@ -407,7 +407,7 @@ def _key_rot(pb, frame, prev):
 
 def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start=None,
                   in_place=False, align_rest=True, root_scale=None, key=True,
-                  root_mode="first", carry=None):
+                  root_mode="first", carry=None, align_bones=()):
     """root_mode "first": root motion relative to the source's first frame (mocap);
     "rest": relative to the source rest pose (proxy rigs that already include carry).
     carry: world offset added to the root (continue from where the previous clip ended)."""
@@ -429,7 +429,7 @@ def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start
     t_rest = {b: rest_q(tgt, twm, tgt_map[b]) for b in names}
     align = {}
     for b in names:
-        if not align_rest or b in ("hips", "spine", "chest"):
+        if (not align_rest and b not in align_bones) or b in ("hips", "spine", "chest"):
             align[b] = Quaternion()
             continue
         sb, tb = src.data.bones[src_map[b]], tgt.data.bones[tgt_map[b]]
@@ -491,9 +491,28 @@ def _target(armature):
     return rig
 
 
+ARM_ALIGN = ("forearm.L", "forearm.R", "hand.L", "hand.R")
+
+
+def _straighten_arms(lm):
+    """Some rigs (MPFB/MakeHuman) rest with the elbows bent ~45 deg forward. The clip and
+    pose library assume a straight A-pose arm, so the proxy gets straight arms and the
+    retarget aligns forearm/hand rest directions (ARM_ALIGN) instead of copying the bend."""
+    lm = dict(lm)
+    for s in "LR":
+        sh, el, wr = lm[f"shoulder.{s}"], lm[f"elbow.{s}"], lm[f"wrist.{s}"]
+        upper, fore = (el - sh).normalized(), wr - el
+        if fore.length < 1e-6 or fore.normalized().angle(upper) < math.radians(5):
+            continue
+        q = fore.normalized().rotation_difference(upper)
+        lm[f"wrist.{s}"] = el + upper * fore.length
+        lm[f"hand_tip.{s}"] = lm[f"wrist.{s}"] + q @ (lm[f"hand_tip.{s}"] - wr)
+    return lm
+
+
 def _proxy_for(rig):
     smap = semantic_map(rig)
-    lm = _rig_landmarks(rig, smap)
+    lm = _straighten_arms(_rig_landmarks(rig, smap))
     proxy = rigmod._build_basic(lm, "__c3d_proxy")
     return proxy, smap, lm
 
@@ -538,7 +557,7 @@ def _drive(rig, author, frame_start, frame_end, dest_start, in_place=False, key=
         author(proxy, lm, False, carry)
         info = bake_retarget(proxy, rig, {b: b for b in BASIC_BONES}, smap, frame_start,
                              frame_end, dest_start, in_place=in_place, align_rest=False,
-                             root_scale=1.0, key=key, root_mode="rest")
+                             root_scale=1.0, key=key, root_mode="rest", align_bones=ARM_ALIGN)
         info["continues_from"] = [round(carry.x, 3), round(carry.y, 3)]
     finally:
         _drop(proxy)
