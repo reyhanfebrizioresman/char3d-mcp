@@ -9,7 +9,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 ```
 
 ## Status
-✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging)
+✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi)
 
 | Alat | Fungsi |
 |---|---|
@@ -18,13 +18,17 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `new_scene` | Adegan kosong |
 | `add_primitive`, `transform_object`, `delete_objects` | Objek dasar |
 | `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
-| `export_asset` | .glb (disarankan) .gltf .fbx .obj .usd; untuk Rigify hanya tulang deform yang ikut |
+| `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; untuk Rigify hanya tulang deform yang ikut |
 | `save_project`, `open_project` | File .blend |
 | `render_preview`, `render_views` | Render pratinjau, gambarnya dikirim balik ke AI |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
 | `validate_rig`, `list_bones`, `set_pose` | Cek kualitas rig, daftar tulang, pose dan keyframe |
+| `list_animations`, `apply_pose` | 12 pose siap pakai (wave, cheer, sit, crouch, fight stance, dll.) |
+| `animate` | Klip prosedural: idle, walk, run, wave, cheer, jump, nod, head_shake (bisa disambung) |
+| `import_mocap`, `retarget_animation` | Mocap .bvh/.fbx/.glb (CMU, Mixamo, dll.) ke rig apa pun, diselaraskan otomatis |
+| `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).

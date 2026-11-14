@@ -16,4 +16,4 @@ def dispatch(name, params):
     return fn(**params)
 
 
-from . import scene, io, render, character, rig  # noqa: E402,F401  (registers commands)
+from . import scene, io, render, character, rig, anim  # noqa: E402,F401  (registers commands)

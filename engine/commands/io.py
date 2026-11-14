@@ -73,6 +73,7 @@ def export_asset(path, objects=None):
             filepath=path, export_format="GLB" if ext == ".glb" else "GLTF_SEPARATE",
             use_selection=sel, use_visible=True, export_animations=True, export_skins=True,
             export_def_bones=True,  # Rigify: ship only the deform skeleton
+            export_animation_mode="ACTIVE_ACTIONS",  # only what each exported rig plays
         )
     elif ext == ".fbx":
         _op("export_scene.fbx")(filepath=path, use_selection=sel, use_visible=True,
@@ -80,10 +81,22 @@ def export_asset(path, objects=None):
                                 use_armature_deform_only=True)
     elif ext == ".obj":
         _op("wm.obj_export")(filepath=path, export_selected_objects=sel)
+    elif ext == ".bvh":
+        arms = [bpy.data.objects[n] for n in (objects or []) if bpy.data.objects[n].type == "ARMATURE"]
+        arms = arms or [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+        if not arms:
+            raise ValueError("BVH export needs an armature")
+        rig = arms[0]
+        for o in bpy.context.selected_objects:
+            o.select_set(False)
+        bpy.context.view_layer.objects.active = rig
+        rig.select_set(True)
+        sc = bpy.context.scene
+        _op("export_anim.bvh")(filepath=path, frame_start=sc.frame_start, frame_end=sc.frame_end)
     elif ext in (".usd", ".usdc", ".usda", ".usdz"):
         _op("wm.usd_export")(filepath=path, selected_objects_only=sel)
     else:
-        raise ValueError("export format must be .glb, .gltf, .fbx, .obj or .usd*")
+        raise ValueError("export format must be .glb, .gltf, .fbx, .obj, .bvh or .usd*")
     return {"path": path, "bytes": os.path.getsize(path)}
 
 

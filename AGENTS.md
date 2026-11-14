@@ -36,6 +36,8 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Look: `render_preview`, `render_views`
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
+- Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
+  `retarget_animation`, `clear_animation`, `render_frames`
 - `run_blender_python` exists only when the server runs with `CHAR3D_ALLOW_PYTHON=1`.
   Prefer dedicated tools; if you must use it, keep scripts small and set `result`.
 
@@ -73,11 +75,46 @@ Arms rest at ~35° down (A-pose), so arms fully down ≈ `upper_arm.L` Z −50, 
 `reset=True` returns to rest pose. `keyframe=True, frame=N` keys the pose (simple
 animation until phase 3 adds clips).
 
+## Animation
+Works on **any humanoid rig**: char3d `basic`, char3d `rigify`, and imported skeletons
+with common naming (Mixamo `mixamorig:LeftArm`, CMU BVH `LeftUpLeg`, Unreal `thigh_l`,
+...). Non-basic rigs are driven through a hidden proportion-matched basic rig and a
+world-space retarget, so the same pose/clip looks the same everywhere.
+
+- `apply_pose(armature, pose)` — library: rest, t_pose, relaxed, wave, cheer,
+  point_forward, hands_on_hips, thinking, crouch, sit, fight_stance, run_pose.
+  `keyframe=True, frame=N` to build pose-to-pose animation.
+- `animate(armature, clip, start_frame, cycles, speed, amplitude, in_place)` — clips:
+  idle (96 f), walk (32 f/cycle, moves forward −Y), run (18 f), wave (36 f),
+  cheer (30 f), jump (40 f, one-shot), nod, head_shake (30 f). 24 fps.
+  **Chain** clips with `start_frame = previous["next_start_frame"]`.
+- `import_mocap(path, armature)` — .bvh/.fbx/.glb motion (CMU, Mixamo "without skin",
+  Rokoko...). Matches names, T/A rest pose, facing and body size automatically;
+  the imported source skeleton is deleted afterwards. If `mapped` is missing bones,
+  pass `bone_map={"thigh.L": "their_bone", ...}` (keys = basic bone names).
+- `retarget_animation(source, target)` — copy motion between two rigs in the scene.
+- Check motion with `render_frames([1, 9, 17, 25], view="right", objects=[mesh])`
+  (side view for walking/running, three_quarter for gestures).
+- `export_asset("hero.glb")` includes the animation; `export_asset("walk.bvh",
+  objects=[rig])` writes motion only.
+- Known limits: feet can slide slightly on walk/run (no foot IK yet); clips blend by
+  hard cuts, not crossfades.
+
 ## Recipes
 **Rigged character from scratch**
 `new_scene` → `create_human(name="Hero", style="stylized")` → `render_views`
 → `auto_rig_humanoid("Hero")` → `set_pose` test → `render_views`
 → `set_pose(reset=True)` → `export_asset("hero.glb")`.
+
+**Animated shot: walk in, wave, jump**
+`create_human` → `auto_rig_humanoid` → `w = animate(rig, "walk", cycles=2)`
+→ `a = animate(rig, "wave", start_frame=w.next_start_frame)`
+→ `animate(rig, "jump", start_frame=a.next_start_frame)` → `render_frames` check
+→ `save_project`.
+
+**Mocap on your character**
+`auto_rig_humanoid(mesh, rig_type="rigify")` → `import_mocap("dance.bvh", rig)`
+→ `render_frames` → `export_asset("hero_dance.glb")`.
 
 **Rig a model someone gives you**
 `new_scene` → `import_model(path)` → `scene_info` (stand on Z=0, face -Y, ~real height;
@@ -94,7 +131,6 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   supported yet.
 
 ## Roadmap (tools not available yet — say so instead of improvising)
-- Phase 3: mocap clips, retargeting, pose library, procedural motion (walk/idle)
 - Phase 4: camera moves (dolly, orbit, crane, crash zoom), lighting presets, `render_video`
 - Phase 6: AI providers (text/image → 3D, image → video); MPFB realistic humans
 

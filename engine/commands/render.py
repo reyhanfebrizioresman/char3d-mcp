@@ -11,7 +11,7 @@ from mathutils import Vector
 
 from .. import context
 from . import command
-from .util import obj_or_raise, scene_bounds
+from .util import RENDERABLE, obj_or_raise, scene_bounds
 
 VIEWS = {
     "front": (0, -1, 0),
@@ -66,7 +66,7 @@ def _temp_lights(sc, center, radius):
 
 @command("render_preview")
 def render_preview(view="three_quarter", width=512, height=512, engine="workbench",
-                   frame=None, objects=None, filename=None, transparent=False):
+                   frame=None, objects=None, filename=None, transparent=False, isolate=True):
     """Render a still from an auto-framed camera. Returns the PNG path."""
     if view not in VIEWS:
         raise ValueError(f"view must be one of {sorted(VIEWS)}")
@@ -104,6 +104,15 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
     cam_data.clip_start = max(dist - radius * 3, 0.01)
     cam_data.clip_end = dist + radius * 3
     lights = _temp_lights(sc, center, radius) if engine != "workbench" else []
+    hidden = []
+    if targets and isolate:   # keep other objects from blocking or cluttering the shot
+        keep = set(targets)
+        for t in targets:
+            keep.update(t.children_recursive)
+        hidden = [o for o in sc.objects
+                  if o.type in RENDERABLE and o not in keep and not o.hide_render]
+        for o in hidden:
+            o.hide_render = True
 
     os.makedirs(os.path.join(context.WORKSPACE, "renders"), exist_ok=True)
     name = filename or f"preview_{view}_{time.strftime('%Y%m%d_%H%M%S')}.png"
@@ -129,6 +138,8 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
             _setup_engine(sc, "cycles")
             bpy.ops.render.render(write_still=True)
     finally:
+        for o in hidden:
+            o.hide_render = False
         sc.render.engine = saved["engine"]
         sc.camera = saved["camera"]
         sc.render.resolution_x, sc.render.resolution_y = saved["rx"], saved["ry"]
@@ -144,3 +155,16 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
             else:
                 bpy.data.lights.remove(data)
     return {"path": out, "view": view, "engine": used, "size": [width, height]}
+
+
+@command("render_frames")
+def render_frames(frames, view="three_quarter", size=320, engine="workbench", objects=None,
+                  prefix=None):
+    """Render several animation frames (flip-book check of a motion)."""
+    stamp = prefix or f"frames_{time.strftime('%Y%m%d_%H%M%S')}"
+    out = []
+    for f in frames:
+        out.append(render_preview(view=view, width=size, height=size, engine=engine,
+                                  frame=int(f), objects=objects,
+                                  filename=f"{stamp}_f{int(f):04d}.png"))
+    return {"frames": out}

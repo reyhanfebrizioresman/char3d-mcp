@@ -63,6 +63,32 @@ async def main():
         assert glb["bytes"] > 10000, glb
         print("phase 2 rig:", rep["rig_type"], rep["deform_bones"], "deform bones")
 
+        # phase 3: poses, clips, chaining, BVH round-trip mocap, animated glb
+        await call("new_scene")
+        await call("create_human", name="Walker", style="stylized")
+        await call("auto_rig_humanoid", mesh="Walker")
+        w = json.loads(text_of(await call("animate", armature="Walker_rig", clip="walk", cycles=1))[0])
+        a = json.loads(text_of(await call("animate", armature="Walker_rig", clip="wave",
+                                          start_frame=w["next_start_frame"], cycles=1))[0])
+        assert a["frames"][0] == w["frames"][1] + 1, (w, a)
+        bvh = json.loads(text_of(await call("export_asset", path="e2e_walk.bvh",
+                                            objects=["Walker_rig"]))[0])
+        await call("create_human", name="Pro", style="realistic", location=[2, 0, 0])
+        await call("auto_rig_humanoid", mesh="Pro", rig_type="rigify")
+        await call("apply_pose", armature="Pro_rig", pose="cheer")
+        mo = json.loads(text_of(await call("import_mocap", path=bvh["path"], armature="Pro_rig",
+                                           start_frame=1))[0])
+        assert mo["bones"] >= 18, mo
+        frames = await call("render_frames", frames=[1, 9], view="right", size=128, objects=["Pro"])
+        assert [c.type for c in frames.content].count("image") == 2
+        anim_glb = json.loads(text_of(await call("export_asset", path="e2e_walker.glb",
+                                                 objects=["Walker_rig"]))[0])
+        import struct
+        raw = open(anim_glb["path"], "rb").read()
+        gltf = json.loads(raw[20:20 + struct.unpack("<I", raw[12:16])[0]])
+        assert len(gltf.get("animations", [])) == 1, gltf.get("animations")
+        print("phase 3: mocap bones", mo["bones"], "| glb animations", len(gltf["animations"]))
+
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text
         await call("engine_shutdown")

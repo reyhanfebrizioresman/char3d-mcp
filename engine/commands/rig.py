@@ -295,6 +295,7 @@ def auto_rig_humanoid(mesh, rig_type="basic", landmarks=None, name=None):
     fixed = _bind(obj, rig)
     obj["c3d_rig"] = rig.name
     rig["c3d_rig_type"] = rig_type
+    rig["c3d_landmarks"] = json.dumps({k: list(v) for k, v in lm.items()})
     report = validate_rig(obj.name)
     report.update({"armature": rig.name, "rig_type": rig_type, "landmark_source": source,
                    "nearest_bone_filled_vertices": fixed})

@@ -25,6 +25,7 @@ Working loop:
    Use eevee only for final looks (~10s on this machine, no GPU).
 4. save_project at milestones; export_asset (.glb) to deliver assets.
 Characters: create_human -> auto_rig_humanoid -> set_pose test -> render_views.
+Motion: apply_pose / animate / import_mocap -> render_frames to check it.
 Read resource char3d://guide for the full workflow guide.
 """
 
@@ -96,7 +97,8 @@ async def import_model(path: str) -> dict:
 
 @mcp.tool()
 async def export_asset(path: str, objects: list[str] | None = None) -> dict:
-    """Export to .glb (recommended: mesh + rig + animation), .gltf, .fbx, .obj or .usd.
+    """Export to .glb (recommended: mesh + rig + animation), .gltf, .fbx, .obj, .usd, or
+    .bvh (animation only, first armature in `objects`/scene).
     `objects` limits the export to those objects and their children."""
     return await run("export_asset", path=path, objects=objects)
 
@@ -207,6 +209,75 @@ async def set_pose(armature: str, bones: dict[str, list[float]] | None = None,
     Y = twist, Z = sideways (raise left arm Z+, right arm Z-). See char3d://guide."""
     return await run("set_pose", armature=armature, bones=bones, reset=reset, frame=frame,
                      keyframe=keyframe)
+
+
+# --- animation (phase 3) -------------------------------------------------------
+Pose = Literal["rest", "t_pose", "relaxed", "wave", "cheer", "point_forward", "hands_on_hips",
+               "thinking", "crouch", "sit", "fight_stance", "run_pose"]
+Clip = Literal["idle", "walk", "run", "wave", "cheer", "jump", "nod", "head_shake"]
+
+
+@mcp.tool()
+async def list_animations() -> dict:
+    """Pose library and procedural clips available (with descriptions and cycle lengths)."""
+    return await run("list_animations")
+
+
+@mcp.tool()
+async def apply_pose(armature: str, pose: Pose, frame: int | None = None,
+                     keyframe: bool = False) -> dict:
+    """Put a humanoid rig (basic, Rigify or imported Mixamo/CMU-style) into a library pose.
+    keyframe=True keys it at `frame` (build pose-to-pose animation)."""
+    return await run("apply_pose", armature=armature, pose=pose, frame=frame, keyframe=keyframe)
+
+
+@mcp.tool()
+async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int = 2,
+                  speed: float = 1.0, amplitude: float = 1.0, in_place: bool = False) -> dict:
+    """Keyframe a procedural motion clip on any humanoid rig. walk/run move the character
+    forward (-Y) unless in_place. speed > 1 = faster, amplitude scales the motion.
+    Chain clips with start_frame = previous result's next_start_frame."""
+    return await run("animate", armature=armature, clip=clip, start_frame=start_frame,
+                     cycles=cycles, speed=speed, amplitude=amplitude, in_place=in_place)
+
+
+@mcp.tool()
+async def import_mocap(path: str, armature: str, start_frame: int = 1, in_place: bool = False,
+                       bone_map: dict[str, str] | None = None) -> dict:
+    """Load motion capture (.bvh, .fbx, .glb - e.g. CMU, Mixamo, Rokoko) and retarget it onto
+    `armature`. Bone names, T/A rest pose, facing and body size are matched automatically;
+    if bones are not recognised pass bone_map {"thigh.L": "their_left_thigh", ...}."""
+    return await run("import_mocap", path=path, armature=armature, start_frame=start_frame,
+                     in_place=in_place, bone_map=bone_map)
+
+
+@mcp.tool()
+async def retarget_animation(source: str, target: str, bone_map: dict[str, str] | None = None,
+                             frame_start: int | None = None, frame_end: int | None = None,
+                             dest_start: int | None = None, in_place: bool = False) -> dict:
+    """Copy the animation of one humanoid armature in the scene onto another."""
+    return await run("retarget_animation", source=source, target=target, bone_map=bone_map,
+                     frame_start=frame_start, frame_end=frame_end, dest_start=dest_start,
+                     in_place=in_place)
+
+
+@mcp.tool()
+async def clear_animation(armature: str) -> dict:
+    """Remove all keyframes from an armature and return it to rest pose."""
+    return await run("clear_animation", armature=armature)
+
+
+@mcp.tool(structured_output=False)
+async def render_frames(frames: list[int], view: View = "three_quarter", size: int = 256,
+                        objects: list[str] | None = None):
+    """Render several animation frames (workbench) so you can check a motion like a
+    flip-book. Tip: use view="right" to judge walking/running, and list the character
+    mesh in `objects` so the camera frames it alone."""
+    r = await run("render_frames", frames=frames, view=view, size=size, objects=objects)
+    out = []
+    for item in r["frames"]:
+        out += _image_result(item)
+    return out
 
 
 # --- escape hatch & lifecycle ------------------------------------------------
