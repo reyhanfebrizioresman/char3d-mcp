@@ -41,6 +41,9 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `render_video`,
   `render_status`, `cancel_render`
+- Models from elsewhere: `prepare_model`
+- AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
+  `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
 - `run_blender_python` exists only when the server runs with `CHAR3D_ALLOW_PYTHON=1`.
   Prefer dedicated tools; if you must use it, keep scripts small and set `result`.
 
@@ -133,6 +136,36 @@ final is full-res 64 samples (~4× preview). Always do a draft first, then previ
 Vertical video: `width=1080, height=1920`. Output is H.264 MP4, 24 fps unless
 `set_timeline(fps=...)`.
 
+## AI generation (external services)
+- **Only use `ai_*` generation tools when the user explicitly asks for AI generation** —
+  they upload the prompt/image to a third party. Check `ai_status` first.
+- `provider`: `"fal"` = paid fal.ai (needs FAL_KEY, fast, reliable); `"hf"` = FREE public
+  Hugging Face Spaces (no key; may queue, hit the daily ZeroGPU quota, or be offline —
+  a free HF_TOKEN raises the quota); `"auto"` (default) = fal when configured, else hf.
+  If the user wants free only, pass `provider="hf"` explicitly.
+- Free (hf) model recipes, pick with `model=`: image→3D `hunyuan3d` (default, untextured,
+  fastest), `hunyuan3d-textured`, `trellis`, `stable-fast-3d`; image→video `ltx`
+  (default), `wan`; text→video `ltx`; text→image `flux-schnell`. Free video clips are
+  short (ltx ≤ 8 s, wan ≤ 5 s) and lower resolution.
+- If a free Space fails (quota/offline), say so and offer another recipe, waiting, or
+  fal — don't silently switch to the paid provider.
+- All generation runs as background jobs: start → `ai_job_status(job_id)` every ~10 s.
+  Stages: concept image → 3D model / video → download → import → prepare → rig.
+- `ai_text_to_3d(prompt, name, character=True)`: the prompt is wrapped to ask for a
+  full-body A-pose character on a plain background (better for rigging). Props: set
+  `character=False` (no rig, no height normalisation).
+- `ai_image_to_3d(image)`: local path or URL; best with one full-body subject in A-pose.
+- After a 3D job: `render_views` the mesh. If it faces backwards, re-run
+  `prepare_model([mesh], rotate_z=180)` and `auto_rig_humanoid` again. AI meshes are
+  messy: check `validate_rig` and a test pose before animating.
+- `ai_image_to_video(image, prompt)`: Higgsfield-style shots from a still. Typical
+  combo: build the scene in char3d → `render_preview(camera="scene", engine_name="eevee",
+  width=1280)` → `ai_image_to_video(that_path, "slow push in, wind in the hair")`.
+- fal models are defaults that may change on fal.ai; override with `model=` and
+  `extra_input={...}` using the field names from the model's fal.ai page.
+- `prepare_model(objects, height, max_faces, rotate_z)` is also the way to clean any
+  downloaded/marketplace model before rigging.
+
 ## Recipes
 **Rigged character from scratch**
 `new_scene` → `create_human(name="Hero", style="stylized")` → `render_views`
@@ -174,10 +207,15 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   supported yet.
 
 ## Roadmap (tools not available yet — say so instead of improvising)
-- Phase 6: AI providers (text/image → 3D, image → video); MPFB realistic humans
+- MPFB realistic humans (`create_human(source="mpfb")`)
+- Foot IK / foot-locking for walks, crossfades between clips
+- Face rig / lip sync
 
 ## For agents editing this repo
 - `engine/` runs inside Blender's bundled Python (has `bpy`); never import `bpy` in
   `mcp_server/`. Add an engine command with `@command("name")` in
   `engine/commands/*.py`, then a matching tool in `mcp_server/server.py`.
-- Test end-to-end with `.venv/bin/python tests/e2e_smoke.py`.
+- Test end-to-end with `.venv/bin/python tests/e2e_smoke.py` and the offline AI pipeline
+  with `.venv/bin/python tests/e2e_ai_mock.py` (local fake fal.ai, no key or network).
+- `providers/` runs in the MCP server process (network); never call the network from
+  `engine/`. Never log or persist API keys.

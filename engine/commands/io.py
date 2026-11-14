@@ -115,3 +115,82 @@ def open_project(path):
         raise FileNotFoundError(path)
     bpy.ops.wm.open_mainfile(filepath=path)
     return {"path": path, "objects": [o.name for o in bpy.context.scene.objects]}
+
+
+@command("prepare_model")
+def prepare_model(objects, name="Model", height=None, max_faces=None, rotate_z=0.0,
+                  center=True, on_ground=True, merge_distance=0.0001):
+    """Turn imported pieces into one clean mesh: unparent, join, apply transforms, weld,
+    optional decimate, rotate about Z, scale to `height`, center on XY, stand on Z=0."""
+    import math
+
+    from mathutils import Matrix, Vector
+
+    roots = [bpy.data.objects[n] for n in objects if n in bpy.data.objects]
+    if not roots:
+        raise ValueError(f"none of {objects} exist")
+    family = set()
+    for o in roots:
+        family.add(o)
+        family.update(o.children_recursive)
+    meshes = [o for o in family if o.type == "MESH"]
+    if not meshes:
+        raise ValueError("no mesh among the given objects")
+    for m in meshes:   # bake parent transforms into each mesh, then detach
+        mw = m.matrix_world.copy()
+        m.parent = None
+        m.matrix_world = mw
+    for m in meshes:   # imported rigs/armature modifiers would fight our own rig later
+        for md in [md for md in m.modifiers if md.type == "ARMATURE"]:
+            m.modifiers.remove(md)
+
+    vl = bpy.context.view_layer
+    if vl.objects.active and vl.objects.active.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    for m in meshes:
+        m.select_set(True)
+    vl.objects.active = meshes[0]
+    if len(meshes) > 1:
+        bpy.ops.object.join()
+    obj = vl.objects.active
+    obj.name = name
+    obj.data.name = name
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    for o in family:   # leftover empties / armatures from the file
+        if o.name in bpy.data.objects and o is not obj and o.type != "MESH":
+            bpy.data.objects.remove(o, do_unlink=True)
+
+    me = obj.data
+    if merge_distance:
+        import bmesh
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=float(merge_distance))
+        bm.to_mesh(me)
+        bm.free()
+    faces = len(me.polygons)
+    if max_faces and faces > int(max_faces):
+        dec = obj.modifiers.new("Decimate", "DECIMATE")
+        dec.ratio = max(0.01, int(max_faces) / faces)
+        bpy.ops.object.modifier_apply(modifier=dec.name)
+    if rotate_z:
+        me.transform(Matrix.Rotation(math.radians(rotate_z), 4, "Z"))
+    vs = [v.co for v in me.vertices]
+    lo = Vector((min(v.x for v in vs), min(v.y for v in vs), min(v.z for v in vs)))
+    hi = Vector((max(v.x for v in vs), max(v.y for v in vs), max(v.z for v in vs)))
+    if height:
+        s = float(height) / max(hi.z - lo.z, 1e-6)
+        me.transform(Matrix.Scale(s, 4))
+        lo, hi = lo * s, hi * s
+    shift = Vector((-(lo.x + hi.x) / 2 if center else 0, -(lo.y + hi.y) / 2 if center else 0,
+                    -lo.z if on_ground else 0))
+    me.transform(Matrix.Translation(shift))
+    obj.location = (0, 0, 0)
+    for p in me.polygons:
+        p.use_smooth = True
+    me.update()
+    bpy.context.view_layer.update()
+    return {"name": obj.name, "faces": len(me.polygons), "vertices": len(me.vertices),
+            "faces_before": faces, "dimensions": [round(d, 4) for d in obj.dimensions]}

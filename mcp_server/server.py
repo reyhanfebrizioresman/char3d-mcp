@@ -9,6 +9,8 @@ from typing import Literal
 import anyio
 from mcp.server.fastmcp import FastMCP, Image
 
+from providers.jobs import JobManager
+
 from .blender_client import ROOT, BlenderClient
 
 INSTRUCTIONS = """\
@@ -33,6 +35,7 @@ Read resource char3d://guide for the full workflow guide.
 
 mcp = FastMCP("char3d", instructions=INSTRUCTIONS)
 engine = BlenderClient()
+ai = JobManager(engine)
 
 View = Literal["front", "back", "left", "right", "top", "three_quarter", "three_quarter_left"]
 Engine = Literal["workbench", "eevee", "cycles"]
@@ -402,6 +405,95 @@ async def render_status(job_id: str | None = None) -> dict:
 async def cancel_render(job_id: str) -> dict:
     """Stop a running render job."""
     return await run("cancel_render", job_id=job_id)
+
+
+# --- AI providers (phase 6) ----------------------------------------------------
+AI_COST = (" Sends the prompt/image to an external AI service: provider='fal' is PAID "
+           "(fal.ai, needs FAL_KEY); provider='hf' is FREE public Hugging Face Spaces (can "
+           "queue, hit a daily GPU quota or be offline); 'auto' = fal if configured, else hf. "
+           "Only call it when the user asked for AI generation. For hf, `model` picks a free "
+           "Space recipe (see ai_status).")
+Provider = Literal["auto", "fal", "hf"]
+
+
+@mcp.tool()
+async def prepare_model(objects: list[str], name: str = "Model", height: float | None = None,
+                        max_faces: int | None = None, rotate_z: float = 0.0) -> dict:
+    """Clean an imported model into ONE mesh ready for rigging: bake parent transforms,
+    join pieces, weld duplicate vertices, decimate above `max_faces`, rotate about Z
+    (use 180 if it faces +Y), scale to `height` m, center it and stand it on Z=0."""
+    return await run("prepare_model", objects=objects, name=name, height=height,
+                     max_faces=max_faces, rotate_z=rotate_z)
+
+
+@mcp.tool()
+async def ai_status() -> dict:
+    """Which AI providers are usable: fal.ai (paid; FAL_KEY present? - never shows the key)
+    and free Hugging Face Spaces (models/recipes per task, HF_TOKEN set?)."""
+    return ai.status()
+
+
+@mcp.tool(description=(
+    "Generate a 3D model from text in the background: text -> concept image -> 3D mesh -> "
+    "downloaded, imported, cleaned (prepare_model) and, for characters, auto-rigged. "
+    "Returns job_id; poll ai_job_status, then render_views to inspect the result." + AI_COST))
+async def ai_text_to_3d(prompt: str, name: str = "AIModel", character: bool = True,
+                        rig: bool = True, rig_type: Literal["basic", "rigify"] = "basic",
+                        height: float | None = None, max_faces: int = 60000,
+                        model: str | None = None, image_model: str | None = None,
+                        extra_input: dict | None = None,
+        provider: Provider = "auto") -> dict:
+    return ai.text_to_3d(prompt, name, character, rig, rig_type, height, max_faces,
+                         image_model, model, extra_input, provider)
+
+
+@mcp.tool(description=(
+    "Generate a 3D model from an image (local path or https URL) in the background, then "
+    "import, clean and (characters) auto-rig it. Best input: one subject, full body, A-pose, "
+    "plain background. Returns job_id; poll ai_job_status." + AI_COST))
+async def ai_image_to_3d(image: str, name: str = "AIModel", character: bool = True,
+                         rig: bool = True, rig_type: Literal["basic", "rigify"] = "basic",
+                         height: float | None = None, max_faces: int = 60000,
+                         model: str | None = None, extra_input: dict | None = None,
+        provider: Provider = "auto") -> dict:
+    return ai.image_to_3d(image, name, character, rig, rig_type, height, max_faces, model,
+                          extra_input, provider)
+
+
+@mcp.tool(description=(
+    "Animate a still into a video with an AI video model (Higgsfield/Kling style). `image` can "
+    "be a char3d render (e.g. the path from render_preview camera='scene') or any image. "
+    "Describe motion and camera in the prompt ('slow dolly in, hair blowing'). Saves the MP4 "
+    "in renders/. Returns job_id; poll ai_job_status." + AI_COST))
+async def ai_image_to_video(image: str, prompt: str, duration: int = 5,
+                            aspect_ratio: str | None = None, model: str | None = None,
+                            output: str | None = None, extra_input: dict | None = None,
+        provider: Provider = "auto") -> dict:
+    return ai.image_to_video(image, prompt, duration, aspect_ratio, model, extra_input, output,
+                             provider)
+
+
+@mcp.tool(description=(
+    "Generate a video directly from text with an AI video model. Returns job_id; poll "
+    "ai_job_status." + AI_COST))
+async def ai_text_to_video(prompt: str, duration: int = 5, aspect_ratio: str = "16:9",
+                           model: str | None = None, output: str | None = None,
+                           extra_input: dict | None = None,
+        provider: Provider = "auto") -> dict:
+    return ai.text_to_video(prompt, duration, aspect_ratio, model, extra_input, output,
+                            provider)
+
+
+@mcp.tool()
+async def ai_job_status(job_id: str | None = None) -> dict:
+    """Status of an AI job (stage, log, result files / imported mesh / rig report), or all."""
+    return ai.get(job_id)
+
+
+@mcp.tool()
+async def ai_cancel_job(job_id: str) -> dict:
+    """Cancel a running AI job (also cancels the request on the provider)."""
+    return ai.cancel(job_id)
 
 
 # --- escape hatch & lifecycle ------------------------------------------------

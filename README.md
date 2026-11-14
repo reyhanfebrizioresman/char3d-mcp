@@ -9,7 +9,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 ```
 
 ## Status
-✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi) · ✅ Fase 4 (kamera, cahaya, video)
+✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi) · ✅ Fase 4 (kamera, cahaya, video) · ✅ Fase 6 (integrasi AI, diuji offline)
 
 | Alat | Fungsi |
 |---|---|
@@ -33,6 +33,10 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; material cepat |
 | `render_video`, `render_status`, `cancel_render` | Render MP4 (H.264) di proses latar belakang: draft, preview, final, cycles |
 | `set_timeline` | Rentang frame dan fps |
+| `prepare_model` | Merapikan model dari luar: gabung mesh, kurangi poligon, skala tinggi, berdiri di lantai |
+| `ai_text_to_3d`, `ai_image_to_3d` | Teks/gambar → model 3D → otomatis diimpor, dirapikan, dan di-rig (gratis lewat Hugging Face, atau berbayar lewat fal.ai) |
+| `ai_image_to_video`, `ai_text_to_video` | Gambar/render → video AI ala Higgsfield (gratis lewat Hugging Face, atau berbayar lewat fal.ai) |
+| `ai_status`, `ai_job_status`, `ai_cancel_job` | Status konfigurasi dan job AI |
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).
@@ -76,6 +80,58 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 { "mcpServers": { "char3d": { "command": "/PATH/KE/char3d/run_mcp.sh" } } }
 ```
 
+## AI providers
+Alat `ai_*` bisa memakai dua provider (parameter `provider`):
+
+| Provider | Biaya | Kelebihan | Kekurangan |
+|---|---|---|---|
+| `hf` — Hugging Face Spaces | **Gratis**, tanpa key | Langsung jalan | Antrean, kuota GPU harian, Space bisa offline, video pendek |
+| `fal` — fal.ai | Berbayar per pemakaian | Cepat, stabil, model video lebih kuat | Perlu `FAL_KEY` |
+
+`auto` (default) memakai fal kalau `FAL_KEY` ada, kalau tidak memakai Hugging Face gratis.
+
+### Gratis: Hugging Face Spaces
+Tidak perlu apa-apa. Supaya kuota GPU gratis lebih besar, buat akun Hugging Face gratis,
+buat token "Read", lalu simpan di file rahasia yang sama (lihat langkah fal di bawah)
+sebagai baris `HF_TOKEN=isi_token_anda`.
+
+| Tugas | Resep default | Pilihan lain (`model=`) |
+|---|---|---|
+| teks → gambar | `flux-schnell` (FLUX.1-schnell) | — |
+| gambar → 3D | `hunyuan3d` (Hunyuan3D-2, tanpa tekstur) | `hunyuan3d-textured`, `trellis`, `stable-fast-3d` |
+| gambar → video | `ltx` (LTX-Video, maks 8 detik) | `wan` (Wan 2.2, maks 5 detik) |
+| teks → video | `ltx` | — |
+
+### Berbayar: fal.ai
+
+1. Buat API key di dashboard fal.ai.
+2. Simpan key di file **di luar repo** (dibaca otomatis oleh `run_mcp.sh`, berlaku untuk
+   Claude dan Codex):
+   ```bash
+   mkdir -p ~/.config/char3d && touch ~/.config/char3d/env && chmod 600 ~/.config/char3d/env
+   ```
+   Lalu isi file itu dengan satu baris `FAL_KEY=isi_key_anda` memakai editor teks.
+3. Restart Claude Desktop atau buka sesi Codex baru, lalu minta AI menjalankan `ai_status`.
+
+Model default (bisa diganti per panggilan dengan `model=`, atau secara global lewat
+variabel lingkungan `CHAR3D_MODEL_TEXT_TO_IMAGE`, `CHAR3D_MODEL_IMAGE_TO_3D`,
+`CHAR3D_MODEL_IMAGE_TO_VIDEO`, `CHAR3D_MODEL_TEXT_TO_VIDEO`):
+
+| Tugas | Model default |
+|---|---|
+| teks → gambar konsep | `fal-ai/flux/schnell` |
+| gambar → 3D | `fal-ai/hunyuan3d/v2` |
+| gambar → video | `fal-ai/kling-video/v2.1/standard/image-to-video` |
+| teks → video | `fal-ai/kling-video/v2.1/standard/text-to-video` |
+
+Nama model dan format inputnya bisa berubah di fal.ai. Kalau ada error 404/422,
+cek halaman model di fal.ai lalu kirim `model=` dan `extra_input=` yang sesuai.
+
+Uji alur AI tanpa key dan tanpa internet (memakai server fal.ai tiruan lokal):
+```bash
+.venv/bin/python tests/e2e_ai_mock.py
+```
+
 ## Pengaturan (variabel lingkungan)
 | Variabel | Default | Arti |
 |---|---|---|
@@ -83,6 +139,8 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 | `CHAR3D_PORT` | `9876` | Port lokal engine (dipakai bersama Claude dan Codex) |
 | `CHAR3D_WORKSPACE` | `./output` | Folder hasil (renders, exports, projects, imports) |
 | `CHAR3D_ALLOW_PYTHON` | (mati) | `1` = AI boleh menjalankan Python bebas di Blender |
+| `FAL_KEY` | (kosong) | API key fal.ai untuk alat `ai_*` (simpan di `~/.config/char3d/env`) |
+| `CHAR3D_ENV_FILE` | `~/.config/char3d/env` | File rahasia yang dibaca `run_mcp.sh` |
 
 ## Catatan
 - Komputer tanpa GPU: render Workbench ±1 detik, Eevee ±10 detik per gambar
