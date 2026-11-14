@@ -225,7 +225,10 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             cam_data.dof.keyframe_insert("focus_distance", frame=f)
 
     # timeline: cut to this camera at its start frame
-    for m in [m for m in sc.timeline_markers if m.name == name]:
+    replaced = []
+    for m in [m for m in sc.timeline_markers if m.name == name or m.frame == start]:
+        if m.name != name:
+            replaced.append(m.name)     # two cuts on one frame would be ambiguous
         sc.timeline_markers.remove(m)
     marker = sc.timeline_markers.new(name, frame=start)
     marker.camera = cam
@@ -235,6 +238,7 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     sc.frame_set(start)
     return {"camera": cam.name, "shot": shot, "move": move, "frames": [start, end],
             "next_start_frame": end + 1, "subject_height": round(H, 3),
+            "replaced_shots_at_start_frame": replaced,
             "lens_mm": [round(base_lens, 1), round(lens_mm, 1)]}
 
 

@@ -26,6 +26,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `set_expression`, `list_expressions` | 24 ekspresi wajah (senyum, tawa, sedih, marah, kaget, kedip, dll.) + 52 unit ARKit |
 | `lip_sync`, `auto_blink` | Gerak mulut dari teks dan kedipan otomatis |
 | `lip_sync_audio`, `transcribe_audio` | Gerak mulut dari rekaman suara (Whisper lokal: waktu tiap kata), audio ikut masuk ke video |
+| `talk_motion` | Gerak kepala (angguk saat penekanan, miring per kalimat), alis, dan lirikan mata saat bicara; menatap kamera |
 | `add_audio`, `list_audio`, `remove_audio` | Musik/suara di timeline; `render_video` otomatis bersuara (AAC) |
 | `ai_text_to_speech` | Teks → suara (gratis, Chatterbox di Hugging Face, 23 bahasa) |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |

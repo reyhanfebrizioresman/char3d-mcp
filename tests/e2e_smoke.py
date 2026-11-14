@@ -192,6 +192,18 @@ async def main():
                     text="aa ee oo ss aa", add_sound=False))[0])
                 assert la["mode"] == timing and la["mouth_shapes"] >= 4, la
             print("audio lip sync: audio/text modes OK")
+            await call("add_audio", path=wav, start_frame=1)
+            await call("animate", armature="Vo_rig", clip="idle", cycles=1)
+            await call("camera_shot", subject=["Vo_rig"], shot="close_up", start_frame=1,
+                       end_frame=60)
+            tm = json.loads(text_of(await call("talk_motion", character="Vo_rig",
+                                               frame_start=1, frame_end=60))[0])
+            assert tm["driven_by"].startswith("audio:") and tm["saccades"] >= 1, tm
+            rng = tm["head_range_deg"]
+            assert max(abs(v) for pair in rng.values() for v in pair) < 25, rng
+            print("talk_motion:", tm["driven_by"], "emphasis", len(tm["emphasis_frames"]),
+                  "saccades", tm["saccades"])
+            await call("remove_audio")
         aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
         assert aa["seconds"] > 2, aa
         await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])

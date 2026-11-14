@@ -37,7 +37,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
 - Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
 - Audio & voice: `add_audio`, `list_audio`, `remove_audio`, `transcribe_audio`,
-  `lip_sync_audio`, `ai_text_to_speech` (free HF Space)
+  `lip_sync_audio`, `talk_motion`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
@@ -113,8 +113,19 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   23 languages, **no Indonesian — use "ms"**; anonymous daily GPU quota is small, an
   HF_TOKEN raises it). `voice_reference` imitates a voice: only the user's own voice or
   one they have permission to use. Then `lip_sync_audio` with the job's `audio` path.
-- Always pair speech with `auto_blink` and a light `set_expression` (smile 0.4–0.5), and
-  frame with `close_up`/`medium` so the mouth is visible.
+- Always pair speech with `auto_blink`, a light `set_expression` (smile 0.4–0.5) and
+  `talk_motion`, and frame with `close_up`/`medium` so the face is visible.
+- `talk_motion(character)`: nods on stressed words, head drift + phrase tilts, brow
+  flashes, eye saccades and "thinking" glances, eyes toward the shot camera. Layered:
+  body animation is kept. **Order matters** — body clips (`animate`, mocap) →
+  `set_expression` → `lip_sync_audio` → `camera_shot` → `auto_blink` → `talk_motion`
+  last (it reads the audio/lip sync and the camera; `animate` afterwards over the same
+  frames would overwrite the head; `set_expression(clear=True)` afterwards resets eye gaze
+  at its frame).
+- Recipe — talking presenter: `create_realistic_human` → `animate(rig, "idle")` →
+  `lip_sync_audio(rig, "audio/line.wav")` → `set_expression(rig, "smile", 0.45, frame=1,
+  keyframe=True)` → `set_lighting("studio")` → `camera_shot(shot="close_up",
+  move="push_in")` → `auto_blink(rig)` → `talk_motion(rig)` → `render_video`.
 - `transcribe_audio` gives text + word times without animating (e.g. for subtitles).
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
@@ -275,7 +286,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
-- Phoneme-level forced alignment (word-level today), head/eye motion driven by speech
+- Phoneme-level forced alignment (word-level today); gestures (hand beats) driven by speech
 - Foot IK / foot-locking for walks, crossfades between clips
 - Face rig / lip sync
 

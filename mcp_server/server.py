@@ -555,6 +555,22 @@ async def lip_sync_audio(character: str, audio: str, start_frame: int = 1,
     return r
 
 
+@mcp.tool()
+async def talk_motion(character: str, frame_start: int | None = None, frame_end: int | None = None,
+                      intensity: float = 1.0, head: bool = True, eyes: bool = True,
+                      brows: bool = True, look_at_camera: bool = True, seed: int = 3) -> dict:
+    """Make a speaking character feel alive: speech-driven head nods on stressed words,
+    gentle head drift and phrase tilts, brow flashes, and eye saccades with occasional
+    'thinking' glances. Rhythm comes from the timeline audio (or the lip-sync keys).
+    Layered on top: only neck/head rotation and brow/eye-gaze shape keys are keyed, body
+    animation is untouched. look_at_camera turns eyes (and partly the head) toward the
+    shot camera. Run it LAST, after animate/lip_sync_audio/camera_shot (re-running animate
+    over the same frames would overwrite the head). intensity 0.5 = calm, 1.5 = animated."""
+    return await run("talk_motion", character=character, frame_start=frame_start,
+                     frame_end=frame_end, intensity=intensity, head=head, eyes=eyes, brows=brows,
+                     look_at_camera=look_at_camera, seed=seed)
+
+
 @mcp.tool(description=(
     "Generate a voice recording from text (Chatterbox Multilingual on a FREE public Hugging "
     "Face Space; queue/quota limits apply). language: ar da de el en es fi fr he hi it ja ko ms "
