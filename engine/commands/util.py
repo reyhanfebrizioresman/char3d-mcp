@@ -22,17 +22,40 @@ def obj_or_raise(name):
     return obj
 
 
+def _visible_part(o):
+    return (o.type in RENDERABLE and not o.hide_render and o.visible_get()
+            and not is_helper(o) and o.get("c3d_role") != "ground")
+
+
 def scene_bounds(objects=None):
-    """World-space AABB of renderable objects (after modifiers/armature deform)."""
+    """World-space AABB of renderable objects (after modifiers/armature deform).
+    An armature stands for the character it drives: its visible meshes (body, hair,
+    clothes), or its deform bones when it has none - never its control bones, which on
+    Rigify-style rigs (root, properties) reach far beyond the body."""
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    objs = objects or [o for o in bpy.context.scene.objects
-                       if o.type in RENDERABLE and not o.hide_render and o.visible_get()
-                       and not is_helper(o) and o.get("c3d_role") != "ground"]
-    lo = hi = None
+    objs, points = [], []
+    if objects:
+        for o in objects:
+            if o.type != "ARMATURE":
+                objs.append(o)
+                continue
+            parts = [c for c in o.children_recursive if _visible_part(c)]
+            if parts:
+                objs.extend(p for p in parts if p not in objs)
+                continue
+            mw = o.matrix_world
+            bones = [pb for pb in o.pose.bones if pb.bone.use_deform] or list(o.pose.bones)
+            for pb in bones:
+                points += [mw @ pb.head, mw @ pb.tail]
+    else:
+        objs = [o for o in bpy.context.scene.objects if _visible_part(o)]
     for o in objs:
         ev = o.evaluated_get(depsgraph)
-        for corner in ev.bound_box:
-            p = ev.matrix_world @ Vector(corner)
-            lo = p.copy() if lo is None else Vector(map(min, lo, p))
-            hi = p.copy() if hi is None else Vector(map(max, hi, p))
+        points += [ev.matrix_world @ Vector(corner) for corner in ev.bound_box]
+    if not points:
+        return None, None
+    lo, hi = points[0].copy(), points[0].copy()
+    for p in points[1:]:
+        lo = Vector(map(min, lo, p))
+        hi = Vector(map(max, hi, p))
     return lo, hi
