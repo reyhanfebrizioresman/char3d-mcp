@@ -269,7 +269,7 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
         for i in range(n):
             if i not in inside:
                 lowest = min(p.z for p in pts[i])
-                w = _smoothstep(speed[i] / (body_vel[i].length + v_min) - 1.0)
+                w = _smoothstep((speed[i] - v_min) / (3 * v_min))   # moving over the ground
                 c[i] = Vector((c[i].x, c[i].y, max(c[i].z, floor + clearance * w - lowest)))
         corr[s] = c
         slide = 0.0

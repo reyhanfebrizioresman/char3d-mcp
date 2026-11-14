@@ -211,9 +211,15 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   the start position).
 - `export_asset("hero.glb")` includes the animation; `export_asset("walk.bvh",
   objects=[rig])` writes motion only.
-- Known limits: clips blend by hard cuts, not crossfades (a foot that is mid-step at a
-  cut can pop); in_place walks keep their treadmill sliding by design; stairs/uneven
-  ground are not supported (one flat floor height).
+- **Crossfades** — chained clips (`animate`, `import_mocap`, `retarget_animation`)
+  blend in from the pose the rig has at `start_frame - 1`: automatic length 4–18 frames
+  from the size of the change (walk→run ≈ 6, walk→wave ≈ 14, reported in `crossfade`),
+  `blend_frames=N` to force, `0` for a hard cut. During a blend into a standing clip the
+  planted foot stays put and the other finishes its step; feet stay planted for the rest
+  of that clip. The first clip on a rig has nothing to blend from.
+- Known limits: in_place walks keep their treadmill sliding by design; stairs/uneven
+  ground are not supported (one flat floor height); a crossfade holds the previous
+  clip's last pose (it does not keep playing the old clip underneath).
 
 ## Film: cameras, lighting, video
 **Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
@@ -317,7 +323,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
 - Phoneme-level forced alignment (word-level today)
-- Crossfades between clips; foot IK on stairs / uneven ground
+- Foot IK on stairs / uneven ground
 - Face rig / lip sync
 
 ## For agents editing this repo

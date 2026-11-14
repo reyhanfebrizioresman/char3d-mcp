@@ -244,26 +244,32 @@ async def apply_pose(armature: str, pose: Pose, frame: int | None = None,
 @mcp.tool()
 async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int = 2,
                   speed: float = 1.0, amplitude: float = 1.0, in_place: bool = False,
-                  foot_lock: bool | None = None) -> dict:
+                  foot_lock: bool | None = None, blend_frames: int | None = None) -> dict:
     """Keyframe a procedural motion clip on any humanoid rig. walk/run move the character
     forward (-Y) unless in_place. speed > 1 = faster, amplitude scales the motion.
     Chain clips with start_frame = previous result's next_start_frame.
     foot_lock (default auto: on for walk/run/jump unless in_place) pins planted feet to the
-    floor with leg IK so they don't slide; the result lists the detected foot contacts."""
+    floor with leg IK so they don't slide; the result lists the detected foot contacts.
+    Crossfade: when the rig already has animation before start_frame, the clip blends in
+    from that last pose (blend_frames None = automatic 4-18 frames by how big the change
+    is, 0 = hard cut); the feet finish their step and stay planted through the blend."""
     return await run("animate", armature=armature, clip=clip, start_frame=start_frame,
                      cycles=cycles, speed=speed, amplitude=amplitude, in_place=in_place,
-                     foot_lock=foot_lock)
+                     foot_lock=foot_lock, blend_frames=blend_frames)
 
 
 @mcp.tool()
 async def import_mocap(path: str, armature: str, start_frame: int = 1, in_place: bool = False,
-                       bone_map: dict[str, str] | None = None, foot_lock: bool = True) -> dict:
+                       bone_map: dict[str, str] | None = None, foot_lock: bool = True,
+                       blend_frames: int | None = None) -> dict:
     """Load motion capture (.bvh, .fbx, .glb - e.g. CMU, Mixamo, Rokoko) and retarget it onto
     `armature`. Bone names, T/A rest pose, facing and body size are matched automatically;
     if bones are not recognised pass bone_map {"thigh.L": "their_left_thigh", ...}.
-    foot_lock=True (default) removes the foot sliding retargeting causes."""
+    foot_lock=True (default) removes the foot sliding retargeting causes. Like animate, it
+    crossfades from earlier animation on the rig (blend_frames None = auto, 0 = hard cut)."""
     return await run("import_mocap", path=path, armature=armature, start_frame=start_frame,
-                     in_place=in_place, bone_map=bone_map, foot_lock=foot_lock)
+                     in_place=in_place, bone_map=bone_map, foot_lock=foot_lock,
+                     blend_frames=blend_frames)
 
 
 @mcp.tool()
@@ -288,11 +294,13 @@ async def lock_feet(armature: str, frame_start: int | None = None, frame_end: in
 @mcp.tool()
 async def retarget_animation(source: str, target: str, bone_map: dict[str, str] | None = None,
                              frame_start: int | None = None, frame_end: int | None = None,
-                             dest_start: int | None = None, in_place: bool = False) -> dict:
-    """Copy the animation of one humanoid armature in the scene onto another."""
+                             dest_start: int | None = None, in_place: bool = False,
+                             blend_frames: int | None = None) -> dict:
+    """Copy the animation of one humanoid armature in the scene onto another (crossfades from
+    earlier animation on the target: blend_frames None = auto, 0 = hard cut)."""
     return await run("retarget_animation", source=source, target=target, bone_map=bone_map,
                      frame_start=frame_start, frame_end=frame_end, dest_start=dest_start,
-                     in_place=in_place)
+                     in_place=in_place, blend_frames=blend_frames)
 
 
 @mcp.tool()

@@ -107,7 +107,12 @@ async def main():
         assert a["frames"][0] == w["frames"][1] + 1, (w, a)
         fl = w["foot_lock"]["contacts"]
         assert fl["L"] and fl["R"], w
-        assert "foot_lock" not in a, a          # wave: no locomotion, no foot lock
+        assert a["crossfade"]["blend_frames"] >= 4, a      # wave blends in from the walk
+        assert a["foot_lock"]["contacts"]["L"], a          # feet planted through the blend
+        cut = json.loads(text_of(await call("animate", armature="Walker_rig", clip="nod",
+                                            start_frame=a["next_start_frame"], cycles=1,
+                                            blend_frames=0))[0])
+        assert "crossfade" not in cut, cut
         lk = json.loads(text_of(await call("lock_feet", armature="Walker_rig", frame_start=1,
                                            frame_end=w["frames"][1]))[0])
         assert lk["feet"]["L"]["contacts"] and lk["max_ik_error_m"] < 0.01, lk

@@ -609,6 +609,114 @@ FOOT_LOCK_CLIPS = ("walk", "run", "jump")
 CLIP_CONTACTS = {"jump": ((0.0, 0.36), (0.70, 1.0))}
 
 
+# ----------------------------------------------------------------------------- crossfades
+BLEND_DEG_PER_FRAME = 9.0     # auto blend length: ~9 deg of the biggest joint change per frame
+BLEND_RANGE = (4, 18)         # frames at 24 fps
+
+
+def _auto_blend(rig, prev, start, end):
+    """Blend length from how far the new clip's first pose is from the previous pose."""
+    sc = bpy.context.scene
+    k = sc.render.fps / 24.0
+    sc.frame_set(start)
+    worst = 0.0
+    for name in _keyed_at(rig, start):
+        pb = rig.pose.bones.get(name)
+        if pb is None or name not in prev:
+            continue
+        qa = prev[name].to_quaternion()
+        qb = pb.matrix_basis.to_quaternion()
+        worst = max(worst, math.degrees(qa.rotation_difference(qb).angle) % 360)
+    worst = min(worst, 360 - worst) if worst > 180 else worst
+    lo, hi = BLEND_RANGE
+    n = int(round(min(max(worst / BLEND_DEG_PER_FRAME, lo), hi) * k))
+    return max(1, min(n, end - start)), round(worst, 1)
+
+
+def _has_keys_before(rig, frame):
+    from .talk import _fcurves
+    act = rig.animation_data.action if rig.animation_data else None
+    for fc in _fcurves(act):
+        if fc.data_path.startswith("pose.bones[") and any(k.co.x < frame - 0.5 for k in fc.keyframe_points):
+            return True
+    return False
+
+
+def _sample_pose(rig, frame):
+    """Local pose of every bone at `frame` (the end of the previous clip), or None when the
+    rig has no animation before it (nothing to blend from)."""
+    if not _has_keys_before(rig, frame):
+        return None
+    sc = bpy.context.scene
+    cur = sc.frame_current
+    sc.frame_set(frame - 1)
+    pose = {pb.name: pb.matrix_basis.copy() for pb in rig.pose.bones}
+    sc.frame_set(cur)
+    return pose
+
+
+def _keyed_at(rig, frame):
+    """{bone: {"location", "rotation", "scale"}} channels keyed exactly at `frame`."""
+    from .talk import _fcurves
+    act = rig.animation_data.action if rig.animation_data else None
+    out = {}
+    for fc in _fcurves(act):
+        dp = fc.data_path
+        if not dp.startswith('pose.bones["'):
+            continue
+        if not any(abs(k.co.x - frame) < 0.5 for k in fc.keyframe_points):
+            continue
+        name, prop = dp[len('pose.bones["'):].split('"]', 1)
+        prop = prop.lstrip(".")
+        kind = "rotation" if prop.startswith("rotation") else prop
+        out.setdefault(name, set()).add(kind)
+    return out
+
+
+def _crossfade(rig, prev, start, end, blend=None):
+    """Blend the first frames of the clip just keyed at [start, end] from the previous
+    clip's last pose (prev) - rotations slerped, locations/scales lerped, eased.
+    blend None = automatic length from the size of the pose change."""
+    if prev is None or (blend is not None and blend <= 0):
+        return None
+    sc = bpy.context.scene
+    chans = _keyed_at(rig, start)
+    if not chans:
+        return None
+    change = None
+    if blend is None:
+        blend, change = _auto_blend(rig, prev, start, end)
+    n = min(int(blend), end - start)
+    keyprev = {}
+    for i in range(n):
+        f = start + i
+        u = (i + 1) / (n + 1)
+        w = u * u * (3 - 2 * u)            # weight of the new clip
+        sc.frame_set(f)
+        for name, kinds in chans.items():
+            pb = rig.pose.bones.get(name)
+            if pb is None or name not in prev:
+                continue
+            a, b = prev[name], pb.matrix_basis
+            la, ra, sa = a.decompose()
+            lb, rb, sb = b.decompose()
+            if ra.dot(rb) < 0:
+                rb.negate()
+            m = Matrix.LocRotScale(la.lerp(lb, w), ra.slerp(rb, w), sa.lerp(sb, w))
+            pb.matrix_basis = m
+            if "rotation" in kinds:
+                _key_rot(pb, f, keyprev)
+            if "location" in kinds:
+                pb.keyframe_insert("location", frame=f, group=name)
+            if "scale" in kinds:
+                pb.keyframe_insert("scale", frame=f, group=name)
+    bpy.context.view_layer.update()
+    out = {"frames": [start, start + n - 1], "blend_frames": n, "bones": len(chans)}
+    if change is not None:
+        out["largest_joint_change_deg"] = change
+    return out
+
+
 def _lock(rig, f0, f1, contacts=None):
     from .footlock import foot_lock
     r = foot_lock(rig, f0, f1, contacts=contacts)
@@ -618,9 +726,11 @@ def _lock(rig, f0, f1, contacts=None):
 
 @command("animate")
 def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
-            in_place=False, foot_lock=None):
+            in_place=False, foot_lock=None, blend_frames=None):
     """Key a procedural clip on any humanoid rig starting at start_frame.
-    foot_lock: None = auto (walk/run/jump, not in_place), True/False to force."""
+    foot_lock: None = auto (walk/run/jump, not in_place), True/False to force.
+    blend_frames: crossfade from the pose the rig has at start_frame-1 when there is earlier
+    animation (None = automatic 4-18 frames from the size of the change; 0 = hard cut)."""
     if clip not in CLIPS:
         raise ValueError(f"unknown clip '{clip}'. Available: {sorted(CLIPS)}")
     fn, period, loops, _desc = CLIPS[clip]
@@ -639,8 +749,13 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
                 fwd = 0.0
             _key_basic(basic, start + i, rots, (x + carry.x, up, fwd - carry.y))
 
+    blend = None if blend_frames is None else int(blend_frames)
+    prev = _sample_pose(rig, start) if blend != 0 else None
     info = _drive(rig, author, start, end, start, in_place=in_place)
     _extend_range(end)
+    fade = _crossfade(rig, prev, start, end, blend)
+    if fade:
+        info["crossfade"] = fade
     lock = foot_lock if foot_lock is not None else (clip in FOOT_LOCK_CLIPS and not in_place)
     if lock:
         contacts = None
@@ -649,13 +764,21 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
                   for a, b in CLIP_CONTACTS[clip]]
             contacts = {"L": iv, "R": iv}
         info["foot_lock"] = _lock(rig, start, end, contacts)
+    elif fade and foot_lock is not False and not in_place:
+        # coming out of another clip into a standing one: the feet re-gather during the
+        # blend - the planted one stays put, the moving one finishes its step - and then
+        # stay where they landed for the rest of the clip (no pop when the blend ends)
+        try:
+            info["foot_lock"] = _lock(rig, start, end)
+        except ValueError:
+            pass   # rig without recognisable legs
     return {"armature": rig.name, "clip": clip, "frames": [start, end], "cycle_frames": T,
             "next_start_frame": end + 1, **info}
 
 
 @command("retarget_animation")
 def retarget_animation(source, target, bone_map=None, frame_start=None, frame_end=None,
-                       dest_start=None, in_place=False):
+                       dest_start=None, in_place=False, blend_frames=None):
     """Copy animation from one humanoid armature to another (world-space, rest-aligned)."""
     src, tgt = _target(source), _target(target)
     smap = heuristic_map(src) if src.get("c3d_rig_type") is None else semantic_map(src)
@@ -669,16 +792,22 @@ def retarget_animation(source, target, bone_map=None, frame_start=None, frame_en
     fe = int(frame_end if frame_end is not None else act.frame_range[1])
     ds = fs if dest_start is None else int(dest_start)
     carry = _carry(tgt, tmap, ds)
+    blend = None if blend_frames is None else int(blend_frames)
+    prev = _sample_pose(tgt, ds) if blend != 0 else None
     info = bake_retarget(src, tgt, smap, tmap, fs, fe, ds, in_place=in_place, carry=carry)
     info["continues_from"] = [round(carry.x, 3), round(carry.y, 3)]
     _extend_range(info["frames"][1])
+    fade = _crossfade(tgt, prev, info["frames"][0], info["frames"][1], blend)
+    if fade:
+        info["crossfade"] = fade
     info["mapped"] = {b: [smap[b], tmap[b]] for b in BASIC_BONES if b in smap and b in tmap}
     return info
 
 
 @command("import_mocap")
 def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
-                 frame_start=None, frame_end=None, keep_source=False, foot_lock=True):
+                 frame_start=None, frame_end=None, keep_source=False, foot_lock=True,
+                 blend_frames=None):
     """Import a BVH/FBX/GLB motion file and retarget it onto `armature`."""
     path = context.resolve(path, "imports")
     if not os.path.isfile(path):
@@ -701,7 +830,7 @@ def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
     try:
         info = retarget_animation(src.name, tgt.name, bone_map=bone_map, frame_start=frame_start,
                                   frame_end=frame_end, dest_start=int(start_frame),
-                                  in_place=in_place)
+                                  in_place=in_place, blend_frames=blend_frames)
     finally:
         if not keep_source:
             acts = {o.animation_data.action for o in new
