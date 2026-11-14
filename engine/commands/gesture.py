@@ -298,7 +298,7 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
         hold = float(c.get("hold_seconds", SEMANTIC[g][5])) * fps
         events = [e for e in events if abs(e["frame"] - p) > 0.6 * fps]   # cue wins
         events.append(_semantic_event(p, g, use, hold, c.get("word")))
-    busy = [(e["frame"] - 16, e["frame"] + e["keys"][-1][0] + 4) for e in events]
+    busy = [(e["frame"] + e["keys"][0][0], e["frame"] + e["keys"][-1][0]) for e in events]
 
     # ---- beats on emphasis peaks (not inside a semantic gesture)
     names, wts = zip(*[(k, v) for k, v in weights.items() if v > 0])
@@ -307,7 +307,7 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
         if w[p] < 0.5 or rng.random() > prob:
             continue
         g = rng.choices(names, wts)[0]
-        if any(a - 14 <= p <= b + 11 for a, b in busy):
+        if any(a - 4 <= p <= b + 2 for a, b in busy):     # tracks blend the neighbours
             continue
         kind = GESTURES[g][0]
         if kind == "both" and hands == "both":
