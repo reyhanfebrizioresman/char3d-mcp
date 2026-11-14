@@ -40,6 +40,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
+- Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
   `retarget_animation`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
@@ -84,6 +85,14 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 - Use `create_human` (mannequin) for stylized/blockout work or when MPFB is missing
   (`mpfb_assets` errors → tell the user to run `scripts/install_mpfb.sh`).
 
+## Hands
+`set_hand_pose(character, shape, side)` poses the fingers on any rig with finger bones
+(MPFB game_engine/mixamo/rigify, Mixamo, Rigify human); curl axes are derived from the
+hand geometry, so shapes look the same on every skeleton. Shapes: relaxed, open, palm,
+beat, point, fist, thumbs_up, peace, ok. Pair with arm poses, e.g. `apply_pose(rig,
+"point_forward")` + `set_hand_pose(rig, "point", side="right")`; `keyframe=True, frame=N`
+to animate. Mannequins from `create_human` have no fingers.
+
 ## Facial animation
 Works on `create_realistic_human` characters (face=True) and any mesh with ARKit
 blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body mesh.
@@ -125,7 +134,8 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
 - `talk_gestures(character, style)`: speaking posture + beat / open-palms / sweep / point
   gestures timed to stressed words; arms relax to the base animation in pauses. Styles:
   calm, presenter (default), energetic; `hands="right"` for one-handed talkers. Layered on
-  the arm bones only (works with any body clip underneath). Frame with `medium` or
+  the arm (and finger) bones only (works with any body clip underneath). Fingers follow
+  each gesture (relaxed → beat half-fist / open palm / index point) on rigs with fingers. Frame with `medium` or
   `medium_full` so hands are visible.
 - Recipe — talking presenter: `create_realistic_human` → `animate(rig, "idle")` →
   `lip_sync_audio(rig, "audio/line.wav")` → `set_expression(rig, "smile", 0.45, frame=1,
@@ -292,7 +302,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
-- Phoneme-level forced alignment (word-level today); finger poses for gestures
+- Phoneme-level forced alignment (word-level today)
 - Foot IK / foot-locking for walks, crossfades between clips
 - Face rig / lip sync
 

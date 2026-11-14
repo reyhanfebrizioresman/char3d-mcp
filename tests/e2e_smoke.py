@@ -207,6 +207,10 @@ async def main():
                                                frame_start=1, frame_end=60,
                                                style="energetic"))[0])
             assert tg["talking_frames"] > 10 and len(tg["arm_bones"]) == 4, tg
+            assert tg["finger_bones"] == 30, tg
+            hp = json.loads(text_of(await call("set_hand_pose", character="Vo_rig", shape="point",
+                                               side="right", frame=70, keyframe=True))[0])
+            assert hp["bones"] == 15 and hp["keyed"], hp
             print("talk_gestures (MPFB):", [g["type"] for g in tg["gestures"]])
             await call("remove_audio")
         aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])

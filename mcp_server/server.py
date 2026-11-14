@@ -576,17 +576,35 @@ async def talk_gestures(character: str, frame_start: int | None = None,
                         frame_end: int | None = None,
                         style: Literal["calm", "presenter", "energetic"] = "presenter",
                         hands: Literal["both", "right", "left"] = "both",
-                        intensity: float = 1.0, seed: int = 5) -> dict:
+                        intensity: float = 1.0, seed: int = 5, fingers: bool = True) -> dict:
     """Speech-timed hand gestures: while talking the arms move into a speaking posture
     (hands in front of the belly) and hit beats, open-palm, sweep and point gestures on
     stressed words (stroke lands on the syllable), then relax back to the base animation in
     pauses. Rhythm from timeline audio or lip-sync keys. Layered: only upper-arm/forearm
     rotations are keyed (hands follow), legs/torso/head untouched; gestures follow the
     chest. Works on create_realistic_human, Rigify and basic rigs. Run after
-    lip_sync_audio and body clips, before/after talk_motion (independent bones)."""
+    lip_sync_audio and body clips, before/after talk_motion (independent bones).
+    fingers=True also shapes the hands (relaxed, beat half-fist, open, palm, index point)
+    on rigs with finger bones (realistic humans, Mixamo/Rigify; mannequins have none)."""
     return await run("talk_gestures", character=character, frame_start=frame_start,
                      frame_end=frame_end, style=style, hands=hands, intensity=intensity,
-                     seed=seed)
+                     seed=seed, fingers=fingers)
+
+
+HandShape = Literal["relaxed", "open", "palm", "beat", "point", "fist", "thumbs_up", "peace", "ok"]
+
+
+@mcp.tool()
+async def set_hand_pose(character: str, shape: HandShape = "relaxed",
+                        side: Literal["both", "left", "right"] = "both", strength: float = 1.0,
+                        frame: int | None = None, keyframe: bool = False) -> dict:
+    """Pose the fingers: relaxed, open, palm, beat (half fist), point (index), fist,
+    thumbs_up, peace (V), ok. Works on rigs with finger bones (create_realistic_human with
+    any rig, Mixamo, Rigify human). Combine with apply_pose/set_pose for full gestures, e.g.
+    apply_pose("point_forward") + set_hand_pose("point", side="right"). keyframe=True keys it
+    at `frame`; strength < 1 for a softer version. 'left'/'right' = the character's own."""
+    return await run("set_hand_pose", character=character, shape=shape, side=side,
+                     strength=strength, frame=frame, keyframe=keyframe)
 
 
 @mcp.tool(description=(

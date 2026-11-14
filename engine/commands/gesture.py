@@ -16,6 +16,7 @@ from mathutils import Matrix, Vector
 
 from . import command
 from .anim import _key_rot, semantic_map
+from .fingers import HandRig, blend_shapes
 from .talk import _audio_activity, _basemesh, _peaks, _phrases, _rig_of, _smooth, _viseme_activity
 
 # right-hand targets (x is mirrored for the left hand)
@@ -28,6 +29,10 @@ GESTURES = {
     "sweep": ("one", (-0.06, -0.17, -0.19), (-0.27, -0.12, -0.15)),
     "point": ("one", (-0.10, -0.18, -0.13), (-0.11, -0.33, -0.07)),
 }
+# finger shapes: (preparation, stroke) per gesture; the speaking posture uses "relaxed"
+HAND_SHAPES = {"beat": ("relaxed", "beat"), "beat_both": ("relaxed", "beat"),
+               "open_palms": ("relaxed", "palm"), "sweep": ("relaxed", "open"),
+               "point": ("relaxed", "point")}
 STYLES = {  # (gesture probability per emphasis, amplitude, weights per gesture)
     "calm": (0.55, 0.65, {"beat": 5, "beat_both": 1, "open_palms": 2, "sweep": 1, "point": 0}),
     "presenter": (0.85, 1.0, {"beat": 4, "beat_both": 2, "open_palms": 3, "sweep": 2, "point": 1}),
@@ -70,7 +75,7 @@ def _aim(rig, pb, target_dir, weight):
 
 @command("talk_gestures")
 def talk_gestures(character, frame_start=None, frame_end=None, style="presenter", hands="both",
-                  intensity=1.0, seed=5):
+                  intensity=1.0, seed=5, fingers=True):
     """Add speech-timed arm gestures (beats, open palms, sweeps, points) over a range."""
     if style not in STYLES:
         raise ValueError(f"style must be one of {list(STYLES)}")
@@ -160,6 +165,27 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
                 out[s] = _blend(sel[frm], sel[to], t)
         return out
 
+    def shapes_at(i):
+        """Per hand: finger shape (blended dict) following the gesture phases."""
+        out = {"L": "relaxed", "R": "relaxed"}
+        for p, g, use, _strength in events:
+            prep, stroke = HAND_SHAPES[g]
+            d = i - p
+            if -11 <= d < -6:
+                t, a, b = (d + 11) / 5, "relaxed", prep
+            elif -6 <= d < 0:
+                t, a, b = (d + 6) / 6, prep, stroke
+            elif 0 <= d < 3:
+                t, a, b = 1.0, stroke, stroke
+            elif 3 <= d < 14:
+                t, a, b = (d - 3) / 11, stroke, "relaxed"
+            else:
+                continue
+            t = 0.5 - 0.5 * math.cos(math.pi * t)
+            for side in use:
+                out[side] = blend_shapes(a, b, t)
+        return out
+
     smap = semantic_map(rig)
     chain = {s: (smap.get(f"upper_arm.{s}"), smap.get(f"forearm.{s}")) for s in ("L", "R")}
     if not all(all(c) for c in chain.values()):
@@ -176,18 +202,24 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
     lm_low = min(b.head_local.z for b in bones)
     H = max(lm_top - lm_low, 0.5) * twm.to_scale().z * 1.08   # bones stop a bit below head top
     keyed = [b for c in chain.values() for b in c]
+    hand_rig = HandRig(rig) if fingers else None
+    finger_bones = hand_rig.bones if hand_rig else []
 
     base = {}
     for i in range(n):                       # pass 1: untouched base pose of the arm bones
         sc.frame_set(f0 + i)
-        base[f0 + i] = {b: rig.pose.bones[b].matrix_basis.copy() for b in keyed}
+        base[f0 + i] = {b: rig.pose.bones[b].matrix_basis.copy() for b in keyed + finger_bones}
     prev = {}
     for i in range(n):
         f = f0 + i
         sc.frame_set(f)
-        for b in keyed:
+        for b in keyed + finger_bones:
             rig.pose.bones[b].matrix_basis = base[f][b]
         bpy.context.view_layer.update()
+        if w[i] > 1e-3 and hand_rig:
+            shp = shapes_at(i)
+            for side in hand_rig.fingers:
+                hand_rig.apply(side, shp[side], float(w[i]), base[f])
         if w[i] > 1e-3:
             chest = twm @ rig.pose.bones[chest_b].matrix
             c_rot = chest.to_quaternion() @ (twm @ bones[chest_b].matrix_local).to_quaternion().inverted()
@@ -211,9 +243,10 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
                 E_now = (twm @ fo_pb.matrix).translation
                 _aim(rig, fo_pb, Hc - E_now, float(w[i]))
                 bpy.context.view_layer.update()
-        for b in keyed:
+        for b in keyed + finger_bones:
             _key_rot(rig.pose.bones[b], f, prev)
     sc.frame_set(f0)
     return {"character": rig.name, "frames": [f0, f1], "driven_by": source, "style": style,
             "gestures": [{"frame": f0 + p, "type": g, "hands": list(u)} for p, g, u, _s in events],
-            "talking_frames": int((w > 0.5).sum()), "arm_bones": keyed}
+            "talking_frames": int((w > 0.5).sum()), "arm_bones": keyed,
+            "finger_bones": len(finger_bones)}
