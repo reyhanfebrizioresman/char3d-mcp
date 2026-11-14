@@ -165,7 +165,8 @@ async def create_human(name: str = "Human", height: float = 1.75, style: Style =
                        gender: Gender = "neutral", build: float = 1.0, arm_angle: float = 35.0,
                        skin_color: list[float] = [0.80, 0.62, 0.50],
                        location: list[float] = [0, 0, 0]) -> dict:
-    """Create a procedural humanoid body (smooth mannequin), standing on Z=0, facing -Y.
+    """Create a procedural humanoid body (smooth stylized MANNEQUIN, no face/clothes),
+    standing on Z=0, facing -Y. For realistic people use create_realistic_human.
     style sets proportions in head units: realistic 7.5, heroic 8, stylized 6, cartoon 4.5,
     chibi 3. build scales thickness (0.7 slim .. 1.4 heavy). arm_angle: 0 = T-pose,
     35 = A-pose (best for rigging). Joint landmarks are stored on the mesh so
@@ -405,6 +406,41 @@ async def render_status(job_id: str | None = None) -> dict:
 async def cancel_render(job_id: str) -> dict:
     """Stop a running render job."""
     return await run("cancel_render", job_id=job_id)
+
+
+# --- realistic humans (MPFB) --------------------------------------------------------
+Hair = Literal["afro01", "bob01", "bob02", "braid01", "long01", "ponytail01", "short01",
+               "short02", "short03", "short04"]
+MpfbRig = Literal["game_engine", "default", "default_no_toes", "mixamo", "cmu_mb", "none"]
+
+
+@mcp.tool()
+async def mpfb_assets() -> dict:
+    """Realistic-human assets available for create_realistic_human: skins, hair, eyebrows,
+    eyelashes, eyes, clothes (incl. shoes, hats) and MPFB rigs."""
+    return await run("mpfb_assets")
+
+
+@mcp.tool()
+async def create_realistic_human(name: str = "Person", gender: float = 0.5, age: float = 25,
+                                 muscle: float = 0.5, weight: float = 0.5, height: float = 0.5,
+                                 proportions: float = 0.5,
+                                 race: dict[str, float] | None = None, skin: str = "auto",
+                                 hair: Hair | None = None, eyebrows: str = "eyebrow001",
+                                 eyelashes: str = "eyelashes01", eyes: str = "high-poly",
+                                 clothes: list[str] | None = None, rig: MpfbRig = "game_engine",
+                                 subdiv: int = 0, location: list[float] = [0, 0, 0]) -> dict:
+    """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
+    eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
+    gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
+    0..1 (0.5 average); race e.g. {"asian": 1} or {"african": 0.5, "caucasian": 0.5}.
+    skin "auto" picks age/gender/ethnicity-matched skin. clothes: names from mpfb_assets,
+    e.g. ["male_casualsuit01", "shoes01"]. The rig works with apply_pose, animate,
+    import_mocap and camera_shot (pass the armature name `<name>_rig` as subject)."""
+    return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
+                     weight=weight, height=height, proportions=proportions, race=race,
+                     skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
+                     clothes=clothes, rig=rig, subdiv=subdiv, location=location)
 
 
 # --- AI providers (phase 6) ----------------------------------------------------

@@ -34,6 +34,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `transform_object`, `delete_objects`
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
 - Look: `render_preview`, `render_views`
+- Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
@@ -52,6 +53,30 @@ Keep previews ≤ 512 px unless the user asks for more.
 details yet). Proportions by `style`: realistic 7.5 heads, heroic 8, stylized 6,
 cartoon 4.5, chibi 3. `build` 0.7–1.4 = slim–heavy. Keep `arm_angle` 35 (A-pose) when
 the character will be rigged.
+
+## Realistic humans (MPFB / MakeHuman, CC0)
+`create_realistic_human(name, gender, age, race, muscle, weight, height, hair, clothes)`
+builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes) that is
+**already rigged** with MPFB's hand-made weights — do NOT run `auto_rig_humanoid` on it.
+- gender 0 = female … 1 = male; age in years; muscle/weight/height/proportions 0..1;
+  race weights like `{"asian": 1}`. `skin="auto"` matches age/gender/ethnicity.
+- The armature is `<name>_rig` (rig "game_engine" by default: Unreal-style bones
+  `pelvis, spine_01, upperarm_l, calf_l…`; also "mixamo", "default", "cmu_mb").
+  `apply_pose`, `animate`, `import_mocap`, `retarget_animation` all work on it.
+- Use the **armature** as the subject for framing/lighting:
+  `camera_shot(subject=["Maya_rig"])`, `set_lighting(subject=["Maya_rig"])`,
+  `render_preview(objects=["Maya_rig"])` (frames body + hair + clothes together).
+- Hair: afro01, bob01 (black), bob02 (platinum blonde), braid01 (black), long01
+  (dark auburn), ponytail01 (brown), short01/short04 (black), short02/short03 (brown).
+  Clothes: male_casualsuit01-06, male_elegantsuit01, male_worksuit01,
+  female_casualsuit01-02, female_elegantsuit01, female_sportsuit01, shoes01-06,
+  fedora01, fedora_cocked. Full list: `mpfb_assets`.
+- ~1.5–3.5 s to build; ~19k vertices + clothes. Use Eevee to see skin/clothes; workbench
+  shows untextured grey. glTF export with textures is ~20 MB per character.
+- MPFB weights use up to ~7 influences per vertex; game engines limited to 4 may need
+  a weight-limit step on import.
+- Use `create_human` (mannequin) for stylized/blockout work or when MPFB is missing
+  (`mpfb_assets` errors → tell the user to run `scripts/install_mpfb.sh`).
 
 ## Rigging
 `auto_rig_humanoid(mesh, rig_type)`:
@@ -201,13 +226,14 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 `new_scene` → `import_model(path)` → `scene_info` → `render_views`.
 
 ## Known limitations
-- Procedural bodies are mannequins: no fingers, face, clothes or hair.
+- `create_human` bodies are mannequins: no fingers, face, clothes or hair (use
+  `create_realistic_human` for those).
 - Slight creasing around neck/shoulders when the head or arms move a lot.
 - Landmark estimation assumes a standard humanoid; creatures/quadrupeds are not
   supported yet.
 
 ## Roadmap (tools not available yet — say so instead of improvising)
-- MPFB realistic humans (`create_human(source="mpfb")`)
+- MPFB: Rigify control rigs, facial expressions, more asset packs (hair/clothes)
 - Foot IK / foot-locking for walks, crossfades between clips
 - Face rig / lip sync
 

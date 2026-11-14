@@ -104,6 +104,25 @@ async def main():
         assert vid["status"] == "done" and vid["bytes"] > 1000, vid
         print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes")
 
+        # realistic humans (skipped when MPFB is not installed)
+        mp = await s.call_tool("mpfb_assets", {})
+        if mp.isError:
+            print("mpfb: not installed, skipped")
+        else:
+            await call("new_scene")
+            h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
+                                              age=30, hair="ponytail01",
+                                              clothes=["female_sportsuit01", "shoes03"]))[0])
+            assert h["armature"] == "Rina_rig" and h["mapped_bones"] >= 20, h
+            vr = json.loads(text_of(await call("validate_rig", mesh="Rina"))[0])
+            assert vr["unweighted_vertices"] == 0, vr
+            an = json.loads(text_of(await call("animate", armature="Rina_rig", clip="wave",
+                                               cycles=1))[0])
+            assert an["via"] == "proxy-retarget", an
+            img = await call("render_preview", objects=["Rina_rig"], width=160, height=160)
+            assert "image" in [c.type for c in img.content]
+            print("mpfb:", h["skin"], h["height_m"], "m,", len(h["parts"]), "parts, wave OK")
+
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text
         await call("engine_shutdown")

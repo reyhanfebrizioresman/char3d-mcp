@@ -9,7 +9,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 ```
 
 ## Status
-✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi) · ✅ Fase 4 (kamera, cahaya, video) · ✅ Fase 6 (integrasi AI, diuji offline)
+✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi) · ✅ Fase 4 (kamera, cahaya, video) · ✅ Fase 6 (integrasi AI: Hugging Face gratis + fal.ai) · ✅ Manusia realistis (MPFB)
 
 | Alat | Fungsi |
 |---|---|
@@ -22,6 +22,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `save_project`, `open_project` | File .blend |
 | `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
+| `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, mata, alis, rambut, baju; sudah di-rig dengan bobot buatan tangan |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
 | `validate_rig`, `list_bones`, `set_pose` | Cek kualitas rig, daftar tulang, pose dan keyframe |
@@ -79,6 +80,17 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 ```json
 { "mcpServers": { "char3d": { "command": "/PATH/KE/char3d/run_mcp.sh" } } }
 ```
+
+## Manusia realistis (MPFB)
+`create_realistic_human` memakai [MPFB](https://extensions.blender.org/add-ons/mpfb/) dan
+paket aset sistem MakeHuman (CC0). Keduanya dipasang di Blender portable milik char3d,
+jadi `~/.config/blender` tidak tersentuh. Instalasi (±327 MB, checksum diverifikasi):
+```bash
+scripts/install_mpfb.sh
+```
+Isinya: 23 kulit, 10 rambut, 12 alis, 4 bulu mata, 2 mata, dan 20 baju/sepatu/topi.
+Lisensi: kode MPFB GPL-3.0 (tidak disalin ke repo ini, hanya dipanggil saat runtime);
+aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersial.
 
 ## AI providers
 Alat `ai_*` bisa memakai dua provider (parameter `provider`):

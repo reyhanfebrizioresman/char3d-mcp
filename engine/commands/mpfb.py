@@ -1,0 +1,172 @@
+"""Realistic humans through MPFB (MakeHuman for Blender, CC0 assets).
+
+MPFB must be installed as a Blender extension (repo "user_default") and the MakeHuman
+system asset pack extracted into its user data folder (see README "MPFB").
+Characters are built from an MPFB preset dict via MPFB's own deserializer, rigged with an
+MPFB rig that ships hand-made skin weights, then tagged so char3d's pose/animation/
+mocap tools drive it through the usual proxy retarget.
+"""
+import json
+import os
+
+import addon_utils
+import bpy
+
+from . import command
+from .scene import _describe
+
+MODULE = "bl_ext.user_default.mpfb"
+RIGS = ("game_engine", "default", "default_no_toes", "mixamo", "cmu_mb")
+BODYPARTS = ("eyes", "eyebrows", "eyelashes", "hair", "teeth", "tongue")
+
+
+def _services():
+    if not any(m.__name__ == MODULE for m in addon_utils.modules()):
+        raise RuntimeError("MPFB is not installed in this Blender (README: 'MPFB').")
+    addon_utils.enable(MODULE, default_set=True)
+    from bl_ext.user_default.mpfb.services import AssetService, HumanService, LocationService
+    return AssetService, HumanService, LocationService
+
+
+def _data_dir():
+    _a, _h, loc = _services()
+    return loc.get_user_data()
+
+
+def _catalog():
+    """{kind: {asset_name: absolute_file}} from the extracted asset pack."""
+    root = _data_dir()
+    out = {}
+    for kind in ("skins",) + BODYPARTS + ("clothes", "proxymeshes"):
+        d = os.path.join(root, kind)
+        if not os.path.isdir(d):
+            out[kind] = {}
+            continue
+        ext = ".mhmat" if kind == "skins" else ".mhclo"
+        items = {}
+        for name in sorted(os.listdir(d)):
+            sub = os.path.join(d, name)
+            if not os.path.isdir(sub):
+                continue
+            files = [f for f in os.listdir(sub) if f.endswith(ext)]
+            if files:
+                pick = f"{name}{ext}" if f"{name}{ext}" in files else files[0]
+                items[name] = os.path.join(sub, pick)
+        out[kind] = items
+    return out
+
+
+def _age_value(years):
+    """MakeHuman age macro: 0 -> 1 y, 0.1875 -> 11 y, 0.5 -> 25 y, 1 -> 90 y."""
+    y = max(1.0, min(90.0, float(years)))
+    if y <= 11:
+        return (y - 1) / 10 * 0.1875
+    if y <= 25:
+        return 0.1875 + (y - 11) / 14 * 0.3125
+    return 0.5 + (y - 25) / 65 * 0.5
+
+
+def _auto_skin(skins, gender, years, race):
+    sex = "male" if gender >= 0.5 else "female"
+    age = "young" if years < 35 else ("middleage" if years < 60 else "old")
+    eth = max(race, key=race.get)
+    for cand in (f"{age}_{eth}_{sex}", f"young_{eth}_{sex}", f"young_caucasian_{sex}"):
+        if cand in skins:
+            return cand
+    return next(iter(skins), None)
+
+
+def _pick(catalog, kind, name):
+    if not name:
+        return None
+    key = str(name).lower().replace(" ", "_").replace("-", "_")
+    for k in catalog[kind]:
+        if k.replace("-", "_") == key:
+            return catalog[kind][k]
+    raise ValueError(f"unknown {kind} '{name}'. Available: {sorted(catalog[kind])}")
+
+
+@command("mpfb_assets")
+def mpfb_assets():
+    cat = _catalog()
+    return {"installed": True, "data_dir": _data_dir(), "rigs": list(RIGS),
+            "assets": {k: sorted(v) for k, v in cat.items()}}
+
+
+@command("create_realistic_human")
+def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight=0.5,
+                           height=0.5, proportions=0.5, race=None, skin="auto",
+                           hair=None, eyebrows="eyebrow001", eyelashes="eyelashes01",
+                           eyes="high-poly", clothes=None, rig="game_engine",
+                           subdiv=0, location=(0, 0, 0)):
+    """Build a realistic human with MPFB. gender 0=female..1=male; age in years;
+    muscle/weight/height/proportions 0..1 (0.5 = average); race weights dict."""
+    AssetService, HumanService, _loc = _services()
+    if rig not in RIGS + ("none",):
+        raise ValueError(f"rig must be one of {list(RIGS) + ['none']}")
+    cat = _catalog()
+    if not cat["skins"]:
+        raise RuntimeError("MakeHuman system assets are not installed (README: 'MPFB').")
+    race = race or {"caucasian": 1 / 3, "african": 1 / 3, "asian": 1 / 3}
+    tot = sum(race.values()) or 1.0
+    race = {k: float(race.get(k, 0)) / tot for k in ("african", "asian", "caucasian")}
+    skin_name = _auto_skin(cat["skins"], gender, age, race) if skin == "auto" else skin
+
+    info = {
+        "phenotype": {"gender": float(gender), "age": _age_value(age), "muscle": float(muscle),
+                      "weight": float(weight), "height": float(height),
+                      "proportions": float(proportions), "cupsize": 0.5, "firmness": 0.5,
+                      "race": race},
+        "rig": "" if rig == "none" else rig,
+        "skin_mhmat": _pick(cat, "skins", skin_name) if skin_name else "",
+        "skin_material_type": "ENHANCED_SSS" if skin_name else "NONE",
+        "skin_material_settings": {},
+        "eyes_material_type": "MAKESKIN", "eyes_material_settings": {},
+        "clothes": [_pick(cat, "clothes", c) for c in (clothes or [])],
+        "proxy": "", "targets": [], "makeup": [], "expressions": [],
+        "color_adjustments": {}, "alternative_materials": {},
+    }
+    for part, value in (("eyes", eyes), ("eyebrows", eyebrows), ("eyelashes", eyelashes),
+                        ("hair", hair), ("teeth", None), ("tongue", None)):
+        info[part] = _pick(cat, part, value) if value else ""
+
+    settings = HumanService.get_default_deserialization_settings()
+    settings.update({"subdiv_levels": int(subdiv), "load_clothes": True,
+                     "material_instances": "NEVER"})
+    vl = bpy.context.view_layer
+    if vl.objects.active and vl.objects.active.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    before = set(bpy.data.objects)
+    basemesh = HumanService.deserialize_from_dict(info, settings)
+    new = [o for o in bpy.data.objects if o not in before]
+
+    root = basemesh.parent if basemesh.parent and basemesh.parent.type == "ARMATURE" else basemesh
+    root.location = tuple(location)
+    old_prefix = basemesh.name + "."
+    for o in new:   # MPFB names parts "<basemesh>.<asset>": make them "<name>.<asset>"
+        if o is not basemesh and o.name.startswith(old_prefix):
+            o.name = f"{name}.{o.name[len(old_prefix):]}"
+    basemesh.name = name
+    basemesh["c3d_kind"] = "humanoid"
+    basemesh["c3d_source"] = "mpfb"
+    result = _describe(basemesh)
+    if root.type == "ARMATURE":
+        root.name = f"{name}_rig"
+        root.data.name = f"{name}_rig"
+        root["c3d_rig_type"] = f"mpfb_{rig}"
+        bpy.context.view_layer.update()
+        from .anim import _rig_landmarks, heuristic_map
+        smap = heuristic_map(root)
+        lm = _rig_landmarks(root, smap)
+        root["c3d_landmarks"] = json.dumps({k: list(v) for k, v in lm.items()})
+        basemesh["c3d_rig"] = root.name
+        result["armature"] = root.name
+        result["mapped_bones"] = len(smap)
+    from .util import scene_bounds
+    lo, hi = scene_bounds([o for o in new if o.type == "MESH"])
+    result.update({
+        "skin": skin_name, "hair": hair, "clothes": clothes or [], "rig": rig,
+        "height_m": round(hi.z - lo.z, 3) if lo else None,
+        "parts": sorted(o.name for o in new if o.type == "MESH" and o is not basemesh),
+    })
+    return result
