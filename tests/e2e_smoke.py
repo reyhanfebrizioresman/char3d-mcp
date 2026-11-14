@@ -14,6 +14,40 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
 
 
+def _synthetic_speech(path, rate=22050):
+    """Deterministic speech-like test signal: voiced vowels, a hiss and pauses."""
+    import math
+    import struct
+    import wave
+    import random
+    rnd = random.Random(1)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    formants = {"a": (750, 1200), "e": (500, 1900), "o": (450, 850), "i": (300, 2300)}
+    plan = ["a", "e", None, "o", "s", "i", None, "a"]
+    out = []
+    for part in plan:
+        n = int(rate * 0.35)
+        if part is None:
+            out += [0.0] * int(rate * 0.2)
+            continue
+        if part == "s":
+            out += [rnd.uniform(-0.25, 0.25) for _ in range(n)]
+            continue
+        f1, f2 = formants[part]
+        for k in range(n):
+            t = k / rate
+            env = math.sin(math.pi * k / n)
+            src = sum(math.sin(2 * math.pi * 120 * h * t) / h for h in range(1, 30))
+            out.append(0.3 * env * (0.6 * math.sin(2 * math.pi * f1 * t) + 0.4 * math.sin(2 * math.pi * f2 * t)
+                                    + 0.15 * src / 3))
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"".join(struct.pack("<h", int(max(-1, min(1, x)) * 32000)) for x in out))
+    return path
+
+
 def text_of(res):
     return [c.text for c in res.content if c.type == "text"]
 
@@ -143,6 +177,32 @@ async def main():
             assert an["via"] == "proxy-retarget", an
             print("mpfb rigify+face:", vr["bones_total"], "bones,", len(ex["meshes"]),
                   "face meshes, lip sync", ls["mouth_shapes"], "shapes")
+
+        # audio: synthetic "speech" (vowels via formant filters, hiss, pauses) -> timeline,
+        # lip sync from audio/text, and a draft video that must carry an AAC track
+        wav = _synthetic_speech(os.path.join(ROOT, "output", "imports", "audio", "e2e_synth.wav"))
+        await call("new_scene")
+        await call("add_primitive", kind="monkey", name="Mic")
+        mp = await s.call_tool("mpfb_assets", {})
+        if not mp.isError:
+            await call("create_realistic_human", name="Vo", gender=0.0, age=30, location=[1, 0, 0])
+            for timing in ("audio", "text"):
+                la = json.loads(text_of(await call(
+                    "lip_sync_audio", character="Vo_rig", audio=wav, timing=timing,
+                    text="aa ee oo ss aa", add_sound=False))[0])
+                assert la["mode"] == timing and la["mouth_shapes"] >= 4, la
+            print("audio lip sync: audio/text modes OK")
+        aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
+        assert aa["seconds"] > 2, aa
+        await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
+        v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
+                                          wait=True))[0])
+        assert v["status"] == "done" and v["has_audio"], v
+        import av
+        with av.open(v["path"]) as c:
+            kinds = sorted(st.type for st in c.streams)
+        assert kinds == ["audio", "video"], kinds
+        print("audio: strip + AAC video OK")
 
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text

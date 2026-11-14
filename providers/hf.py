@@ -69,8 +69,30 @@ RECIPES = {
                                 duration_ui=min(float(i["duration"]), 8.0), randomize_seed=True)),
     },
 }
+TTS_LANGS = ["ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms",
+             "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh"]
+
+
+def _chatterbox_prepare(client, inputs):
+    """Use the Space's built-in reference voice for the language unless one is given."""
+    if not inputs.get("voice_reference"):
+        ref, _txt = client.predict(lang=inputs["language"], current_ref=None, current_text="",
+                                   api_name="/on_language_change")
+        inputs["voice_reference"] = ref
+
+
+RECIPES["text_to_speech"] = {
+    "chatterbox": dict(
+        space="ResembleAI/Chatterbox-Multilingual-TTS", api="/generate_tts_audio", output=0,
+        prepare=_chatterbox_prepare,
+        args=lambda i: dict(text_input=i["text"], language_id=i["language"],
+                            audio_prompt_path_input=_file(i["voice_reference"]),
+                            exaggeration_input=float(i.get("exaggeration", 0.5)),
+                            temperature_input=0.8, seed_num_input=0, cfgw_input=0.5)),
+}
+
 DEFAULTS = {"text_to_image": "flux-schnell", "image_to_3d": "hunyuan3d",
-            "image_to_video": "ltx", "text_to_video": "ltx"}
+            "image_to_video": "ltx", "text_to_video": "ltx", "text_to_speech": "chatterbox"}
 
 
 def recipe_for(task, name=None):
@@ -123,6 +145,8 @@ class HFClient:
         """Run a recipe and copy its output file into dest_dir. Returns (path, label)."""
         name, r = recipe_for(task, recipe)
         client = self._client(r["space"])
+        if r.get("prepare"):
+            r["prepare"](client, inputs)
         for pre in r.get("before", []):
             try:
                 client.predict(api_name=pre)

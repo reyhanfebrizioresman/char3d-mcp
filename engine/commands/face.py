@@ -89,6 +89,41 @@ VOWEL_VISEMES = {"aa_02", "ey_eh_uh_04", "y_iy_ih_ix_06", "ow_08", "w_uw_07", "a
                  "oy_10"}
 
 
+def text_tokens(text):
+    """Text -> list of viseme names (and "sil_00" for pauses), digraphs first."""
+    tokens = []
+    s = text.lower()
+    i = 0
+    while i < len(s):
+        two = s[i:i + 2]
+        if two in DIGRAPHS:
+            tokens.append(DIGRAPHS[two])
+            i += 2
+            continue
+        ch = s[i]
+        if ch in LETTERS:
+            tokens.append(LETTERS[ch])
+        elif ch in ".!?;:":
+            tokens += ["sil_00"] * 4
+        elif ch in ",-":
+            tokens += ["sil_00"] * 2
+        elif ch.isspace():
+            tokens.append("sil_00")
+        i += 1
+    return tokens
+
+
+def key_viseme(meshes, vis, t0, t1, weight):
+    """Ramp a viseme in at t0 and out after t1 (frames, float)."""
+    if vis == "sil_00":
+        return
+    _set(meshes, {vis: 0.0}, int(round(t0)) - 1)
+    _set(meshes, {vis: weight}, int(round(t0)))
+    if t1 - t0 > 2:
+        _set(meshes, {vis: weight}, int(round(t1)) - 1)
+    _set(meshes, {vis: 0.0}, int(round(t1)) + 1)
+
+
 # ----------------------------------------------------------------------------- targets
 def _basemesh(name):
     obj = obj_or_raise(name)
@@ -208,25 +243,7 @@ def lip_sync(character, text, start_frame=1, chars_per_second=14.0, strength=0.9
     meshes = _face_meshes(base)
     fps = bpy.context.scene.render.fps
     step = fps / float(chars_per_second)
-    tokens = []
-    s = text.lower()
-    i = 0
-    while i < len(s):
-        two = s[i:i + 2]
-        if two in DIGRAPHS:
-            tokens.append(DIGRAPHS[two])
-            i += 2
-            continue
-        ch = s[i]
-        if ch in LETTERS:
-            tokens.append(LETTERS[ch])
-        elif ch in ".!?;:":
-            tokens += ["sil_00"] * 4
-        elif ch in ",-":
-            tokens += ["sil_00"] * 2
-        elif ch.isspace():
-            tokens.append("sil_00")
-        i += 1
+    tokens = text_tokens(text)
     # merge consecutive duplicates so held sounds don't stutter
     merged = []
     for t in tokens:
@@ -241,14 +258,8 @@ def lip_sync(character, text, start_frame=1, chars_per_second=14.0, strength=0.9
     for vis, count in merged:
         t0 = t
         t1 = t + step * count
-        if vis != "sil_00":
-            w = strength if vis in VOWEL_VISEMES else strength * 0.75
-            # each mouth shape ramps in/out within ~1 frame of its own letters
-            _set(meshes, {vis: 0.0}, int(round(t0)) - 1)
-            _set(meshes, {vis: w}, int(round(t0)))
-            if t1 - t0 > 2:
-                _set(meshes, {vis: w}, int(round(t1)) - 1)
-            _set(meshes, {vis: 0.0}, int(round(t1)) + 1)
+        w = strength if vis in VOWEL_VISEMES else strength * 0.75
+        key_viseme(meshes, vis, t0, t1, w)   # ramps within ~1 frame of its own letters
         t = t1
     end = int(round(t)) + 2
     _set(meshes, zero, end)

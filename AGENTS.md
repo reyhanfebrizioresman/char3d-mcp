@@ -36,6 +36,8 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Look: `render_preview`, `render_views`
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
 - Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
+- Audio & voice: `add_audio`, `list_audio`, `remove_audio`, `transcribe_audio`,
+  `lip_sync_audio`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
@@ -98,6 +100,24 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
 - Check faces with `camera_shot(shot="close_up" or "extreme_close_up")` +
   `render_preview(camera="scene", engine_name="eevee")` — workbench can't show skin.
 - Expressions and lip sync are shape keys: they export to glTF as morph targets.
+
+## Voice & audio lip sync
+- `lip_sync_audio(character, audio, start_frame)` — mouth follows a real recording and the
+  audio is placed on the timeline (render_video then outputs AAC sound). Timing modes:
+  `whisper` (local speech recognition, exact word times, any language — default when
+  installed), `text` (spread a given transcript over the voiced parts), `audio` (shapes
+  guessed from the sound alone, speaker-adaptive). Result includes `transcript`.
+- Audio paths are relative to `imports/` (e.g. `"audio/line1.wav"`) or absolute;
+  wav/mp3/flac/ogg/m4a all work.
+- No recording? `ai_text_to_speech(text, language)` makes one (free Chatterbox Space;
+  23 languages, **no Indonesian — use "ms"**; anonymous daily GPU quota is small, an
+  HF_TOKEN raises it). `voice_reference` imitates a voice: only the user's own voice or
+  one they have permission to use. Then `lip_sync_audio` with the job's `audio` path.
+- Always pair speech with `auto_blink` and a light `set_expression` (smile 0.4–0.5), and
+  frame with `close_up`/`medium` so the mouth is visible.
+- `transcribe_audio` gives text + word times without animating (e.g. for subtitles).
+- Whisper model: `tiny` by default (~75 MB, downloaded once). Set
+  `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
 
 ## Rigging
 `auto_rig_humanoid(mesh, rig_type)`:
@@ -254,8 +274,8 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   supported yet.
 
 ## Roadmap (tools not available yet — say so instead of improvising)
-- MPFB: more asset packs (hair/clothes); audio-driven lip sync (phoneme timing from
-  speech instead of text)
+- MPFB: more asset packs (hair/clothes)
+- Phoneme-level forced alignment (word-level today), head/eye motion driven by speech
 - Foot IK / foot-locking for walks, crossfades between clips
 - Face rig / lip sync
 

@@ -9,6 +9,7 @@ from typing import Literal
 import anyio
 from mcp.server.fastmcp import FastMCP, Image
 
+from providers import speech
 from providers.jobs import JobManager
 
 from .blender_client import ROOT, BlenderClient
@@ -492,6 +493,80 @@ async def auto_blink(character: str, frame_start: int | None = None, frame_end: 
     """Add natural blinks over a frame range (defaults to the scene range)."""
     return await run("auto_blink", character=character, frame_start=frame_start,
                      frame_end=frame_end, interval_seconds=interval_seconds)
+
+
+# --- audio & audio-driven lip sync ---------------------------------------------------
+def _workspace_path(path: str, sub: str = "imports") -> str:
+    p = os.path.expanduser(path)
+    return p if os.path.isabs(p) else os.path.join(engine.workspace, sub, p)
+
+
+@mcp.tool()
+async def add_audio(path: str, start_frame: int = 1, volume: float = 1.0) -> dict:
+    """Put a sound file (wav/mp3/flac/ogg/m4a) on the timeline; render_video then includes
+    it as AAC audio. Relative paths are inside imports/."""
+    return await run("add_audio", path=path, start_frame=start_frame, volume=volume)
+
+
+@mcp.tool()
+async def list_audio() -> dict:
+    """Sound strips on the timeline."""
+    return await run("list_audio")
+
+
+@mcp.tool()
+async def remove_audio(name: str | None = None) -> dict:
+    """Remove one sound strip by name, or all of them."""
+    return await run("remove_audio", name=name)
+
+
+@mcp.tool()
+async def transcribe_audio(audio: str, language: str | None = None) -> dict:
+    """Speech-to-text with word timestamps, fully local (Whisper). language e.g. "en", "id";
+    None = auto-detect. First use downloads the model once (~75 MB)."""
+    path = _workspace_path(audio)
+    return await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+
+
+@mcp.tool()
+async def lip_sync_audio(character: str, audio: str, start_frame: int = 1,
+                         text: str | None = None,
+                         timing: Literal["auto", "whisper", "text", "audio"] = "auto",
+                         language: str | None = None, strength: float = 0.9,
+                         add_sound: bool = True, volume: float = 1.0,
+                         expression: Expression | None = None) -> dict:
+    """Lip-sync a character's mouth to a voice recording and (add_sound) put the audio on the
+    timeline so render_video has sound. timing: "whisper" = local speech recognition gives
+    exact word times (best; any language); "text" = spread the given `text` over the voiced
+    parts; "audio" = guess mouth shapes from the sound alone; "auto" = whisper if available,
+    else text if given, else audio. Combine with set_expression/auto_blink for life."""
+    path = _workspace_path(audio)
+    words, transcript = None, None
+    use_whisper = timing == "whisper" or (timing == "auto" and speech.available())
+    if use_whisper:
+        tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+        words, transcript = tr["words"], tr["text"]
+    r = await run("lip_sync_audio", character=character, audio=path, start_frame=start_frame,
+                  words=words, text=None if timing == "audio" or words else text,
+                  strength=strength, add_sound=add_sound, expression=expression, volume=volume)
+    if transcript is not None:
+        r["mode"] = "whisper"
+        r["transcript"] = transcript
+    return r
+
+
+@mcp.tool(description=(
+    "Generate a voice recording from text (Chatterbox Multilingual on a FREE public Hugging "
+    "Face Space; queue/quota limits apply). language: ar da de el en es fi fr he hi it ja ko ms "
+    "nl no pl pt ru sv sw tr zh (no Indonesian - 'ms' Malay is closest). voice_reference: "
+    "optional short wav of a voice to imitate - ONLY the user's own voice or one they have "
+    "permission to use. exaggeration 0.25-1.0 = expressiveness. Saves to imports/audio/; "
+    "returns job_id - poll ai_job_status, then lip_sync_audio with the result's audio path. "
+    "Sends the text (and reference voice) to a third-party service: only call it when the "
+    "user asked for generated speech."))
+async def ai_text_to_speech(text: str, language: str = "en", voice_reference: str | None = None,
+                            exaggeration: float = 0.5, output: str | None = None) -> dict:
+    return ai.text_to_speech(text, language, voice_reference, exaggeration, output)
 
 
 # --- AI providers (phase 6) ----------------------------------------------------

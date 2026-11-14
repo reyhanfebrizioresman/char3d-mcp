@@ -25,6 +25,9 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, mata, alis, gigi, rambut, baju; rig `game_engine` atau `rigify` (lengkap dengan kontrol wajah) |
 | `set_expression`, `list_expressions` | 24 ekspresi wajah (senyum, tawa, sedih, marah, kaget, kedip, dll.) + 52 unit ARKit |
 | `lip_sync`, `auto_blink` | Gerak mulut dari teks dan kedipan otomatis |
+| `lip_sync_audio`, `transcribe_audio` | Gerak mulut dari rekaman suara (Whisper lokal: waktu tiap kata), audio ikut masuk ke video |
+| `add_audio`, `list_audio`, `remove_audio` | Musik/suara di timeline; `render_video` otomatis bersuara (AAC) |
+| `ai_text_to_speech` | Teks → suara (gratis, Chatterbox di Hugging Face, 23 bahasa) |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
 | `validate_rig`, `list_bones`, `set_pose` | Cek kualitas rig, daftar tulang, pose dan keyframe |
@@ -95,6 +98,17 @@ plus paket wajah `faceunits01` (52 blendshape ARKit) dan `visemes01` (22 bentuk 
 semuanya CC0.
 Lisensi: kode MPFB GPL-3.0 (tidak disalin ke repo ini, hanya dipanggil saat runtime);
 aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersial.
+
+## Suara dan lip sync dari audio
+- **Whisper** (faster-whisper, MIT) berjalan lokal di CPU dan mendeteksi waktu setiap kata
+  dalam rekaman. Modelnya (`tiny`, ±75 MB) diunduh sekali saat pertama dipakai. Model yang
+  lebih akurat bisa dipilih dengan `CHAR3D_WHISPER_MODEL=base` (±145 MB) atau `small`.
+- Tanpa Whisper, lip sync tetap jalan memakai analisis suara (energi + spektrum), dan
+  hasilnya lebih rapi kalau teks ucapannya diberikan.
+- `ai_text_to_speech` memakai Space gratis Chatterbox Multilingual (23 bahasa, **belum ada
+  bahasa Indonesia**; yang paling dekat `ms`/Melayu). Kuota GPU anonim harian kecil;
+  `HF_TOKEN` gratis menaikkannya. Fitur tiru suara (`voice_reference`) hanya boleh untuk
+  suara sendiri atau suara yang sudah mendapat izin.
 
 ## AI providers
 Alat `ai_*` bisa memakai dua provider (parameter `provider`):

@@ -52,6 +52,14 @@ def _apply_settings(sc, quality, width, height, fps, start, end, base):
     r.ffmpeg.codec = "H264"
     r.ffmpeg.constant_rate_factor = "HIGH" if quality in ("final", "cycles") else "MEDIUM"
     r.ffmpeg.ffmpeg_preset = "GOOD"
+    from .audio import _sound_strips
+    if _sound_strips(sc):            # timeline has sound: mux it as AAC
+        r.ffmpeg.audio_codec = "AAC"
+        r.ffmpeg.audio_bitrate = 192
+        if hasattr(r.ffmpeg, "audio_channels"):
+            r.ffmpeg.audio_channels = "STEREO"
+    else:
+        r.ffmpeg.audio_codec = "NONE"
     r.use_file_extension = True
     r.filepath = base
 
@@ -107,6 +115,7 @@ def _report(job):
         out["eta_s"] = round(elapsed / done * (total - done), 1)
     if job["status"] == "done":
         out["bytes"] = job["bytes"]
+        out["has_audio"] = job.get("audio", False)
     if job.get("error"):
         out["error"] = job["error"]
     if job["status"] == "failed":
@@ -156,7 +165,9 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     with open(log, "wb") as lf:
         proc = subprocess.Popen([bpy.app.binary_path, "-b", blend, "-a"], stdout=lf,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    from .audio import _sound_strips
     job = {"id": job_id, "proc": proc, "path": path, "base": base, "blend": blend, "log": log,
+           "audio": bool(_sound_strips(sc)),
            "quality": quality, "frames": [start, end], "status": "running",
            "started": time.time()}
     JOBS[job_id] = job

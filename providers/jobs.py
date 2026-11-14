@@ -282,6 +282,28 @@ class JobManager:
 
         return self._start("image_to_3d", provider, params, pipeline)
 
+    # ------------------------------------------------------------------ speech
+    def text_to_speech(self, text, language="en", voice_reference=None, exaggeration=0.5,
+                       output=None, model=None, provider="hf"):
+        if provider not in ("hf", "auto"):
+            raise ProviderError("text_to_speech is only available on the free 'hf' provider for now")
+        if language not in hfmod.TTS_LANGS:
+            raise ProviderError(f"language must be one of {hfmod.TTS_LANGS} "
+                                "(Indonesian is not offered; 'ms' Malay is closest)")
+        params = dict(text=text, language=language)
+        ref = self._local(voice_reference) if voice_reference else None
+
+        def pipeline(job):
+            dest = os.path.join(self.engine.workspace, "imports", "audio")
+            stem = os.path.splitext(output)[0] if output else job.id
+            path, _ = self._generate(job, "text_to_speech",
+                                     {"text": text, "language": language, "voice_reference": ref,
+                                      "exaggeration": exaggeration},
+                                     dest, stem, model=model, label="speech")
+            job.result.update({"audio": path, "bytes": os.path.getsize(path)})
+
+        return self._start("text_to_speech", "hf", params, pipeline)
+
     # ------------------------------------------------------------------ video
     def image_to_video(self, image, prompt, duration=5, aspect_ratio=None, model=None,
                        extra_input=None, output=None, provider="auto"):
