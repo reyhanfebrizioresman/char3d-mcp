@@ -122,6 +122,27 @@ async def main():
             img = await call("render_preview", objects=["Rina_rig"], width=160, height=160)
             assert "image" in [c.type for c in img.content]
             print("mpfb:", h["skin"], h["height_m"], "m,", len(h["parts"]), "parts, wave OK")
+            # Rigify + face: expression, lip sync, blink
+            await call("new_scene")
+            d = json.loads(text_of(await call("create_realistic_human", name="Dani", gender=1.0,
+                                              age=28, rig="rigify"))[0])
+            assert d["face_rig"] and any("teeth" in p for p in d["parts"]), d
+            vr = json.loads(text_of(await call("validate_rig", mesh="Dani"))[0])
+            assert vr["ok"] and vr["rig_type"] == "rigify", vr
+            ex = json.loads(text_of(await call("set_expression", character="Dani_rig",
+                                               expression="laugh", frame=1, keyframe=True))[0])
+            assert ex["active_units"].get("jawOpen", 0) > 0 and len(ex["meshes"]) >= 3, ex
+            ls = json.loads(text_of(await call("lip_sync", character="Dani_rig",
+                                               text="Halo semuanya", start_frame=5))[0])
+            assert ls["mouth_shapes"] >= 8 and ls["next_start_frame"] > 20, ls
+            bl = json.loads(text_of(await call("auto_blink", character="Dani_rig",
+                                               frame_start=1, frame_end=200))[0])
+            assert len(bl["blinks"]) >= 1, bl
+            an = json.loads(text_of(await call("animate", armature="Dani_rig", clip="nod",
+                                               cycles=1))[0])
+            assert an["via"] == "proxy-retarget", an
+            print("mpfb rigify+face:", vr["bones_total"], "bones,", len(ex["meshes"]),
+                  "face meshes, lip sync", ls["mouth_shapes"], "shapes")
 
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text

@@ -22,7 +22,9 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `save_project`, `open_project` | File .blend |
 | `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
-| `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, mata, alis, rambut, baju; sudah di-rig dengan bobot buatan tangan |
+| `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, mata, alis, gigi, rambut, baju; rig `game_engine` atau `rigify` (lengkap dengan kontrol wajah) |
+| `set_expression`, `list_expressions` | 24 ekspresi wajah (senyum, tawa, sedih, marah, kaget, kedip, dll.) + 52 unit ARKit |
+| `lip_sync`, `auto_blink` | Gerak mulut dari teks dan kedipan otomatis |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
 | `validate_rig`, `list_bones`, `set_pose` | Cek kualitas rig, daftar tulang, pose dan keyframe |
@@ -88,7 +90,9 @@ jadi `~/.config/blender` tidak tersentuh. Instalasi (±327 MB, checksum diverifi
 ```bash
 scripts/install_mpfb.sh
 ```
-Isinya: 23 kulit, 10 rambut, 12 alis, 4 bulu mata, 2 mata, dan 20 baju/sepatu/topi.
+Isinya: 23 kulit, 10 rambut, 12 alis, 4 bulu mata, 2 mata, gigi, lidah, 20 baju/sepatu/topi,
+plus paket wajah `faceunits01` (52 blendshape ARKit) dan `visemes01` (22 bentuk mulut),
+semuanya CC0.
 Lisensi: kode MPFB GPL-3.0 (tidak disalin ke repo ini, hanya dipanggil saat runtime);
 aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersial.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install MPFB (MakeHuman for Blender) + the CC0 MakeHuman system assets into char3d's
+# Install MPFB (MakeHuman for Blender) + the CC0 MakeHuman system assets and face packs into char3d's
 # Blender, in portable mode (nothing is written to ~/.config/blender).
 #
 #   scripts/install_mpfb.sh
@@ -45,4 +45,25 @@ with zipfile.ZipFile(r'$ASSETS_ZIP') as z:
 AssetService.update_all_asset_lists()
 print('MPFB_ASSETS_OK', LocationService.get_user_data())
 " 2>&1 | grep -E "MPFB_ASSETS_OK|FAILED|Error")
+echo "Installing face packs (ARKit face units + visemes, CC0, <0.5 MB) ..."
+for pack in faceunits01 visemes01; do
+  zip="$DL/$pack.zip"
+  [ -f "$zip" ] || curl -fSL -o "$zip" "https://files.makehumancommunity.org/functional/$pack.zip"
+done
+echo "d113107bd7eb59f3af4df6fc0ec29bfcc593f496d0b336aec14f086a80ce7146  $DL/faceunits01.zip" | sha256sum -c - || echo "WARNING: faceunits01 checksum differs from 2026-11-14"
+echo "f61f4f36bb4fe43486efa2a644eea9d6760e510bde10eecc97a4ddf28424e4d3  $DL/visemes01.zip" | sha256sum -c - || echo "WARNING: visemes01 checksum differs from 2026-11-14"
+(cd /tmp && "$BLENDER" -b --factory-startup --python-expr "
+import addon_utils, zipfile, sys
+addon_utils.enable('bl_ext.user_default.mpfb', default_set=True)
+from bl_ext.user_default.mpfb.services import LocationService, AssetService
+for p in ('faceunits01', 'visemes01'):
+    zp = r'$DL/' + p + '.zip'
+    problem = AssetService.check_asset_pack_zip(zp)
+    if problem:
+        print('PACK CHECK FAILED', p, problem); sys.exit(1)
+    with zipfile.ZipFile(zp) as z:
+        z.extractall(LocationService.get_user_data())
+AssetService.update_all_asset_lists()
+print('MPFB_FACE_OK')
+" 2>&1 | grep -E "MPFB_FACE_OK|FAILED|Error")
 echo "Done. Restart the char3d MCP server (or call engine_shutdown) to pick it up."

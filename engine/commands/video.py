@@ -88,7 +88,7 @@ def _progress(job):
             text = f.read()
     except OSError:
         return None, ""
-    frames = [int(x) for x in re.findall(r"Fra:(\d+)", text)]
+    frames = [int(x) for x in re.findall(r"Fra:\s*(\d+)", text)]
     return (max(frames) if frames else None), text
 
 

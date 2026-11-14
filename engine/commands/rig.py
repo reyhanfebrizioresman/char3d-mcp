@@ -311,14 +311,32 @@ def validate_rig(mesh):
     rig = mod.object
     deform = set(_deform_bones(rig))
     gi = {vg.index: vg.name for vg in obj.vertex_groups if vg.name in deform}
-    zero, max_inf, used = 0, 0, set()
+    # vertices removed by MASK modifiers (e.g. MPFB helper geometry) are never rendered
+    masks = []
+    for md in obj.modifiers:
+        if md.type == "MASK" and md.vertex_group and md.show_render:
+            vg = obj.vertex_groups.get(md.vertex_group)
+            if vg is not None:
+                masks.append((vg.index, md.invert_vertex_group))
+
+    def visible(v):
+        for idx, invert in masks:
+            inside = any(g.group == idx and g.weight > 0 for g in v.groups)
+            if inside == invert:
+                return False
+        return True
+
+    zero, max_inf, used, hidden = 0, 0, set(), 0
     for v in obj.data.vertices:
+        if masks and not visible(v):
+            hidden += 1
+            continue
         ws = [(gi[g.group], g.weight) for g in v.groups if g.group in gi and g.weight > 1e-4]
         if not ws:
             zero += 1
         max_inf = max(max_inf, len(ws))
         used.update(n for n, _ in ws)
-    n = len(obj.data.vertices)
+    n = len(obj.data.vertices) - hidden
     issues = []
     if zero:
         issues.append(f"{zero}/{n} vertices have no deform weight")
@@ -337,6 +355,7 @@ def validate_rig(mesh):
         "vertices": n,
         "unweighted_vertices": zero,
         "max_influences": max_inf,
+        "masked_vertices_ignored": hidden,
         "unused_deform_bones": unused[:20],
         "issues": issues,
     }

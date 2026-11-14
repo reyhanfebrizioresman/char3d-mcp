@@ -35,6 +35,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
 - Look: `render_preview`, `render_views`
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
+- Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
@@ -60,9 +61,12 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 **already rigged** with MPFB's hand-made weights — do NOT run `auto_rig_humanoid` on it.
 - gender 0 = female … 1 = male; age in years; muscle/weight/height/proportions 0..1;
   race weights like `{"asian": 1}`. `skin="auto"` matches age/gender/ethnicity.
-- The armature is `<name>_rig` (rig "game_engine" by default: Unreal-style bones
-  `pelvis, spine_01, upperarm_l, calf_l…`; also "mixamo", "default", "cmu_mb").
-  `apply_pose`, `animate`, `import_mocap`, `retarget_animation` all work on it.
+- The armature is `<name>_rig`. `rig="game_engine"` (default; 53 Unreal-style bones
+  `pelvis, spine_01, upperarm_l, calf_l…`, best for games/glTF) or `rig="rigify"` (full
+  animator rig with face controls, ~930 bones, ~9 s to build; limbs set to FK). Also
+  "mixamo", "default", "cmu_mb". `apply_pose`, `animate`, `import_mocap`,
+  `retarget_animation` work on all of them.
+- `face=True` (default) loads ARKit face shapes + visemes and adds teeth/tongue.
 - Use the **armature** as the subject for framing/lighting:
   `camera_shot(subject=["Maya_rig"])`, `set_lighting(subject=["Maya_rig"])`,
   `render_preview(objects=["Maya_rig"])` (frames body + hair + clothes together).
@@ -77,6 +81,23 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   a weight-limit step on import.
 - Use `create_human` (mannequin) for stylized/blockout work or when MPFB is missing
   (`mpfb_assets` errors → tell the user to run `scripts/install_mpfb.sh`).
+
+## Facial animation
+Works on `create_realistic_human` characters (face=True) and any mesh with ARKit
+blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body mesh.
+- `set_expression(character, expression, strength)`: neutral, smile, big_smile, laugh,
+  sad, angry, furious, surprised, fear, disgust, smirk, wink_left/right, eyes_closed, pout,
+  kiss, thinking, shout, sleepy, look_left/right/up/down, tongue_out. Fine-tune with
+  `units={"jawOpen": 0.3, "browInnerUp": 0.5}` (ARKit names from `list_expressions`).
+- Performance over time: call `set_expression(..., frame=N, keyframe=True)` repeatedly;
+  each holds the previous face until N - transition_frames, then blends.
+- `lip_sync(character, text, start_frame)`: mouth shapes from text (no audio is
+  produced). ~14 chars/s. Combine with a light expression (smile 0.5) for life.
+- `auto_blink(character)`: natural blinks over the scene range — always add it to any
+  shot where the face is visible for more than ~2 s.
+- Check faces with `camera_shot(shot="close_up" or "extreme_close_up")` +
+  `render_preview(camera="scene", engine_name="eevee")` — workbench can't show skin.
+- Expressions and lip sync are shape keys: they export to glTF as morph targets.
 
 ## Rigging
 `auto_rig_humanoid(mesh, rig_type)`:
@@ -233,7 +254,8 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   supported yet.
 
 ## Roadmap (tools not available yet — say so instead of improvising)
-- MPFB: Rigify control rigs, facial expressions, more asset packs (hair/clothes)
+- MPFB: more asset packs (hair/clothes); audio-driven lip sync (phoneme timing from
+  speech instead of text)
 - Foot IK / foot-locking for walks, crossfades between clips
 - Face rig / lip sync
 

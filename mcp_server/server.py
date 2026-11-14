@@ -411,7 +411,7 @@ async def cancel_render(job_id: str) -> dict:
 # --- realistic humans (MPFB) --------------------------------------------------------
 Hair = Literal["afro01", "bob01", "bob02", "braid01", "long01", "ponytail01", "short01",
                "short02", "short03", "short04"]
-MpfbRig = Literal["game_engine", "default", "default_no_toes", "mixamo", "cmu_mb", "none"]
+MpfbRig = Literal["game_engine", "rigify", "default", "default_no_toes", "mixamo", "cmu_mb", "none"]
 
 
 @mcp.tool()
@@ -429,18 +429,69 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
                                  hair: Hair | None = None, eyebrows: str = "eyebrow001",
                                  eyelashes: str = "eyelashes01", eyes: str = "high-poly",
                                  clothes: list[str] | None = None, rig: MpfbRig = "game_engine",
-                                 subdiv: int = 0, location: list[float] = [0, 0, 0]) -> dict:
+                                 subdiv: int = 0, location: list[float] = [0, 0, 0],
+                                 face: bool = True) -> dict:
     """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
     eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
     gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
     0..1 (0.5 average); race e.g. {"asian": 1} or {"african": 0.5, "caucasian": 0.5}.
     skin "auto" picks age/gender/ethnicity-matched skin. clothes: names from mpfb_assets,
     e.g. ["male_casualsuit01", "shoes01"]. The rig works with apply_pose, animate,
-    import_mocap and camera_shot (pass the armature name `<name>_rig` as subject)."""
+    import_mocap and camera_shot (pass the armature name `<name>_rig` as subject).
+    rig="game_engine" (53 bones, best for games/glTF) or "rigify" (full animator control
+    rig incl. face controls, ~930 bones; slower, ~9 s). face=True loads ARKit face shapes +
+    visemes and adds teeth/tongue so set_expression / lip_sync / auto_blink work."""
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
-                     clothes=clothes, rig=rig, subdiv=subdiv, location=location)
+                     clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face)
+
+
+Expression = Literal["neutral", "smile", "big_smile", "laugh", "sad", "angry", "furious",
+                     "surprised", "fear", "disgust", "smirk", "wink_left", "wink_right",
+                     "eyes_closed", "pout", "kiss", "thinking", "shout", "sleepy", "look_left",
+                     "look_right", "look_up", "look_down", "tongue_out"]
+
+
+@mcp.tool()
+async def list_expressions() -> dict:
+    """Facial expression presets (with the ARKit face units they use), all 52 ARKit unit
+    names and the 22 viseme names."""
+    return await run("list_expressions")
+
+
+@mcp.tool()
+async def set_expression(character: str, expression: Expression = "neutral",
+                         units: dict[str, float] | None = None, strength: float = 1.0,
+                         clear: bool = True, frame: int | None = None, keyframe: bool = False,
+                         transition_frames: int = 6) -> dict:
+    """Set a facial expression on a character (its armature `<name>_rig` or mesh). Works on
+    create_realistic_human characters and any mesh with ARKit blendshapes. `units` adds or
+    overrides raw ARKit weights 0..1 (e.g. {"jawOpen": 0.4}); strength scales the preset.
+    keyframe=True keys it at `frame`, holding the previous face until
+    frame - transition_frames, so a sequence of calls makes an animated performance."""
+    return await run("set_expression", character=character, expression=expression, units=units,
+                     strength=strength, clear=clear, frame=frame, keyframe=keyframe,
+                     transition_frames=transition_frames)
+
+
+@mcp.tool()
+async def lip_sync(character: str, text: str, start_frame: int = 1,
+                   chars_per_second: float = 14.0, strength: float = 0.9,
+                   expression: Expression | None = None) -> dict:
+    """Animate the mouth to `text` (letter-to-viseme approximation; works for English and
+    Indonesian-style spelling). No audio is generated - this is mouth motion only.
+    chars_per_second ~14 = normal speech. Returns next_start_frame for chaining."""
+    return await run("lip_sync", character=character, text=text, start_frame=start_frame,
+                     chars_per_second=chars_per_second, strength=strength, expression=expression)
+
+
+@mcp.tool()
+async def auto_blink(character: str, frame_start: int | None = None, frame_end: int | None = None,
+                     interval_seconds: float = 3.5) -> dict:
+    """Add natural blinks over a frame range (defaults to the scene range)."""
+    return await run("auto_blink", character=character, frame_start=frame_start,
+                     frame_end=frame_end, interval_seconds=interval_seconds)
 
 
 # --- AI providers (phase 6) ----------------------------------------------------

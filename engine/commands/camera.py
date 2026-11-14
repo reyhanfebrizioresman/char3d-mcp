@@ -24,7 +24,7 @@ SHOTS = {
     "medium": (0.6, 0.72, 50),
     "medium_close": (0.42, 0.8, 65),
     "close_up": (0.24, 0.9, 85),
-    "extreme_close_up": (0.12, 0.92, 100),
+    "extreme_close_up": (0.14, 0.905, 100),
 }
 
 

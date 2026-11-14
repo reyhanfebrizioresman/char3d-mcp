@@ -16,7 +16,15 @@ from . import command
 from .scene import _describe
 
 MODULE = "bl_ext.user_default.mpfb"
-RIGS = ("game_engine", "default", "default_no_toes", "mixamo", "cmu_mb")
+RIGS = ("game_engine", "default", "default_no_toes", "mixamo", "cmu_mb", "rigify")
+# landmarks for Rigify rigs come from the deform skeleton
+RIGIFY_DEF = {"hips": "DEF-spine", "spine": "DEF-spine.001", "chest": "DEF-spine.003",
+              "neck": "DEF-spine.004", "head": "DEF-spine.006"}
+for _s in "LR":
+    RIGIFY_DEF.update({f"shoulder.{_s}": f"DEF-shoulder.{_s}", f"upper_arm.{_s}": f"DEF-upper_arm.{_s}",
+                       f"forearm.{_s}": f"DEF-forearm.{_s}", f"hand.{_s}": f"DEF-hand.{_s}",
+                       f"thigh.{_s}": f"DEF-thigh.{_s}", f"shin.{_s}": f"DEF-shin.{_s}",
+                       f"foot.{_s}": f"DEF-foot.{_s}", f"toe.{_s}": f"DEF-toe.{_s}"})
 BODYPARTS = ("eyes", "eyebrows", "eyelashes", "hair", "teeth", "tongue")
 
 
@@ -98,10 +106,12 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
                            height=0.5, proportions=0.5, race=None, skin="auto",
                            hair=None, eyebrows="eyebrow001", eyelashes="eyelashes01",
                            eyes="high-poly", clothes=None, rig="game_engine",
-                           subdiv=0, location=(0, 0, 0)):
+                           subdiv=0, location=(0, 0, 0), face=True):
     """Build a realistic human with MPFB. gender 0=female..1=male; age in years;
     muscle/weight/height/proportions 0..1 (0.5 = average); race weights dict."""
     AssetService, HumanService, _loc = _services()
+    if rig == "rigify":
+        addon_utils.enable("rigify", default_set=True)   # MPFB checks this before adding the metarig
     if rig not in RIGS + ("none",):
         raise ValueError(f"rig must be one of {list(RIGS) + ['none']}")
     cat = _catalog()
@@ -117,7 +127,7 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
                       "weight": float(weight), "height": float(height),
                       "proportions": float(proportions), "cupsize": 0.5, "firmness": 0.5,
                       "race": race},
-        "rig": "" if rig == "none" else rig,
+        "rig": "" if rig == "none" else ("rigify.human" if rig == "rigify" else rig),
         "skin_mhmat": _pick(cat, "skins", skin_name) if skin_name else "",
         "skin_material_type": "ENHANCED_SSS" if skin_name else "NONE",
         "skin_material_settings": {},
@@ -127,7 +137,8 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         "color_adjustments": {}, "alternative_materials": {},
     }
     for part, value in (("eyes", eyes), ("eyebrows", eyebrows), ("eyelashes", eyelashes),
-                        ("hair", hair), ("teeth", None), ("tongue", None)):
+                        ("hair", hair), ("teeth", "teeth_base" if face else None),
+                        ("tongue", "tongue01" if face else None)):
         info[part] = _pick(cat, part, value) if value else ""
 
     settings = HumanService.get_default_deserialization_settings()
@@ -138,7 +149,11 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         bpy.ops.object.mode_set(mode="OBJECT")
     before = set(bpy.data.objects)
     basemesh = HumanService.deserialize_from_dict(info, settings)
-    new = [o for o in bpy.data.objects if o not in before]
+    if rig == "rigify":
+        basemesh = _generate_rigify(basemesh, name)
+    from .util import is_helper
+    new = [o for o in bpy.data.objects
+           if o not in before and o.name in bpy.data.objects and not is_helper(o)]
 
     root = basemesh.parent if basemesh.parent and basemesh.parent.type == "ARMATURE" else basemesh
     root.location = tuple(location)
@@ -153,15 +168,27 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     if root.type == "ARMATURE":
         root.name = f"{name}_rig"
         root.data.name = f"{name}_rig"
-        root["c3d_rig_type"] = f"mpfb_{rig}"
         bpy.context.view_layer.update()
-        from .anim import _rig_landmarks, heuristic_map
-        smap = heuristic_map(root)
-        lm = _rig_landmarks(root, smap)
+        from .anim import _rig_landmarks, heuristic_map, semantic_map
+        if rig == "rigify":
+            root["c3d_rig_type"] = "rigify"          # use char3d's Rigify control mapping
+            for pb in root.pose.bones:               # FK limbs so poses/clips rotate directly
+                if "IK_FK" in pb.keys():
+                    pb["IK_FK"] = 1.0
+            lm = _rig_landmarks(root, RIGIFY_DEF)
+            smap = semantic_map(root)
+        else:
+            root["c3d_rig_type"] = f"mpfb_{rig}"
+            smap = heuristic_map(root)
+            lm = _rig_landmarks(root, smap)
         root["c3d_landmarks"] = json.dumps({k: list(v) for k, v in lm.items()})
         basemesh["c3d_rig"] = root.name
         result["armature"] = root.name
         result["mapped_bones"] = len(smap)
+    if face:
+        from .face import _ensure_face
+        result["face_rig"] = "shape keys (ARKit 52 + visemes 22)" if _ensure_face(basemesh) \
+            or basemesh.data.shape_keys else None
     from .util import scene_bounds
     lo, hi = scene_bounds([o for o in new if o.type == "MESH"])
     result.update({
@@ -170,3 +197,21 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         "parts": sorted(o.name for o in new if o.type == "MESH" and o is not basemesh),
     })
     return result
+
+
+def _generate_rigify(basemesh, name):
+    """Turn the MPFB Rigify metarig into a full control rig (face rig included)."""
+    from bl_ext.user_default.mpfb.services import RigService, SystemService
+    addon_utils.enable("rigify", default_set=True)
+    meta = basemesh.parent
+    if meta is None or not SystemService.check_for_rigify():
+        raise RuntimeError("Rigify metarig missing or Rigify add-on unavailable")
+    vl = bpy.context.view_layer
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    vl.objects.active = meta
+    meta.select_set(True)
+    rig = RigService.generate_rigify_rig(meta, name=f"{name}_rig", meta_rig_action="delete")
+    if rig is None:
+        raise RuntimeError("Rigify rejected the MPFB metarig")
+    return basemesh
