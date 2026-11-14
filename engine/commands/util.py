@@ -27,7 +27,7 @@ def scene_bounds(objects=None):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     objs = objects or [o for o in bpy.context.scene.objects
                        if o.type in RENDERABLE and not o.hide_render and o.visible_get()
-                       and not is_helper(o)]
+                       and not is_helper(o) and o.get("c3d_role") != "ground"]
     lo = hi = None
     for o in objs:
         ev = o.evaluated_get(depsgraph)

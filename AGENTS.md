@@ -38,6 +38,9 @@ Keep previews ≤ 512 px unless the user asks for more.
   `validate_rig`, `list_bones`, `set_pose`
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
   `retarget_animation`, `clear_animation`, `render_frames`
+- Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
+  `list_lighting_presets`, `set_lighting`, `set_material`, `render_video`,
+  `render_status`, `cancel_render`
 - `run_blender_python` exists only when the server runs with `CHAR3D_ALLOW_PYTHON=1`.
   Prefer dedicated tools; if you must use it, keep scripts small and set `result`.
 
@@ -95,10 +98,40 @@ world-space retarget, so the same pose/clip looks the same everywhere.
 - `retarget_animation(source, target)` — copy motion between two rigs in the scene.
 - Check motion with `render_frames([1, 9, 17, 25], view="right", objects=[mesh])`
   (side view for walking/running, three_quarter for gestures).
+- Chained clips continue from where the previous one ended (no snapping back to
+  the start position).
 - `export_asset("hero.glb")` includes the animation; `export_asset("walk.bvh",
   objects=[rig])` writes motion only.
 - Known limits: feet can slide slightly on walk/run (no foot IK yet); clips blend by
   hard cuts, not crossfades.
+
+## Film: cameras, lighting, video
+**Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
+overcast, night, neon, silhouette, horror. Adds a large ground plane by default and
+switches the scene to Eevee. `rotate` spins the rig of lights around the subject.
+`set_material(objects, color, roughness, metallic, emission_strength)` for quick looks.
+
+**Shots** — `camera_shot(subject, shot, move, start_frame, end_frame, angle, elevation,
+intensity, handheld, roll, depth_of_field)`:
+- shot sizes: extreme_wide, wide, full, medium_full, medium, medium_close, close_up,
+  extreme_close_up (lens picked automatically, override with `lens`).
+- moves: static, push_in, dolly_in, dolly_out, pull_out, orbit_left, orbit_right, arc,
+  crane_up, crane_down, truck_left, truck_right, pan_left, pan_right, tilt_up,
+  tilt_down, zoom_in, crash_zoom (ends on the face), dolly_zoom (vertigo), handheld,
+  tracking, tracking_side (side-on follow, best for walks/runs), drone_reveal.
+- angle 0 = front, 90 = subject's left, 180 = behind; elevation < 0 = low/heroic angle.
+- The camera keeps framing a moving subject. One camera per shot; each adds a timeline
+  marker so shots **cut** in order. Make shots back-to-back:
+  `start_frame = previous["next_start_frame"]`. Re-use `name` to replace a shot.
+- Check framing through the real cameras:
+  `render_frames([first, middle, last], camera="scene", engine_name="eevee")`.
+
+**Video** — `render_video(path, quality)` runs in a separate Blender process and returns
+`job_id`; poll `render_status(job_id)` (progress, ETA). Measured on this machine
+(960×540): draft ≈ 0.1 s/frame (clay, for timing), preview ≈ 2.7 s/frame (Eevee),
+final is full-res 64 samples (~4× preview). Always do a draft first, then preview/final.
+Vertical video: `width=1080, height=1920`. Output is H.264 MP4, 24 fps unless
+`set_timeline(fps=...)`.
 
 ## Recipes
 **Rigged character from scratch**
@@ -111,6 +144,16 @@ world-space retarget, so the same pose/clip looks the same everywhere.
 → `a = animate(rig, "wave", start_frame=w.next_start_frame)`
 → `animate(rig, "jump", start_frame=a.next_start_frame)` → `render_frames` check
 → `save_project`.
+
+**Short cinematic clip (Higgsfield-style)**
+`create_human` → `auto_rig_humanoid(rig_type="rigify")` → `set_material`
+→ `w = animate(rig, "walk", cycles=3)` → `animate(rig, "wave", start_frame=w.next_start_frame)`
+→ `set_lighting("sunset", subject=[mesh])`
+→ `camera_shot(subject=[mesh], shot="wide", move="drone_reveal", start_frame=1, end_frame=40)`
+→ `camera_shot(..., shot="full", move="tracking_side", start_frame=41, end_frame=96)`
+→ `camera_shot(..., shot="medium", move="crash_zoom", start_frame=97, end_frame=134)`
+→ `render_frames(camera="scene")` check → `render_video(quality="draft", wait=True)`
+→ `render_video("final.mp4", quality="final")` → poll `render_status`.
 
 **Mocap on your character**
 `auto_rig_humanoid(mesh, rig_type="rigify")` → `import_mocap("dance.bvh", rig)`
@@ -131,7 +174,6 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   supported yet.
 
 ## Roadmap (tools not available yet — say so instead of improvising)
-- Phase 4: camera moves (dolly, orbit, crane, crash zoom), lighting presets, `render_video`
 - Phase 6: AI providers (text/image → 3D, image → video); MPFB realistic humans
 
 ## For agents editing this repo

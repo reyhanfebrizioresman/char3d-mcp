@@ -9,7 +9,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 ```
 
 ## Status
-✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi)
+✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi) · ✅ Fase 4 (kamera, cahaya, video)
 
 | Alat | Fungsi |
 |---|---|
@@ -20,7 +20,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
 | `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; untuk Rigify hanya tulang deform yang ikut |
 | `save_project`, `open_project` | File .blend |
-| `render_preview`, `render_views` | Render pratinjau, gambarnya dikirim balik ke AI |
+| `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
@@ -29,6 +29,10 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `animate` | Klip prosedural: idle, walk, run, wave, cheer, jump, nod, head_shake (bisa disambung) |
 | `import_mocap`, `retarget_animation` | Mocap .bvh/.fbx/.glb (CMU, Mixamo, dll.) ke rig apa pun, diselaraskan otomatis |
 | `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
+| `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
+| `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; material cepat |
+| `render_video`, `render_status`, `cancel_render` | Render MP4 (H.264) di proses latar belakang: draft, preview, final, cycles |
+| `set_timeline` | Rentang frame dan fps |
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).

@@ -66,7 +66,8 @@ def _temp_lights(sc, center, radius):
 
 @command("render_preview")
 def render_preview(view="three_quarter", width=512, height=512, engine="workbench",
-                   frame=None, objects=None, filename=None, transparent=False, isolate=True):
+                   frame=None, objects=None, filename=None, transparent=False, isolate=True,
+                   camera="auto"):
     """Render a still from an auto-framed camera. Returns the PNG path."""
     if view not in VIEWS:
         raise ValueError(f"view must be one of {sorted(VIEWS)}")
@@ -89,6 +90,8 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
                  fp=sc.render.filepath, transparent=sc.render.film_transparent,
                  fmt=sc.render.image_settings.file_format)
 
+    if camera == "scene":
+        return _render_scene_camera(sc, width, height, engine, filename, view)
     cam_data = bpy.data.cameras.new("__c3d_preview_cam")
     cam_data.lens = 50
     cam = bpy.data.objects.new("__c3d_preview_cam", cam_data)
@@ -157,14 +160,51 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
     return {"path": out, "view": view, "engine": used, "size": [width, height]}
 
 
+def _render_scene_camera(sc, width, height, engine, filename, view):
+    """Render through the scene's active camera (or the shot marker active at this frame)."""
+    markers = sorted((m for m in sc.timeline_markers if m.camera and m.frame <= sc.frame_current),
+                     key=lambda m: m.frame)
+    cam = markers[-1].camera if markers else sc.camera
+    if cam is None:
+        raise RuntimeError("no scene camera: create a shot with camera_shot first")
+    saved = dict(engine=sc.render.engine, camera=sc.camera, rx=sc.render.resolution_x,
+                 ry=sc.render.resolution_y, pct=sc.render.resolution_percentage,
+                 fp=sc.render.filepath, fmt=sc.render.image_settings.file_format,
+                 media=getattr(sc.render.image_settings, "media_type", None))
+    os.makedirs(os.path.join(context.WORKSPACE, "renders"), exist_ok=True)
+    out = context.resolve(filename or f"shot_{sc.frame_current:04d}_{time.strftime('%H%M%S')}.png",
+                          "renders")
+    aspect = saved["ry"] / saved["rx"]
+    try:
+        sc.camera = cam
+        sc.render.resolution_x = int(width)
+        sc.render.resolution_y = int(round(width * aspect)) if height is None else int(height)
+        sc.render.resolution_percentage = 100
+        if saved["media"]:
+            sc.render.image_settings.media_type = "IMAGE"
+        sc.render.image_settings.file_format = "PNG"
+        sc.render.filepath = out
+        _setup_engine(sc, engine)
+        bpy.ops.render.render(write_still=True)
+    finally:
+        sc.render.engine, sc.camera = saved["engine"], saved["camera"]
+        sc.render.resolution_x, sc.render.resolution_y = saved["rx"], saved["ry"]
+        sc.render.resolution_percentage, sc.render.filepath = saved["pct"], saved["fp"]
+        if saved["media"]:
+            sc.render.image_settings.media_type = saved["media"]
+        sc.render.image_settings.file_format = saved["fmt"]
+    return {"path": out, "view": f"camera:{cam.name}", "engine": engine,
+            "frame": sc.frame_current, "size": [sc.render.resolution_x, sc.render.resolution_y]}
+
+
 @command("render_frames")
 def render_frames(frames, view="three_quarter", size=320, engine="workbench", objects=None,
-                  prefix=None):
+                  prefix=None, camera="auto"):
     """Render several animation frames (flip-book check of a motion)."""
     stamp = prefix or f"frames_{time.strftime('%Y%m%d_%H%M%S')}"
     out = []
     for f in frames:
-        out.append(render_preview(view=view, width=size, height=size, engine=engine,
-                                  frame=int(f), objects=objects,
-                                  filename=f"{stamp}_f{int(f):04d}.png"))
+        out.append(render_preview(view=view, width=size, height=None if camera == "scene" else size,
+                                  engine=engine, frame=int(f), objects=objects,
+                                  filename=f"{stamp}_f{int(f):04d}.png", camera=camera))
     return {"frames": out}

@@ -89,6 +89,21 @@ async def main():
         assert len(gltf.get("animations", [])) == 1, gltf.get("animations")
         print("phase 3: mocap bones", mo["bones"], "| glb animations", len(gltf["animations"]))
 
+        # phase 4: lighting, two shots, scene-camera check, draft video
+        await call("set_lighting", preset="studio", subject=["Walker"])
+        s1 = json.loads(text_of(await call("camera_shot", subject=["Walker"], shot="full",
+                                           move="tracking_side", start_frame=1, end_frame=20))[0])
+        await call("camera_shot", subject=["Walker"], shot="medium", move="crash_zoom",
+                   start_frame=s1["next_start_frame"], end_frame=36)
+        shots = json.loads(text_of(await call("list_shots"))[0])["shots"]
+        assert [x["camera"] for x in shots][:2] == ["Shot1", "Shot2"], shots
+        look = await call("render_frames", frames=[1, 30], camera="scene", size=160)
+        assert [c.type for c in look.content].count("image") == 2
+        vid = json.loads(text_of(await call("render_video", path="e2e.mp4", quality="draft",
+                                            frame_start=1, frame_end=36, wait=True))[0])
+        assert vid["status"] == "done" and vid["bytes"] > 1000, vid
+        print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes")
+
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text
         await call("engine_shutdown")

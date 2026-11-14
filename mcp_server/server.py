@@ -26,6 +26,8 @@ Working loop:
 4. save_project at milestones; export_asset (.glb) to deliver assets.
 Characters: create_human -> auto_rig_humanoid -> set_pose test -> render_views.
 Motion: apply_pose / animate / import_mocap -> render_frames to check it.
+Film: set_lighting -> camera_shot (one per shot, consecutive frames) -> render_frames
+camera="scene" -> render_video(quality="draft") -> render_video(quality="preview"/"final").
 Read resource char3d://guide for the full workflow guide.
 """
 
@@ -123,13 +125,16 @@ def _image_result(r: dict):
 @mcp.tool(structured_output=False)
 async def render_preview(view: View = "three_quarter", width: int = 512, height: int = 512,
                          engine_name: Engine = "workbench", frame: int | None = None,
-                         objects: list[str] | None = None, transparent: bool = False):
-    """Render a still from an auto-framed camera and return the image so you can SEE
-    the result. workbench = fast clay/material preview (use for checking shape, pose,
-    rig deformation); eevee = lit materials; cycles = slow, accurate.
-    `objects` frames only those objects. `frame` sets the animation frame first."""
-    r = await run("render_preview", view=view, width=width, height=height, engine=engine_name,
-                  frame=frame, objects=objects, transparent=transparent)
+                         objects: list[str] | None = None, transparent: bool = False,
+                         camera: Literal["auto", "scene"] = "auto"):
+    """Render a still and return the image so you can SEE the result.
+    camera="auto": temporary auto-framed camera from `view` (`objects` frames/isolates
+    those objects). camera="scene": look through the shot camera active at `frame`
+    (check your camera_shot framing; height follows the scene aspect).
+    workbench = fast clay preview; eevee = real lights/materials (~2-10 s); cycles = slow."""
+    r = await run("render_preview", view=view, width=width,
+                  height=None if camera == "scene" else height, engine=engine_name,
+                  frame=frame, objects=objects, transparent=transparent, camera=camera)
     return _image_result(r)
 
 
@@ -269,15 +274,134 @@ async def clear_animation(armature: str) -> dict:
 
 @mcp.tool(structured_output=False)
 async def render_frames(frames: list[int], view: View = "three_quarter", size: int = 256,
-                        objects: list[str] | None = None):
+                        objects: list[str] | None = None,
+                        camera: Literal["auto", "scene"] = "auto",
+                        engine_name: Engine = "workbench"):
     """Render several animation frames (workbench) so you can check a motion like a
     flip-book. Tip: use view="right" to judge walking/running, and list the character
-    mesh in `objects` so the camera frames it alone."""
-    r = await run("render_frames", frames=frames, view=view, size=size, objects=objects)
+    mesh in `objects` so the camera frames it alone. camera="scene" shows the actual
+    shots (use eevee to judge lighting)."""
+    r = await run("render_frames", frames=frames, view=view, size=size, objects=objects,
+                  camera=camera, engine=engine_name)
     out = []
     for item in r["frames"]:
         out += _image_result(item)
     return out
+
+
+# --- camera, lighting, video (phase 4) -----------------------------------------
+Move = Literal["static", "push_in", "dolly_in", "dolly_out", "pull_out", "orbit_left",
+               "orbit_right", "arc", "crane_up", "crane_down", "truck_left", "truck_right",
+               "pan_left", "pan_right", "tilt_up", "tilt_down", "zoom_in", "crash_zoom",
+               "dolly_zoom", "handheld", "tracking", "tracking_side", "drone_reveal"]
+ShotSize = Literal["extreme_wide", "wide", "full", "medium_full", "medium", "medium_close",
+                   "close_up", "extreme_close_up"]
+Light = Literal["studio", "soft", "dramatic", "sunset", "noon", "overcast", "night", "neon",
+                "silhouette", "horror"]
+
+
+@mcp.tool()
+async def list_camera_moves() -> dict:
+    """Describe every camera move and shot size."""
+    return await run("list_camera_moves")
+
+
+@mcp.tool()
+async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium",
+                      move: Move = "static", start_frame: int = 1, end_frame: int = 72,
+                      angle: float = 20.0, elevation: float = 5.0, intensity: float = 1.0,
+                      ease: Literal["linear", "ease_in", "ease_out", "ease_in_out"] = "ease_in_out",
+                      lens: float | None = None, handheld: float = 0.0, roll: float = 0.0,
+                      depth_of_field: bool = False, f_stop: float = 2.8,
+                      name: str | None = None) -> dict:
+    """Create a cinematic shot camera for frames start..end, framed on `subject` (mesh or
+    armature names; default = everything) even while it moves. angle: 0 = in front,
+    90 = subject's left, 180 = behind. elevation: degrees (negative = low angle, heroic).
+    intensity scales the move. handheld 0..1 adds shake, roll = dutch angle.
+    Each shot adds a timeline marker, so consecutive shots CUT automatically in
+    render_video. Chain with start_frame = previous next_start_frame. Re-using `name`
+    replaces that shot."""
+    return await run("camera_shot", subject=subject, shot=shot, move=move,
+                     start_frame=start_frame, end_frame=end_frame, angle=angle,
+                     elevation=elevation, intensity=intensity, ease=ease, lens=lens,
+                     handheld=handheld, roll=roll, depth_of_field=depth_of_field,
+                     f_stop=f_stop, name=name)
+
+
+@mcp.tool()
+async def list_shots() -> dict:
+    """The shot timeline (marker, camera, frame range, settings) and total frame range."""
+    return await run("list_shots")
+
+
+@mcp.tool()
+async def delete_shot(name: str) -> dict:
+    """Remove a shot camera and its timeline marker."""
+    return await run("delete_shot", name=name)
+
+
+@mcp.tool()
+async def set_timeline(frame_start: int | None = None, frame_end: int | None = None,
+                       fps: int | None = None) -> dict:
+    """Set the scene frame range and frame rate (24 default; 30/60 for social media)."""
+    return await run("set_timeline", frame_start=frame_start, frame_end=frame_end, fps=fps)
+
+
+@mcp.tool()
+async def list_lighting_presets() -> dict:
+    """Describe the lighting presets."""
+    return await run("list_lighting_presets")
+
+
+@mcp.tool()
+async def set_lighting(preset: Light = "studio", subject: list[str] | None = None,
+                       strength: float = 1.0, rotate: float = 0.0,
+                       background: list[float] | None = None, ground: bool = True,
+                       ground_color: list[float] = [0.32, 0.32, 0.33]) -> dict:
+    """Replace the scene lighting with a preset aimed at `subject` (default: everything):
+    studio, soft, dramatic, sunset, noon, overcast, night, neon, silhouette, horror.
+    rotate spins all lights around the subject (degrees). background overrides the sky
+    color (RGB 0..1). ground adds a large floor at the subject's feet."""
+    return await run("set_lighting", preset=preset, subject=subject, strength=strength,
+                     rotate=rotate, background=background, ground=ground,
+                     ground_color=ground_color)
+
+
+@mcp.tool()
+async def set_material(objects: list[str], color: list[float] = [0.8, 0.8, 0.8],
+                       roughness: float = 0.5, metallic: float = 0.0,
+                       emission_strength: float = 0.0, name: str | None = None) -> dict:
+    """Give objects one simple material: base color (RGB 0..1), roughness, metallic, and
+    optional glow (emission_strength > 0 glows in the base color)."""
+    return await run("set_material", objects=objects, color=color, roughness=roughness,
+                     metallic=metallic, emission_strength=emission_strength, name=name)
+
+
+@mcp.tool()
+async def render_video(path: str = "video.mp4", frame_start: int | None = None,
+                       frame_end: int | None = None,
+                       quality: Literal["draft", "preview", "final", "cycles"] = "preview",
+                       width: int | None = None, height: int | None = None,
+                       fps: int | None = None, wait: bool = False) -> dict:
+    """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id.
+    draft = clay workbench, half res (~0.1 s/frame) for checking timing/cameras;
+    preview = Eevee half res (~3 s/frame here); final = Eevee full res 64 samples;
+    cycles = slowest, photoreal. width/height e.g. 1920x1080, 1080x1920 (vertical).
+    Poll render_status(job_id). wait=True blocks (only sensible for draft)."""
+    return await run("render_video", path=path, frame_start=frame_start, frame_end=frame_end,
+                     quality=quality, width=width, height=height, fps=fps, wait=wait)
+
+
+@mcp.tool()
+async def render_status(job_id: str | None = None) -> dict:
+    """Progress of a render job (frames done, ETA, output path), or all jobs."""
+    return await run("render_status", job_id=job_id)
+
+
+@mcp.tool()
+async def cancel_render(job_id: str) -> dict:
+    """Stop a running render job."""
+    return await run("cancel_render", job_id=job_id)
 
 
 # --- escape hatch & lifecycle ------------------------------------------------

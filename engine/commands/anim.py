@@ -400,7 +400,11 @@ def _key_rot(pb, frame, prev):
 
 
 def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start=None,
-                  in_place=False, align_rest=True, root_scale=None, key=True):
+                  in_place=False, align_rest=True, root_scale=None, key=True,
+                  root_mode="first", carry=None):
+    """root_mode "first": root motion relative to the source's first frame (mocap);
+    "rest": relative to the source rest pose (proxy rigs that already include carry).
+    carry: world offset added to the root (continue from where the previous clip ended)."""
     """Copy animation src -> tgt over [frame_start, frame_end], keyed from dest_start."""
     sc = bpy.context.scene
     dest_start = frame_start if dest_start is None else dest_start
@@ -445,7 +449,8 @@ def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start
         sc.frame_set(f)
         cur = {b: swm @ src.pose.bones[src_map[b]].matrix for b in names}
         if root_ref is None:
-            root_ref = cur["hips"].translation.copy()
+            root_ref = ((swm @ src.data.bones[src_map["hips"]].matrix_local).translation
+                        if root_mode == "rest" else cur["hips"].translation.copy())
         for lvl in sorted(levels):
             for b in levels[lvl]:
                 delta = F @ (cur[b].to_quaternion() @ s_rest[b].inverted()) @ F.inverted()
@@ -455,6 +460,8 @@ def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start
                     off = Fm @ (cur["hips"].translation - root_ref) * root_scale
                     if in_place:
                         off.x = off.y = 0.0
+                    if carry is not None:
+                        off = off + carry
                     loc = t_hips_rest + off
                 _set_world_rot(tgt, tgt.pose.bones[tgt_map[b]], q, loc)
             bpy.context.view_layer.update()
@@ -494,19 +501,39 @@ def _drop(obj):
         bpy.data.actions.remove(act)
 
 
+def _carry(rig, smap, frame):
+    """Horizontal root offset the rig has at frame-1 (where the previous clip ended)."""
+    sc = bpy.context.scene
+    hips = smap.get("hips")
+    if (hips is None or frame <= sc.frame_start or not rig.animation_data
+            or not rig.animation_data.action):
+        return Vector((0.0, 0.0, 0.0))
+    sc.frame_set(frame - 1)
+    mw = rig.matrix_world
+    now = (mw @ rig.pose.bones[hips].matrix).translation
+    rest = (mw @ rig.data.bones[hips].matrix_local).translation
+    sc.frame_set(frame)
+    return Vector((now.x - rest.x, now.y - rest.y, 0.0))
+
+
 def _drive(rig, author, frame_start, frame_end, dest_start, in_place=False, key=True):
     """Run author(basic_rig, landmarks, direct) on the rig itself (basic rigs) or on a
     proportion-matched basic proxy that is then retargeted onto the rig."""
     if rig.get("c3d_rig_type") == "basic" or all(b in rig.pose.bones for b in BASIC_BONES):
-        lm = _rig_landmarks(rig, {b: b for b in BASIC_BONES})
-        author(rig, lm, True)
-        return {"via": "direct"}
+        ident = {b: b for b in BASIC_BONES}
+        lm = _rig_landmarks(rig, ident)
+        carry = _carry(rig, ident, dest_start) if key else Vector((0, 0, 0))
+        author(rig, lm, True, carry)
+        return {"via": "direct", "continues_from": [round(carry.x, 3), round(carry.y, 3)]}
+    smap = semantic_map(rig)
+    carry = _carry(rig, smap, dest_start) if key else Vector((0, 0, 0))
     proxy, smap, lm = _proxy_for(rig)
     try:
-        author(proxy, lm, False)
+        author(proxy, lm, False, carry)
         info = bake_retarget(proxy, rig, {b: b for b in BASIC_BONES}, smap, frame_start,
                              frame_end, dest_start, in_place=in_place, align_rest=False,
-                             root_scale=1.0, key=key)
+                             root_scale=1.0, key=key, root_mode="rest")
+        info["continues_from"] = [round(carry.x, 3), round(carry.y, 3)]
     finally:
         _drop(proxy)
     info["via"] = "proxy-retarget"
@@ -537,10 +564,10 @@ def apply_pose(armature, pose, frame=None, keyframe=False):
     f = int(frame) if frame is not None else sc.frame_current
     sc.frame_set(f)
 
-    def author(basic, lm, direct):
+    def author(basic, lm, direct, carry):
         rots = _resolve(POSES[pose][0], _arm_rest_deg(lm)) if pose != "rest" else {}
         drop = POSE_HIPS_DROP.get(pose, 0.0) * _dims(lm)["hip_h"]
-        loc = (0.0, -drop, 0.0)
+        loc = (carry.x, -drop, -carry.y)
         if keyframe and direct:
             _key_basic(basic, f, rots, loc)
         else:
@@ -566,13 +593,13 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
     start = int(start_frame)
     end = start + n
 
-    def author(basic, lm, direct):
+    def author(basic, lm, direct, carry):
         d, rest = _dims(lm), _arm_rest_deg(lm)
         for i in range(n + 1):
             rots, (x, up, fwd) = fn(i if loops else min(i, T), T, d, rest, amplitude)
             if in_place:
                 fwd = 0.0
-            _key_basic(basic, start + i, rots, (x, up, fwd))
+            _key_basic(basic, start + i, rots, (x + carry.x, up, fwd - carry.y))
 
     info = _drive(rig, author, start, end, start, in_place=in_place)
     _extend_range(end)
@@ -594,7 +621,10 @@ def retarget_animation(source, target, bone_map=None, frame_start=None, frame_en
         raise ValueError(f"{source} has no animation")
     fs = int(frame_start if frame_start is not None else act.frame_range[0])
     fe = int(frame_end if frame_end is not None else act.frame_range[1])
-    info = bake_retarget(src, tgt, smap, tmap, fs, fe, dest_start, in_place=in_place)
+    ds = fs if dest_start is None else int(dest_start)
+    carry = _carry(tgt, tmap, ds)
+    info = bake_retarget(src, tgt, smap, tmap, fs, fe, ds, in_place=in_place, carry=carry)
+    info["continues_from"] = [round(carry.x, 3), round(carry.y, 3)]
     _extend_range(info["frames"][1])
     info["mapped"] = {b: [smap[b], tmap[b]] for b in BASIC_BONES if b in smap and b in tmap}
     return info
