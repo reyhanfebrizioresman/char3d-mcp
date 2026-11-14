@@ -40,7 +40,8 @@ Keep previews ≤ 512 px unless the user asks for more.
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
-- Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, ok)
+- Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
+  four, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
   `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
@@ -89,7 +90,7 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 `set_hand_pose(character, shape, side)` poses the fingers on any rig with finger bones
 (MPFB game_engine/mixamo/rigify, Mixamo, Rigify human); curl axes are derived from the
 hand geometry, so shapes look the same on every skeleton. Shapes: relaxed, open, palm,
-beat, point, fist, thumbs_up, peace, ok. Pair with arm poses, e.g. `apply_pose(rig,
+beat, point, fist, thumbs_up, peace, three, four, ok. Pair with arm poses, e.g. `apply_pose(rig,
 "point_forward")` + `set_hand_pose(rig, "point", side="right")`; `keyframe=True, frame=N`
 to animate. Mannequins from `create_human` have no fingers.
 
@@ -137,6 +138,20 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   the arm (and finger) bones only (works with any body clip underneath). Fingers follow
   each gesture (relaxed → beat half-fist / open palm / index point) on rigs with fingers. Frame with `medium` or
   `medium_full` so hands are visible.
+- **Meaning gestures** (`semantic=True`, default): words with a meaning get an iconic gesture
+  instead of a beat — numbers satu..lima / one..five (fingers counted, palm forward),
+  saya/I (hand on chest), kamu/you (palm-up offer), ini/itu/this/that (point), besar/semua/big
+  (wide hands), kecil/small (pinch), tidak/bukan/no (palms-down wipe), bagus/hebat/great
+  (thumbs up), mungkin/apa/why (palms-up shrug), tunggu/stop (palm out), naik/turun/up/down,
+  bersama/kita/together, pikir/ide/think (point at temple), cinta/terima kasih/love (hands on
+  heart). Indonesian/Malay + English, suffixes like -nya/-lah/-kan are stripped. Needs word
+  times: `lip_sync(text)` or `lip_sync_audio` with whisper/text timing store them on the
+  face mesh (audio-only timing has none → beats only). Numbers always show; frequent words
+  (saya, kamu, ini, itu, apa, kita) are used sparingly so the talker doesn't mime every word.
+  The palm is turned with a twist shared by forearm and wrist. Result `semantic` lists
+  word → gesture → frame. Force a gesture with
+  `cues=[{"frame": 48, "gesture": "two"}, {"frame": 90, "gesture": "big", "hold_seconds": 0.8}]`
+  (works without speech too); `semantic=False` for beats only.
 - Recipe — talking presenter: `create_realistic_human` → `animate(rig, "idle")` →
   `lip_sync_audio(rig, "audio/line.wav")` → `set_expression(rig, "smile", 0.45, frame=1,
   keyframe=True)` → `set_lighting("studio")` → `camera_shot(shot="close_up",

@@ -268,6 +268,8 @@ def lip_sync(character, text, start_frame=1, chars_per_second=14.0, strength=0.9
     sc = bpy.context.scene
     sc.frame_end = max(sc.frame_end, end)
     words = len(re.findall(r"\w+", text))
+    from .semantic import store_words, text_word_frames
+    store_words(base, text_word_frames(text, start, step, text_tokens), start, end)
     return {"character": base.name, "frames": [start, end], "next_start_frame": end + 1,
             "seconds": round((end - start) / fps, 2), "words": words,
             "mouth_shapes": len([m for m in merged if m[0] != "sil_00"])}

@@ -17,6 +17,7 @@ from .. import context
 from . import command
 from .face import (VISEMES, VOWEL_VISEMES, _basemesh, _ensure_face, _face_meshes, _set,
                    key_viseme, text_tokens)
+from .semantic import store_words
 
 
 def _resolve(path):
@@ -291,6 +292,10 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
             prev = vis if vis != "sil_00" else None
     end = start + n + 1
     _set(meshes, {v: 0.0 for v in VISEMES}, end)
+    # word times for meaning-driven gestures (talk_gestures); audio-only mode has none
+    stored = store_words(base, [(w["word"], start + float(w["start"]) * fps,
+                                 start + float(w["end"]) * fps) for w in (words or [])],
+                         start, end)
     if expression:
         from .face import set_expression
         set_expression(character, expression, frame=start, keyframe=True, transition_frames=0)
@@ -300,4 +305,4 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
     return {"character": base.name, "mode": mode, "frames": [start, end],
             "next_start_frame": end + 1, "seconds": round(feat["seconds"], 2),
             "voiced_seconds": round(voiced_s, 2), "mouth_shapes": shapes,
-            "words": len(words) if words else 0, "sound_strip": sound["strip"] if sound else None}
+            "words": len(words) if words else 0, "word_times_stored": stored, "sound_strip": sound["strip"] if sound else None}

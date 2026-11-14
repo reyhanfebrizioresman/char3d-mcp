@@ -225,6 +225,16 @@ async def main():
                                                side="right", frame=70, keyframe=True))[0])
             assert hp["bones"] == 15 and hp["keyed"], hp
             print("talk_gestures (MPFB):", [g["type"] for g in tg["gestures"]])
+            # meaning gestures from stored word times (lip_sync text)
+            ls2 = json.loads(text_of(await call(
+                "lip_sync", character="Vo_rig", start_frame=1,
+                text="Saya punya dua ide besar, dan ini tidak sulit."))[0])
+            tgs = json.loads(text_of(await call("talk_gestures", character="Vo_rig",
+                                                frame_start=1, frame_end=ls2["frames"][1]))[0])
+            kinds = [g["type"] for g in tgs["semantic"]]
+            assert tgs["words_known"] >= 9 and "two" in kinds, tgs
+            assert tgs["hand_bones"] == ["hand_l", "hand_r"] and tgs["max_palm_twist_deg"] > 10, tgs
+            print("talk_gestures semantic:", [(g["word"], g["type"]) for g in tgs["semantic"]])
             await call("remove_audio")
         aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
         assert aa["seconds"] > 2, aa
@@ -234,6 +244,11 @@ async def main():
                                             frame_start=1, frame_end=50))[0])
         assert tgm["talking_frames"] > 10, tgm
         print("talk_gestures (rigify mannequin):", tgm["arm_bones"])
+        tgc = json.loads(text_of(await call("talk_gestures", character="Mq_rig", frame_start=1,
+                                            frame_end=50, semantic=False,
+                                            cues=[{"frame": 25, "gesture": "stop"}]))[0])
+        assert [g["type"] for g in tgc["semantic"]] == ["stop"], tgc
+        print("talk_gestures cue on mannequin OK")
         await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
         v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
                                           wait=True))[0])

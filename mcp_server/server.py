@@ -514,7 +514,8 @@ async def lip_sync(character: str, text: str, start_frame: int = 1,
                    expression: Expression | None = None) -> dict:
     """Animate the mouth to `text` (letter-to-viseme approximation; works for English and
     Indonesian-style spelling). No audio is generated - this is mouth motion only.
-    chars_per_second ~14 = normal speech. Returns next_start_frame for chaining."""
+    chars_per_second ~14 = normal speech. Returns next_start_frame for chaining. Word times
+    are stored so talk_gestures can add meaning gestures."""
     return await run("lip_sync", character=character, text=text, start_frame=start_frame,
                      chars_per_second=chars_per_second, strength=strength, expression=expression)
 
@@ -608,22 +609,35 @@ async def talk_gestures(character: str, frame_start: int | None = None,
                         frame_end: int | None = None,
                         style: Literal["calm", "presenter", "energetic"] = "presenter",
                         hands: Literal["both", "right", "left"] = "both",
-                        intensity: float = 1.0, seed: int = 5, fingers: bool = True) -> dict:
+                        intensity: float = 1.0, seed: int = 5, fingers: bool = True,
+                        semantic: bool = True, cues: list[dict] | None = None) -> dict:
     """Speech-timed hand gestures: while talking the arms move into a speaking posture
     (hands in front of the belly) and hit beats, open-palm, sweep and point gestures on
     stressed words (stroke lands on the syllable), then relax back to the base animation in
-    pauses. Rhythm from timeline audio or lip-sync keys. Layered: only upper-arm/forearm
-    rotations are keyed (hands follow), legs/torso/head untouched; gestures follow the
-    chest. Works on create_realistic_human, Rigify and basic rigs. Run after
-    lip_sync_audio and body clips, before/after talk_motion (independent bones).
-    fingers=True also shapes the hands (relaxed, beat half-fist, open, palm, index point)
-    on rigs with finger bones (realistic humans, Mixamo/Rigify; mannequins have none)."""
+    pauses. Rhythm from timeline audio or lip-sync keys. Layered: only arm/hand/finger
+    rotations are keyed, legs/torso/head untouched; gestures follow the chest. Works on
+    create_realistic_human, Rigify and basic rigs. Run after lip_sync_audio / lip_sync and
+    body clips, before/after talk_motion (independent bones).
+    semantic=True: words with a meaning get an iconic gesture instead of a beat (needs word
+    times: lip_sync text or lip_sync_audio with whisper/text timing; Indonesian/Malay +
+    English): numbers satu..lima/one..five -> fingers counted with palm forward,
+    saya/I -> hand on chest, kamu/you -> palm-up offer, ini/itu -> point, besar/semua/big ->
+    wide hands, kecil/small -> pinch, tidak/no -> palms-down wipe, bagus/great -> thumbs up,
+    mungkin/apa/why -> palms-up shrug, tunggu/stop -> palm out, naik/turun -> hand rises/falls,
+    bersama/kita -> hands come together, pikir/idea -> point at temple, cinta/terima kasih ->
+    hands on heart. Result `semantic` lists word, gesture and frame.
+    cues: force gestures yourself, e.g. [{"frame": 48, "gesture": "two"},
+    {"frame": 90, "gesture": "big", "hands": "both", "hold_seconds": 0.8}] (gesture names as
+    above; a cue replaces any word gesture near it).
+    fingers=True also shapes the hands on rigs with finger bones (realistic humans,
+    Mixamo/Rigify; mannequins have none - they still get the arm motion)."""
     return await run("talk_gestures", character=character, frame_start=frame_start,
                      frame_end=frame_end, style=style, hands=hands, intensity=intensity,
-                     seed=seed, fingers=fingers)
+                     seed=seed, fingers=fingers, semantic=semantic, cues=cues)
 
 
-HandShape = Literal["relaxed", "open", "palm", "beat", "point", "fist", "thumbs_up", "peace", "ok"]
+HandShape = Literal["relaxed", "open", "palm", "beat", "point", "fist", "thumbs_up", "peace",
+                    "three", "four", "ok"]
 
 
 @mcp.tool()

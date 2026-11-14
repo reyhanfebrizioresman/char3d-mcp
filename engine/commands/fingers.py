@@ -44,6 +44,10 @@ SHAPES = {
                   "ring": (84, 95, 65), "pinky": (86, 95, 65), "spread": 0},
     "peace": {"thumb": (28, 40, 30), "index": (0, 0, 0), "middle": (0, 0, 0), "ring": (80, 95, 60),
               "pinky": (85, 95, 60), "spread": 12},
+    "three": {"thumb": (28, 40, 30), "index": (0, 0, 0), "middle": (0, 0, 0), "ring": (0, 2, 0),
+              "pinky": (85, 95, 60), "spread": 10},
+    "four": {"thumb": (30, 42, 32), "index": (0, 0, 0), "middle": (0, 0, 0), "ring": (0, 2, 0),
+             "pinky": (0, 3, 0), "spread": 10},
     "ok": {"thumb": (25, 30, 20), "index": (45, 55, 35), "middle": (0, 3, 2), "ring": (0, 3, 2),
            "pinky": (0, 3, 2), "spread": 6},
 }
@@ -68,8 +72,8 @@ def find_fingers(rig):
     return {}
 
 
-def _axes(rig, chains):
-    """Per bone: (curl axis, spread axis) in that bone's own rest space."""
+def _palm_frame(rig, chains):
+    """(palm normal, knuckle line index->pinky) in armature rest space."""
     B = rig.data.bones
 
     def head(f, n):
@@ -89,7 +93,18 @@ def _axes(rig, chains):
     thumb = 0.0
     if "thumb" in chains:
         thumb = (tail("thumb", 2) - (head(side_a, 0) + head(side_b, 0)) / 2).dot(n)
-    palm = n if (thumb - 10.0 * convex) > 0 else -n
+    return (n if (thumb - 10.0 * convex) > 0 else -n), across
+
+
+def _axes(rig, chains):
+    """Per bone: (curl axis, spread axis) in that bone's own rest space."""
+    B = rig.data.bones
+
+    def head(f, n):
+        return B[chains[f][n]].head_local
+
+    ref = "middle" if "middle" in chains else next(f for f in chains if f != "thumb")
+    palm, across = _palm_frame(rig, chains)
     to_middle = None
     if "thumb" in chains:
         to_middle = (head(ref, 0) - head("thumb", 0)).normalized()
@@ -118,6 +133,13 @@ class HandRig:
         self.rig = rig
         self.fingers = find_fingers(rig)
         self.axes = {s: _axes(rig, ch) for s, ch in self.fingers.items()}
+
+    def palm_local(self, side, hand_bone):
+        """Palm normal of one hand in the given hand bone's rest space (None if unknown)."""
+        if side not in self.fingers or hand_bone not in self.rig.data.bones:
+            return None
+        palm, _across = _palm_frame(self.rig, self.fingers[side])
+        return (self.rig.data.bones[hand_bone].matrix_local.to_3x3().inverted() @ palm).normalized()
 
     @property
     def bones(self):
