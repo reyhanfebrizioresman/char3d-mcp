@@ -571,6 +571,24 @@ async def talk_motion(character: str, frame_start: int | None = None, frame_end:
                      look_at_camera=look_at_camera, seed=seed)
 
 
+@mcp.tool()
+async def talk_gestures(character: str, frame_start: int | None = None,
+                        frame_end: int | None = None,
+                        style: Literal["calm", "presenter", "energetic"] = "presenter",
+                        hands: Literal["both", "right", "left"] = "both",
+                        intensity: float = 1.0, seed: int = 5) -> dict:
+    """Speech-timed hand gestures: while talking the arms move into a speaking posture
+    (hands in front of the belly) and hit beats, open-palm, sweep and point gestures on
+    stressed words (stroke lands on the syllable), then relax back to the base animation in
+    pauses. Rhythm from timeline audio or lip-sync keys. Layered: only upper-arm/forearm
+    rotations are keyed (hands follow), legs/torso/head untouched; gestures follow the
+    chest. Works on create_realistic_human, Rigify and basic rigs. Run after
+    lip_sync_audio and body clips, before/after talk_motion (independent bones)."""
+    return await run("talk_gestures", character=character, frame_start=frame_start,
+                     frame_end=frame_end, style=style, hands=hands, intensity=intensity,
+                     seed=seed)
+
+
 @mcp.tool(description=(
     "Generate a voice recording from text (Chatterbox Multilingual on a FREE public Hugging "
     "Face Space; queue/quota limits apply). language: ar da de el en es fi fr he hi it ja ko ms "

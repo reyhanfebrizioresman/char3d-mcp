@@ -121,7 +121,11 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
     name = filename or f"preview_{view}_{time.strftime('%Y%m%d_%H%M%S')}.png"
     out = context.resolve(name, "renders")
     used = engine
+    # shot markers switch the camera during rendering; mute them for the auto camera
+    muted = [(m, m.camera) for m in sc.timeline_markers if m.camera]
     try:
+        for m, _c in muted:
+            m.camera = None
         sc.camera = cam
         sc.render.resolution_x, sc.render.resolution_y = int(width), int(height)
         sc.render.resolution_percentage = 100
@@ -141,6 +145,8 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
             _setup_engine(sc, "cycles")
             bpy.ops.render.render(write_still=True)
     finally:
+        for m, c in muted:
+            m.camera = c
         for o in hidden:
             o.hide_render = False
         sc.render.engine = saved["engine"]

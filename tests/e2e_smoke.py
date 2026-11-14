@@ -203,9 +203,20 @@ async def main():
             assert max(abs(v) for pair in rng.values() for v in pair) < 25, rng
             print("talk_motion:", tm["driven_by"], "emphasis", len(tm["emphasis_frames"]),
                   "saccades", tm["saccades"])
+            tg = json.loads(text_of(await call("talk_gestures", character="Vo_rig",
+                                               frame_start=1, frame_end=60,
+                                               style="energetic"))[0])
+            assert tg["talking_frames"] > 10 and len(tg["arm_bones"]) == 4, tg
+            print("talk_gestures (MPFB):", [g["type"] for g in tg["gestures"]])
             await call("remove_audio")
         aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
         assert aa["seconds"] > 2, aa
+        await call("create_human", name="Mq", style="stylized", location=[-1.2, 0, 0])
+        await call("auto_rig_humanoid", mesh="Mq", rig_type="rigify")
+        tgm = json.loads(text_of(await call("talk_gestures", character="Mq_rig",
+                                            frame_start=1, frame_end=50))[0])
+        assert tgm["talking_frames"] > 10, tgm
+        print("talk_gestures (rigify mannequin):", tgm["arm_bones"])
         await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
         v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
                                           wait=True))[0])

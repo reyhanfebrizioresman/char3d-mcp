@@ -37,7 +37,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
 - Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
 - Audio & voice: `add_audio`, `list_audio`, `remove_audio`, `transcribe_audio`,
-  `lip_sync_audio`, `talk_motion`, `ai_text_to_speech` (free HF Space)
+  `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
@@ -122,10 +122,16 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   last (it reads the audio/lip sync and the camera; `animate` afterwards over the same
   frames would overwrite the head; `set_expression(clear=True)` afterwards resets eye gaze
   at its frame).
+- `talk_gestures(character, style)`: speaking posture + beat / open-palms / sweep / point
+  gestures timed to stressed words; arms relax to the base animation in pauses. Styles:
+  calm, presenter (default), energetic; `hands="right"` for one-handed talkers. Layered on
+  the arm bones only (works with any body clip underneath). Frame with `medium` or
+  `medium_full` so hands are visible.
 - Recipe — talking presenter: `create_realistic_human` → `animate(rig, "idle")` →
   `lip_sync_audio(rig, "audio/line.wav")` → `set_expression(rig, "smile", 0.45, frame=1,
   keyframe=True)` → `set_lighting("studio")` → `camera_shot(shot="close_up",
-  move="push_in")` → `auto_blink(rig)` → `talk_motion(rig)` → `render_video`.
+  move="push_in")` → `auto_blink(rig)` → `talk_motion(rig)` → `talk_gestures(rig)` → `render_video`
+  (use `shot="medium"` when gestures should be seen).
 - `transcribe_audio` gives text + word times without animating (e.g. for subtitles).
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
@@ -286,7 +292,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
-- Phoneme-level forced alignment (word-level today); gestures (hand beats) driven by speech
+- Phoneme-level forced alignment (word-level today); finger poses for gestures
 - Foot IK / foot-locking for walks, crossfades between clips
 - Face rig / lip sync
 
