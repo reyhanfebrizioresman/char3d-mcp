@@ -105,6 +105,12 @@ async def main():
         a = json.loads(text_of(await call("animate", armature="Walker_rig", clip="wave",
                                           start_frame=w["next_start_frame"], cycles=1))[0])
         assert a["frames"][0] == w["frames"][1] + 1, (w, a)
+        fl = w["foot_lock"]["contacts"]
+        assert fl["L"] and fl["R"], w
+        assert "foot_lock" not in a, a          # wave: no locomotion, no foot lock
+        lk = json.loads(text_of(await call("lock_feet", armature="Walker_rig", frame_start=1,
+                                           frame_end=w["frames"][1]))[0])
+        assert lk["feet"]["L"]["contacts"] and lk["max_ik_error_m"] < 0.01, lk
         bvh = json.loads(text_of(await call("export_asset", path="e2e_walk.bvh",
                                             objects=["Walker_rig"]))[0])
         await call("create_human", name="Pro", style="realistic", location=[2, 0, 0])
@@ -113,6 +119,7 @@ async def main():
         mo = json.loads(text_of(await call("import_mocap", path=bvh["path"], armature="Pro_rig",
                                            start_frame=1))[0])
         assert mo["bones"] >= 18, mo
+        assert mo["foot_lock"]["contacts"]["L"] and mo["foot_lock"]["contacts"]["R"], mo
         frames = await call("render_frames", frames=[1, 9], view="right", size=128, objects=["Pro"])
         assert [c.type for c in frames.content].count("image") == 2
         anim_glb = json.loads(text_of(await call("export_asset", path="e2e_walker.glb",
@@ -121,7 +128,8 @@ async def main():
         raw = open(anim_glb["path"], "rb").read()
         gltf = json.loads(raw[20:20 + struct.unpack("<I", raw[12:16])[0]])
         assert len(gltf.get("animations", [])) == 1, gltf.get("animations")
-        print("phase 3: mocap bones", mo["bones"], "| glb animations", len(gltf["animations"]))
+        print("phase 3: mocap bones", mo["bones"], "| glb animations", len(gltf["animations"]),
+              "| foot contacts", fl)
 
         # phase 4: lighting, two shots, scene-camera check, draft video
         await call("set_lighting", preset="studio", subject=["Walker"])

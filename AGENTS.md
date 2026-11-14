@@ -42,7 +42,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
-  `retarget_animation`, `clear_animation`, `render_frames`
+  `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `render_video`,
   `render_status`, `cancel_render`
@@ -192,14 +192,26 @@ world-space retarget, so the same pose/clip looks the same everywhere.
   the imported source skeleton is deleted afterwards. If `mapped` is missing bones,
   pass `bone_map={"thigh.L": "their_bone", ...}` (keys = basic bone names).
 - `retarget_animation(source, target)` — copy motion between two rigs in the scene.
+- **Foot lock (foot IK)** — planted feet stay still on the floor: contacts are detected
+  (near the floor and not travelling ahead of the hips), the foot rolls heel → toe
+  without slipping, never sinks into the floor, swinging feet keep ~2 cm clearance, and
+  the legs are re-solved with 2-bone IK (hips lowered a little only when a leg can't
+  reach). Automatic in `animate` for walk/run/jump (not with `in_place`) and in
+  `import_mocap`; the result has `foot_lock.contacts` per foot. Turn off with
+  `foot_lock=False`. For anything else keyed on a rig (retarget_animation, set_pose
+  keys, older scenes) run `lock_feet(rig)` afterwards; force contacts with
+  `contacts={"L": [[10, 27]], "R": [[1, 11]]}` or tune `height_tolerance` /
+  `speed_tolerance` (m/s) / `floor`. Run it after body clips, before talk_motion /
+  talk_gestures (those only touch head/arms, so the order there doesn't matter).
 - Check motion with `render_frames([1, 9, 17, 25], view="right", objects=[mesh])`
   (side view for walking/running, three_quarter for gestures).
 - Chained clips continue from where the previous one ended (no snapping back to
   the start position).
 - `export_asset("hero.glb")` includes the animation; `export_asset("walk.bvh",
   objects=[rig])` writes motion only.
-- Known limits: feet can slide slightly on walk/run (no foot IK yet); clips blend by
-  hard cuts, not crossfades.
+- Known limits: clips blend by hard cuts, not crossfades (a foot that is mid-step at a
+  cut can pop); in_place walks keep their treadmill sliding by design; stairs/uneven
+  ground are not supported (one flat floor height).
 
 ## Film: cameras, lighting, video
 **Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
@@ -303,7 +315,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
 - Phoneme-level forced alignment (word-level today)
-- Foot IK / foot-locking for walks, crossfades between clips
+- Crossfades between clips; foot IK on stairs / uneven ground
 - Face rig / lip sync
 
 ## For agents editing this repo

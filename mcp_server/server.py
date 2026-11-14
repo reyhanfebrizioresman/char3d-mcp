@@ -243,22 +243,46 @@ async def apply_pose(armature: str, pose: Pose, frame: int | None = None,
 
 @mcp.tool()
 async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int = 2,
-                  speed: float = 1.0, amplitude: float = 1.0, in_place: bool = False) -> dict:
+                  speed: float = 1.0, amplitude: float = 1.0, in_place: bool = False,
+                  foot_lock: bool | None = None) -> dict:
     """Keyframe a procedural motion clip on any humanoid rig. walk/run move the character
     forward (-Y) unless in_place. speed > 1 = faster, amplitude scales the motion.
-    Chain clips with start_frame = previous result's next_start_frame."""
+    Chain clips with start_frame = previous result's next_start_frame.
+    foot_lock (default auto: on for walk/run/jump unless in_place) pins planted feet to the
+    floor with leg IK so they don't slide; the result lists the detected foot contacts."""
     return await run("animate", armature=armature, clip=clip, start_frame=start_frame,
-                     cycles=cycles, speed=speed, amplitude=amplitude, in_place=in_place)
+                     cycles=cycles, speed=speed, amplitude=amplitude, in_place=in_place,
+                     foot_lock=foot_lock)
 
 
 @mcp.tool()
 async def import_mocap(path: str, armature: str, start_frame: int = 1, in_place: bool = False,
-                       bone_map: dict[str, str] | None = None) -> dict:
+                       bone_map: dict[str, str] | None = None, foot_lock: bool = True) -> dict:
     """Load motion capture (.bvh, .fbx, .glb - e.g. CMU, Mixamo, Rokoko) and retarget it onto
     `armature`. Bone names, T/A rest pose, facing and body size are matched automatically;
-    if bones are not recognised pass bone_map {"thigh.L": "their_left_thigh", ...}."""
+    if bones are not recognised pass bone_map {"thigh.L": "their_left_thigh", ...}.
+    foot_lock=True (default) removes the foot sliding retargeting causes."""
     return await run("import_mocap", path=path, armature=armature, start_frame=start_frame,
-                     in_place=in_place, bone_map=bone_map)
+                     in_place=in_place, bone_map=bone_map, foot_lock=foot_lock)
+
+
+@mcp.tool()
+async def lock_feet(armature: str, frame_start: int | None = None, frame_end: int | None = None,
+                    floor: float | None = None, height_tolerance: float | None = None,
+                    speed_tolerance: float | None = None, blend_frames: int | None = None,
+                    adjust_hips: bool = True,
+                    contacts: dict[str, list[list[int]]] | None = None) -> dict:
+    """Foot IK clean-up for an animation already on a rig (any clip, mocap, retarget): finds
+    when each foot is planted, keeps it still on the floor (rolling heel -> toe, no sliding,
+    no sinking into the floor) and re-solves the legs with IK, lowering the hips slightly when
+    a leg can't reach. animate(walk/run/jump) and import_mocap already do this. Tune with
+    height_tolerance (m above floor counted as contact), speed_tolerance (m/s drift allowed),
+    floor (Z, default the rig's origin), or force contacts {"L": [[10, 27]], "R": [[1, 11]]}
+    (frames; L = character's left)."""
+    return await run("lock_feet", armature=armature, frame_start=frame_start,
+                     frame_end=frame_end, floor=floor, height_tolerance=height_tolerance,
+                     speed_tolerance=speed_tolerance, blend_frames=blend_frames,
+                     adjust_hips=adjust_hips, contacts=contacts)
 
 
 @mcp.tool()

@@ -231,12 +231,18 @@ def _dims(lm):
 
 
 # ----------------------------------------------------------------------------- clips
+# body travel per step relative to the leg sweep (tuned so planted feet barely slide)
+STRIDE_SCALE = {"walk": 1.25, "run": 1.3}
+
+
 def _walk_like(i, T, d, rest, amp, run=False):
     p = 2 * math.pi * i / T
     s, c = math.sin(p), math.cos(p)
     A = (38 if run else 24) * amp
     knee_amp = (85 if run else 48) * amp
-    lift = lambda ph: max(0.0, math.cos(ph + 0.7)) ** 1.6  # noqa: E731
+    # knee flexes in swing only: straight from heel strike (thigh fully forward, p = pi/2)
+    # until just before toe-off; peak flexion early in swing (~73 % of the gait cycle)
+    lift = lambda ph: max(0.0, math.cos(ph + 0.15)) ** 1.6  # noqa: E731
     spec = {
         "thigh.L": [A * s, 0, 0], "thigh.R": [-A * s, 0, 0],
         "shin.L": [-(6 + knee_amp * lift(p)), 0, 0],
@@ -251,7 +257,7 @@ def _walk_like(i, T, d, rest, amp, run=False):
         "head": [-(6 if run else 2), -3 * s * amp, 0],
     }
     bob = (0.035 if run else 0.018) * d["hip_h"] * amp
-    stride = 2 * d["leg"] * math.sin(math.radians(A)) * (0.95 if run else 0.9)
+    stride = 2 * d["leg"] * math.sin(math.radians(A)) * STRIDE_SCALE["run" if run else "walk"]
     forward = 2 * stride * i / T     # one cycle = two steps
     up = bob * math.cos(2 * p) - (0.04 if run else 0.01) * d["hip_h"]
     return _resolve(spec, rest), (0.0, up, forward)
@@ -579,10 +585,23 @@ def apply_pose(armature, pose, frame=None, keyframe=False):
     return {"armature": rig.name, "pose": pose, "frame": f, "keyed": bool(keyframe), **info}
 
 
+FOOT_LOCK_CLIPS = ("walk", "run", "jump")
+# clips whose contacts are known from the choreography: (t0, t1) fractions of the clip
+CLIP_CONTACTS = {"jump": ((0.0, 0.36), (0.70, 1.0))}
+
+
+def _lock(rig, f0, f1, contacts=None):
+    from .footlock import foot_lock
+    r = foot_lock(rig, f0, f1, contacts=contacts)
+    return {"contacts": {s: v["contacts"] for s, v in r["feet"].items()},
+            "hips_lowered_max_m": r["hips_lowered_max_m"]}
+
+
 @command("animate")
 def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
-            in_place=False):
-    """Key a procedural clip on any humanoid rig starting at start_frame."""
+            in_place=False, foot_lock=None):
+    """Key a procedural clip on any humanoid rig starting at start_frame.
+    foot_lock: None = auto (walk/run/jump, not in_place), True/False to force."""
     if clip not in CLIPS:
         raise ValueError(f"unknown clip '{clip}'. Available: {sorted(CLIPS)}")
     fn, period, loops, _desc = CLIPS[clip]
@@ -603,6 +622,14 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
 
     info = _drive(rig, author, start, end, start, in_place=in_place)
     _extend_range(end)
+    lock = foot_lock if foot_lock is not None else (clip in FOOT_LOCK_CLIPS and not in_place)
+    if lock:
+        contacts = None
+        if clip in CLIP_CONTACTS:
+            iv = [[start + int(round(a * n)), start + int(round(b * n))]
+                  for a, b in CLIP_CONTACTS[clip]]
+            contacts = {"L": iv, "R": iv}
+        info["foot_lock"] = _lock(rig, start, end, contacts)
     return {"armature": rig.name, "clip": clip, "frames": [start, end], "cycle_frames": T,
             "next_start_frame": end + 1, **info}
 
@@ -632,7 +659,7 @@ def retarget_animation(source, target, bone_map=None, frame_start=None, frame_en
 
 @command("import_mocap")
 def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
-                 frame_start=None, frame_end=None, keep_source=False):
+                 frame_start=None, frame_end=None, keep_source=False, foot_lock=True):
     """Import a BVH/FBX/GLB motion file and retarget it onto `armature`."""
     path = context.resolve(path, "imports")
     if not os.path.isfile(path):
@@ -668,6 +695,8 @@ def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
                     bpy.data.actions.remove(act)
     info["source_file"] = path
     info["next_start_frame"] = info["frames"][1] + 1
+    if foot_lock and not in_place:
+        info["foot_lock"] = _lock(tgt, info["frames"][0], info["frames"][1])
     return info
 
 
