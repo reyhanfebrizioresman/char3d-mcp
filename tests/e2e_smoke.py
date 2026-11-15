@@ -163,6 +163,20 @@ async def main():
                                              resolution="480p", frame_start=1, frame_end=6,
                                              wait=True))[0])
         assert vid2["status"] == "done" and vid2["size"] == [854, 480], vid2
+        # subtitles: explicit lines -> preview frame with caption, burned-in video + .srt
+        sub = json.loads(text_of(await call("add_subtitles", style="tiktok", lines=[
+            {"text": "Halo semua, ini tes subtitle.", "start": 0.1, "end": 1.4}]))[0])
+        assert sub["captions"] == 2 and sub["preview"][0]["text"] == "Halo semua,", sub
+        capf = await call("render_frames", frames=[8], camera="scene", size=200)
+        assert json.loads(text_of(capf)[0])["caption"] is True
+        vs = json.loads(text_of(await call("render_video", path="e2e_subs.mp4", quality="draft",
+                                           frame_start=1, frame_end=36, wait=True))[0])
+        assert vs["status"] == "done" and vs["subtitles"]["captions"] == 2, vs
+        assert "warning" not in vs and os.path.exists(vs["subtitles"]["srt"]), vs
+        import av
+        with av.open(vs["path"]) as mv:
+            assert mv.streams.video[0].frames == 36, mv.streams.video[0].frames
+        await call("remove_subtitles")
         # speed calibration: finished renders teach workbench speed, a test frame eevee
         assert vid["learned_speed"]["engine"] == "workbench", vid
         cal = json.loads(text_of(await call("render_options", quality="preview",

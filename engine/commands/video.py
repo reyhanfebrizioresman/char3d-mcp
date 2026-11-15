@@ -285,35 +285,86 @@ def _apply_settings(sc, quality, size, fps, start, end, base):
     r.filepath = base
 
 
+def _deliver(job, src):
+    """Move a finished movie to the job's output path."""
+    try:
+        if os.path.exists(job["path"]):
+            os.remove(job["path"])
+        shutil.move(src, job["path"])   # works across filesystems
+        job["status"] = "done"
+        job["bytes"] = os.path.getsize(job["path"])
+    except OSError as exc:
+        job["status"] = "failed"
+        job["error"] = f"rendered to {src} but could not move it: {exc}"
+
+
+def _start_compose(job, movie):
+    """Second pass: lay the caption PNGs over the rendered movie (Video Sequencer)."""
+    w, h = job["size"]
+    spec = {"movie": movie, "out_base": job["base"] + "subs_", "width": w, "height": h,
+            "fps": job["fps"], "frames": job["frames"][1] - job["frames"][0] + 1,
+            "audio": job.get("audio", False),
+            "crf": "HIGH" if job["quality"] in ("final", "cycles") else "MEDIUM",
+            "overlays": job["overlays"]}
+    spec_path = os.path.join(os.path.dirname(job["log"]), f"{job['id']}_subs.json")
+    with open(spec_path, "w") as f:
+        json.dump(spec, f)
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "compose_subtitles.py")
+    log = os.path.join(os.path.dirname(job["log"]), f"{job['id']}_subs.log")
+    with open(log, "wb") as lf:
+        job["proc"] = subprocess.Popen(
+            [bpy.app.binary_path, "-b", "--factory-startup", "--python", script, "--", spec_path],
+            stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    job.update(stage="subtitles", main_video=movie, subs_log=log, subs_started=time.time())
+
+
+def _cleanup(job):
+    job["finished"] = time.time()
+    for p in (job.get("blend"), job.get("main_video") if job["status"] == "done" else None):
+        if p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    if job.get("subs_dir") and job["status"] in ("done", "failed"):
+        shutil.rmtree(job["subs_dir"], ignore_errors=True)
+
+
 def _finalize(job):
     if job["status"] in ("done", "failed"):
         return
     code = job["proc"].poll()
     if code is None:
         return
-    produced = sorted(glob.glob(glob.escape(job["base"]) + "*.mp4"), key=os.path.getmtime)
+    if job.get("stage") == "subtitles":
+        produced = sorted(glob.glob(glob.escape(job["base"] + "subs_") + "*.mp4"),
+                          key=os.path.getmtime)
+        if code == 0 and produced:
+            _deliver(job, produced[-1])
+        else:      # keep the video, just without burned-in captions
+            _deliver(job, job["main_video"])
+            job.pop("main_video", None)
+            job["warning"] = f"subtitle pass failed (see {job['subs_log']}); video saved without captions"
+        _cleanup(job)
+        return
+    produced = sorted((p for p in glob.glob(glob.escape(job["base"]) + "*.mp4")
+                       if not os.path.basename(p).startswith(os.path.basename(job["base"]) + "subs_")),
+                      key=os.path.getmtime)
     if code == 0 and produced:
         try:
-            if os.path.exists(job["path"]):
-                os.remove(job["path"])
-            shutil.move(produced[-1], job["path"])   # works across filesystems
-            job["status"] = "done"
-            job["bytes"] = os.path.getsize(job["path"])
-            try:
-                with open(job["log"], errors="replace") as f:
-                    _learn_from_job(job, f.read())
-            except OSError:
-                pass
-        except OSError as exc:
-            job["status"] = "failed"
-            job["error"] = f"rendered to {produced[-1]} but could not move it: {exc}"
+            with open(job["log"], errors="replace") as f:
+                _learn_from_job(job, f.read())
+        except OSError:
+            pass
+        if job.get("overlays"):
+            job["render_finished"] = time.time()
+            _start_compose(job, produced[-1])
+            return
+        _deliver(job, produced[-1])
     else:
         job["status"] = "failed"
-    job["finished"] = time.time()
-    try:
-        os.remove(job["blend"])
-    except OSError:
-        pass
+    _cleanup(job)
 
 
 def _progress(job):
@@ -331,13 +382,15 @@ def _report(job):
     last, text = _progress(job)
     total = job["frames"][1] - job["frames"][0] + 1
     done = 0 if last is None else max(0, last - job["frames"][0] + (1 if job["status"] == "done" else 0))
-    if job["status"] == "done":
+    if job["status"] == "done" or job.get("stage") == "subtitles":
         done = total
     elapsed = (job.get("finished") or time.time()) - job["started"]
     out = {"job_id": job["id"], "status": job["status"], "path": job["path"],
            "quality": job["quality"], "size": job.get("size"), "frames": job["frames"],
            "progress": f"{done}/{total}", "elapsed_s": round(elapsed, 1)}
-    if job["status"] == "running" and done > 0:
+    if job.get("stage") == "subtitles" and job["status"] == "running":
+        out["stage"] = "subtitles (laying captions over the rendered video)"
+    elif job["status"] == "running" and done > 0:
         out["eta_s"] = round(elapsed / done * (total - done), 1)
     elif job["status"] == "running" and job.get("estimate"):
         out["estimate"] = job["estimate"]
@@ -346,6 +399,10 @@ def _report(job):
         out["has_audio"] = job.get("audio", False)
         if job.get("learned_speed"):
             out["learned_speed"] = job["learned_speed"]
+    if job.get("subtitles"):
+        out["subtitles"] = job["subtitles"]
+    if job.get("warning"):
+        out["warning"] = job["warning"]
     if job.get("error"):
         out["error"] = job["error"]
     if job["status"] == "failed":
@@ -355,8 +412,14 @@ def _report(job):
 
 @command("render_video")
 def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="preview",
-                 width=None, height=None, fps=None, wait=False, resolution=None, vertical=False):
-    """Render the scene camera / shot timeline to MP4 (H.264) in a background process."""
+                 width=None, height=None, fps=None, wait=False, resolution=None, vertical=False,
+                 subtitles=None):
+    """Render the scene camera / shot timeline to MP4 (H.264) in a background process.
+
+    subtitles: None = burn in captions when add_subtitles is set up, False = never,
+    True = required (error when not set up). An .srt file is written next to the video.
+    """
+    from . import subtitles as subs
     if quality not in QUALITY:
         raise ValueError(f"quality must be one of {list(QUALITY)}")
     sc = bpy.context.scene
@@ -370,6 +433,9 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     if not path.lower().endswith(".mp4"):
         path += ".mp4"
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if subtitles and not subs.get_config(sc):
+        raise RuntimeError("no subtitles set up: call add_subtitles first")
+    want_subs = bool(subs.get_config(sc)) if subtitles is None else bool(subtitles)
     job_id = f"job{len(JOBS) + 1}_{time.strftime('%H%M%S')}"
     jobs_dir = os.path.join(context.WORKSPACE, "jobs")
     os.makedirs(jobs_dir, exist_ok=True)
@@ -393,6 +459,15 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
             r.image_settings.media_type = saved["media"]
         r.image_settings.file_format = saved["fmt"]
 
+    out_w, out_h = round(size[0] * size[2] / 100), round(size[1] * size[2] / 100)
+    overlays, sub_info, subs_dir = None, None, None
+    if want_subs:
+        subs_dir = os.path.join(jobs_dir, f"{job_id}_subs")
+        overlays, chunks = subs.build(sc, out_w, out_h, start, end, subs_dir)
+        fps_now = sc.render.fps / (sc.render.fps_base or 1)
+        srt = os.path.splitext(path)[0] + ".srt"
+        n = subs.write_srt(srt, chunks, fps_now, start, end)
+        sub_info = {"captions": n, "overlays": len(overlays), "srt": srt}
     with open(log, "wb") as lf:
         proc = subprocess.Popen([bpy.app.binary_path, "-b", blend, "-a"], stdout=lf,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
@@ -401,14 +476,17 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
            "audio": bool(_sound_strips(sc)),
            "quality": quality, "frames": [start, end], "status": "running",
            "started": time.time(),
-           "size": [round(size[0] * size[2] / 100), round(size[1] * size[2] / 100)]}
-    out_w, out_h = job["size"]
+           "size": [out_w, out_h],
+           "fps": float(fps) if fps else sc.render.fps / (sc.render.fps_base or 1),
+           "overlays": overlays or None, "subs_dir": subs_dir, "subtitles": sub_info}
     job["estimate"] = _estimate(sc, quality, out_w, out_h, end - start + 1)
     job["model_spf"] = _model_spf(QUALITY[quality][0], QUALITY[quality][2], out_w, out_h,
                                   _scene_weight(sc))
     JOBS[job_id] = job
     if wait:
-        proc.wait()
+        while job["status"] == "running":
+            job["proc"].wait()
+            _finalize(job)
     return _report(job)
 
 

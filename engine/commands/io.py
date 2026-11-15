@@ -100,10 +100,77 @@ def export_asset(path, objects=None):
     return {"path": path, "bytes": os.path.getsize(path)}
 
 
+def _external_files():
+    """Images and sounds that live in files (not packed)."""
+    for coll in (bpy.data.images, bpy.data.sounds):
+        for item in coll:
+            if item.filepath and getattr(item, "packed_file", None) is None:
+                yield item
+
+
+def _absolute_external_paths():
+    """Files outside the workspace (MPFB textures, system assets) get absolute paths, so a
+    saved .blend still finds them after it is copied or moved; workspace files stay relative
+    so the whole workspace can move together."""
+    ws = os.path.realpath(context.WORKSPACE)
+    changed = 0
+    for item in _external_files():
+        if not item.filepath.startswith("//"):
+            continue
+        absp = os.path.normpath(bpy.path.abspath(item.filepath))
+        if not os.path.realpath(absp).startswith(ws + os.sep):
+            item.filepath = absp
+            changed += 1
+    return changed
+
+
+def _repair_missing_files():
+    """Re-find textures whose stored path broke (e.g. a .blend saved relative elsewhere):
+    re-anchor paths inside Blender's extensions folder (MPFB assets) on this install."""
+    roots = [bpy.utils.user_resource("EXTENSIONS")]
+    try:
+        roots.append(bpy.utils.system_resource("EXTENSIONS"))
+    except (AttributeError, ValueError, TypeError):
+        pass
+    fixed, missing = 0, []
+    for item in _external_files():
+        absp = bpy.path.abspath(item.filepath)
+        if os.path.exists(absp):
+            continue
+        norm = absp.replace("\\", "/")
+        found = None
+        if "/extensions/" in norm:
+            tail = norm.split("/extensions/", 1)[1]
+            parts = tail.split("/")
+            for root in roots:
+                if not root:
+                    continue
+                for k in range(len(parts)):             # tolerate .user/ or repo-name changes
+                    cand = os.path.join(root, *parts[k:])
+                    if os.path.exists(cand):
+                        found = cand
+                        break
+                if found:
+                    break
+        if not found and "/imports/" in norm:        # workspace audio/textures
+            cand = os.path.join(context.WORKSPACE, "imports", norm.split("/imports/", 1)[1])
+            if os.path.exists(cand):
+                found = cand
+        if found:
+            item.filepath = found
+            if hasattr(item, "reload"):
+                item.reload()
+            fixed += 1
+        else:
+            missing.append(item.name)
+    return fixed, missing
+
+
 @command("save_project")
 def save_project(path="scene.blend"):
     path = context.resolve(path, "projects")
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    _absolute_external_paths()
     bpy.ops.wm.save_as_mainfile(filepath=path)
     return {"path": path}
 
@@ -114,7 +181,13 @@ def open_project(path):
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
     bpy.ops.wm.open_mainfile(filepath=path)
-    return {"path": path, "objects": [o.name for o in bpy.context.scene.objects]}
+    fixed, missing = _repair_missing_files()
+    out = {"path": path, "objects": [o.name for o in bpy.context.scene.objects]}
+    if fixed:
+        out["relinked_files"] = fixed
+    if missing:
+        out["missing_files"] = missing[:20]
+    return out
 
 
 @command("prepare_model")

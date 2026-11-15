@@ -205,12 +205,19 @@ def _render_scene_camera(sc, width, height, engine, filename, view):
 
 @command("render_frames")
 def render_frames(frames, view="three_quarter", size=320, engine="workbench", objects=None,
-                  prefix=None, camera="auto"):
-    """Render several animation frames (flip-book check of a motion)."""
+                  prefix=None, camera="auto", subtitles=True):
+    """Render several animation frames (flip-book check of a motion). Through the scene
+    camera, captions from add_subtitles are drawn on top (subtitles=False to hide them)."""
+    from . import subtitles as subs
     stamp = prefix or f"frames_{time.strftime('%Y%m%d_%H%M%S')}"
+    sc = bpy.context.scene
+    show_subs = camera == "scene" and subtitles and subs.get_config(sc) is not None
     out = []
     for f in frames:
-        out.append(render_preview(view=view, width=size, height=None if camera == "scene" else size,
-                                  engine=engine, frame=int(f), objects=objects,
-                                  filename=f"{stamp}_f{int(f):04d}.png", camera=camera))
+        item = render_preview(view=view, width=size, height=None if camera == "scene" else size,
+                              engine=engine, frame=int(f), objects=objects,
+                              filename=f"{stamp}_f{int(f):04d}.png", camera=camera)
+        if show_subs:
+            item["caption"] = subs.overlay_png(item["path"], sc, int(f))
+        out.append(item)
     return {"frames": out}

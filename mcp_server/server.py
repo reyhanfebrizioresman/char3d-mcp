@@ -30,7 +30,7 @@ Working loop:
 Characters: create_human -> auto_rig_humanoid -> set_pose test -> render_views.
 Motion: apply_pose / animate / import_mocap -> render_frames to check it.
 Film: set_lighting -> camera_shot (one per shot, consecutive frames) -> render_frames
-camera="scene" -> render_video(quality="draft") -> render_options (let the user pick a
+camera="scene" -> (add_subtitles for captions) -> render_video(quality="draft") -> render_options (let the user pick a
 resolution, shown with estimated time) -> render_video(quality="preview"/"final", resolution=...).
 Read resource char3d://guide for the full workflow guide.
 """
@@ -314,13 +314,14 @@ async def clear_animation(armature: str) -> dict:
 async def render_frames(frames: list[int], view: View = "three_quarter", size: int = 256,
                         objects: list[str] | None = None,
                         camera: Literal["auto", "scene"] = "auto",
-                        engine_name: Engine = "workbench"):
+                        engine_name: Engine = "workbench", subtitles: bool = True):
     """Render several animation frames (workbench) so you can check a motion like a
     flip-book. Tip: use view="right" to judge walking/running, and list the character
     mesh in `objects` so the camera frames it alone. camera="scene" shows the actual
-    shots (use eevee to judge lighting)."""
+    shots (use eevee to judge lighting) with the add_subtitles captions drawn on top
+    (subtitles=False hides them)."""
     r = await run("render_frames", frames=frames, view=view, size=size, objects=objects,
-                  camera=camera, engine=engine_name)
+                  camera=camera, engine=engine_name, subtitles=subtitles)
     out = []
     for item in r["frames"]:
         out += _image_result(item)
@@ -438,7 +439,8 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
                        quality: Literal["draft", "preview", "final", "cycles"] = "preview",
                        resolution: Resolution | None = None, vertical: bool = False,
                        width: int | None = None, height: int | None = None,
-                       fps: int | None = None, wait: bool = False) -> dict:
+                       fps: int | None = None, wait: bool = False,
+                       subtitles: bool | None = None) -> dict:
     """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id
     and an `estimate` of the render time.
     draft = clay workbench, half res (~0.1 s/frame) for checking timing/cameras;
@@ -448,10 +450,51 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
     at exactly that size for any quality); vertical=True for 9:16 (e.g. 1080x1920).
     width/height = custom size instead. Ask the user which resolution first
     (render_options lists them with time estimates). Poll render_status(job_id).
-    wait=True blocks (only sensible for draft)."""
+    wait=True blocks (only sensible for draft).
+    subtitles: None = burn in the add_subtitles captions when set up (a short second pass
+    after the frames; an .srt is also written next to the video), False = without captions."""
     return await run("render_video", path=path, frame_start=frame_start, frame_end=frame_end,
                      quality=quality, resolution=resolution, vertical=vertical, width=width,
-                     height=height, fps=fps, wait=wait)
+                     height=height, fps=fps, wait=wait, subtitles=subtitles)
+
+
+SubtitleStyle = Literal["tiktok", "karaoke", "classic"]
+
+
+@mcp.tool()
+async def add_subtitles(style: SubtitleStyle = "tiktok",
+                        position: Literal["bottom", "lower_third", "center", "top"] | None = None,
+                        size: float = 1.0, color: list[float] | None = None,
+                        highlight_color: list[float] | None = None,
+                        highlight: bool | None = None, uppercase: bool | None = None,
+                        max_words: int | None = None, lines: list[dict] | None = None,
+                        audio: str | None = None, language: str | None = None,
+                        start_frame: int = 1, font: str | None = None) -> dict:
+    """Captions burned into render_video (and shown by render_frames(camera="scene")).
+    Words come from lip_sync / lip_sync_audio word times automatically (all speakers).
+    style: "tiktok" = 1-3 big bold words at a time, the spoken word highlighted, pop-in
+    (social/vertical video); "karaoke" = a full line with the current word highlighted;
+    "classic" = plain film subtitles (1-2 lines, no highlight). position default: tiktok
+    lower_third, others bottom. size scales the font; colors are RGB 0..1 (highlight default
+    yellow). Other sources: lines=[{"text": "...", "start": 0.5, "end": 2.8}] (seconds from
+    the scene start) or audio="audio/line.wav" (local Whisper transcript placed at
+    start_frame) for voice-overs without a lip-synced character. Calling it again replaces
+    the settings; remove_subtitles turns them off."""
+    words = None
+    if audio:
+        path = _workspace_path(audio)
+        tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+        words = tr["words"]
+    return await run("add_subtitles", style=style, position=position, size=size, color=color,
+                     highlight_color=highlight_color, highlight=highlight, uppercase=uppercase,
+                     max_words=max_words, lines=lines, words=words, start_frame=start_frame,
+                     font=font)
+
+
+@mcp.tool()
+async def remove_subtitles() -> dict:
+    """Turn captions off (render_video renders without them)."""
+    return await run("remove_subtitles")
 
 
 @mcp.tool()

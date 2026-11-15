@@ -45,8 +45,8 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
   `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
-  `list_lighting_presets`, `set_lighting`, `set_material`, `render_options`, `render_video`,
-  `render_status`, `cancel_render`
+  `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
+  `remove_subtitles`, `render_options`, `render_video`, `render_status`, `cancel_render`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
   `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
@@ -155,9 +155,10 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
 - Recipe — talking presenter: `create_realistic_human` → `animate(rig, "idle")` →
   `lip_sync_audio(rig, "audio/line.wav")` → `set_expression(rig, "smile", 0.45, frame=1,
   keyframe=True)` → `set_lighting("studio")` → `camera_shot(shot="close_up",
-  move="push_in")` → `auto_blink(rig)` → `talk_motion(rig)` → `talk_gestures(rig)` → `render_video`
-  (use `shot="medium"` when gestures should be seen).
-- `transcribe_audio` gives text + word times without animating (e.g. for subtitles).
+  move="push_in")` → `auto_blink(rig)` → `talk_motion(rig)` → `talk_gestures(rig)` →
+  `add_subtitles()` (optional captions) → `render_video` (use `shot="medium"` when gestures
+  should be seen).
+- `transcribe_audio` gives text + word times without animating.
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
 
@@ -256,6 +257,21 @@ intensity, handheld, roll, depth_of_field)`:
   `start_frame = previous["next_start_frame"]`. Re-use `name` to replace a shot.
 - Check framing through the real cameras:
   `render_frames([first, middle, last], camera="scene", engine_name="eevee")`.
+
+**Subtitles** — `add_subtitles(style)` turns on captions; `render_video` then burns them in
+(a short Video Sequencer pass after the frames, ~0.1 s/frame) and writes an `.srt` next to the
+MP4. `render_frames(camera="scene")` draws them too, so check the look there first.
+- Words come automatically from `lip_sync` / `lip_sync_audio` word times (every speaker).
+  Without a lip-synced character: `lines=[{"text": "...", "start": 0.5, "end": 2.8}]`
+  (seconds from the scene start) or `audio="audio/vo.wav"` (local Whisper, placed at
+  `start_frame`).
+- Styles: `tiktok` (default; 1–3 big words, the spoken word highlighted yellow, pop-in,
+  lower third — social/vertical video), `karaoke` (a line with the current word highlighted),
+  `classic` (plain 1–2 line film subtitles). Tune with `position` (bottom, lower_third,
+  center, top), `size`, `color` / `highlight_color` (RGB 0..1), `uppercase`, `max_words`,
+  `font` (a .ttf/.otf path; default a bold system sans).
+- Captions break at sentence ends, pauses > 0.6 s and long clauses. Calling `add_subtitles`
+  again replaces the settings; `remove_subtitles` or `render_video(subtitles=False)` skips them.
 
 **Video** — `render_video(path, quality, resolution)` runs in a separate Blender process and
 returns `job_id` + `estimate`; poll `render_status(job_id)` (progress, ETA). Measured on this
