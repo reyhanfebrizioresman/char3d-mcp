@@ -965,8 +965,9 @@ result = samples
                 for path, points in curves.items():
                     assert ([p for p in limited[mesh][path] if p[0][0] <= face_end]
                             == [p for p in points if p[0][0] <= face_end]), (mesh, path)
+            # Far past every lip-synced line (the phoneme checks add words at 200 and 250).
             no_words = await s.call_tool("auto_expression", {"character": "Dani_rig",
-                                        "frame_start": cue_end + 10, "frame_end": cue_end + 20})
+                                        "frame_start": cue_end + 500, "frame_end": cue_end + 510})
             assert no_words.isError and "no word times" in str(text_of(no_words)), no_words
             forced = json.loads(text_of(await call(
                 "auto_expression", character="Dani_rig",
