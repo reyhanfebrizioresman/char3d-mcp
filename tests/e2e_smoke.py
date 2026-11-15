@@ -293,7 +293,7 @@ async def _graphics_checks(call):
     await call("add_transition", kind="fade_in", duration_s=0.25, name="intro")
     await call("add_transition", shot="OrangeShot", duration_s=0.5, name="cut")
     await call("add_transition", kind="fade_out", duration_s=0.25, name="outro")
-    await call("add_title", text="Reyhan", subtitle="Character artist", style="lower_third",
+    await call("add_title", text="Ana Putri", subtitle="Character artist", style="lower_third",
                start_s=0.25, duration_s=1.5, name="speaker")
     for args in ({"at_frame": 26}, {"shot": "BlueShot"},
                  {"at_frame": 25, "shot": "OrangeShot"},
@@ -510,7 +510,6 @@ async def main():
                                             if o["resolution"] == "1080p"),
               "| test frame", cal["test_frame"], "| preview 1080p",
               next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
-        await _graphics_checks(call)
 
         # Sets/props through MCP: ownership, replacement, scaling, validation and isolation.
         presets = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk")
@@ -567,6 +566,7 @@ async def main():
         after = json.loads(text_of(await call("scene_info"))[0])
         assert {o["name"] for o in after["objects"]} == keep
         print("environments: 6 presets, 11 props, collection/replace/clear/validation OK")
+        await _graphics_checks(call)
         # Floor routes: rounded bend, sharp reversal, final facing and chained stepping turn.
         for kind in ("basic", "rigify"):
             await call("new_scene")
