@@ -300,6 +300,9 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
         from .face import set_expression
         set_expression(character, expression, frame=start, keyframe=True, transition_frames=0)
     sound = add_audio(path, start, volume) if add_sound else None
+    if sound:     # whose voice this is: talk_motion / talk_gestures react to their own voice only
+        speaker = base.parent if base.parent and base.parent.type == "ARMATURE" else base
+        _strips(sc.sequence_editor)[sound["strip"]]["char3d_speaker"] = speaker.name
     sc.frame_end = max(sc.frame_end, end)
     voiced_s = float(np.sum(feat["voiced"])) / fps
     return {"character": base.name, "mode": mode, "frames": [start, end],

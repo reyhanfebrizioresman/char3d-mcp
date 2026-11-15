@@ -52,14 +52,23 @@ def _viseme_activity(base, f0, f1):
     return np.array([sum(max(0.0, fc.evaluate(float(f))) for fc in curves) for f in frames])
 
 
-def _audio_activity(f0, f1):
-    """Loudness envelope of sound strips on the timeline, aligned to frames."""
+def _audio_activity(f0, f1, character=None):
+    """Loudness envelope of sound strips on the timeline, aligned to frames.
+
+    With `character` (a rig name), voice strips tagged for other speakers (lip_sync_audio
+    sets ``char3d_speaker``) are ignored, so in a dialog everyone reacts to their own voice.
+    """
     from .audio import _sound_strips, analyze, load_audio
     sc = bpy.context.scene
-    fps = sc.render.fps
     env = np.zeros(f1 - f0 + 1)
     used = []
-    for st in _sound_strips(sc):
+    strips = _sound_strips(sc)
+    if character is not None:
+        mine = [st for st in strips if st.get("char3d_speaker") == character]
+        tagged = any(st.get("char3d_speaker") for st in strips)
+        strips = mine if tagged else strips
+    fps = sc.render.fps
+    for st in strips:
         if not st.sound or st.mute:
             continue
         path = bpy.path.abspath(st.sound.filepath)
@@ -131,24 +140,69 @@ def _pulse(i, center, attack, release):
     return 0.0
 
 
-def _camera_angles(head_pos, forward_q, frame):
-    """Yaw/pitch (deg, character space) from the head to the active camera at frame."""
+def _target_point(target, frame):
+    """World point to look at: "camera" (the shot active at frame), a character (its head)
+    or any object (its origin)."""
     sc = bpy.context.scene
-    marks = sorted((m for m in sc.timeline_markers if m.camera and m.frame <= frame), key=lambda m: m.frame)
-    cam = marks[-1].camera if marks else sc.camera
-    if cam is None:
+    if target == "camera":
+        marks = sorted((m for m in sc.timeline_markers if m.camera and m.frame <= frame),
+                       key=lambda m: m.frame)
+        cam = marks[-1].camera if marks else sc.camera
+        return cam.matrix_world.translation.copy() if cam else None
+    obj = bpy.data.objects.get(target)
+    if obj is None:
+        return None
+    rig = obj if obj.type == "ARMATURE" else (obj.parent if obj.parent and obj.parent.type == "ARMATURE" else None)
+    if rig is not None:
+        head = semantic_map(rig).get("head")
+        if head:
+            pb = rig.pose.bones[head]
+            return rig.matrix_world @ ((pb.head + pb.tail) / 2)
+    return obj.matrix_world.translation.copy()
+
+
+def _look_target(look_at, frame):
+    """look_at: a target name or a schedule [{"frame_start", "frame_end", "target"}]."""
+    if isinstance(look_at, (list, tuple)):
+        for item in look_at:
+            if int(item["frame_start"]) <= frame <= int(item["frame_end"]):
+                return item["target"]
+        return None
+    return look_at
+
+
+def _camera_angles(head_pos, forward_q, frame, target="camera"):
+    """Yaw/pitch (deg, character space) from the head to the look target at frame."""
+    point = _target_point(target, frame) if target else None
+    if point is None:
         return 0.0, 0.0
-    d = forward_q.inverted() @ (cam.matrix_world.translation - head_pos)
+    d = forward_q.inverted() @ (point - head_pos)
     # character space: forward = -Y, left = +X, up = +Z
     yaw = math.degrees(math.atan2(d.x, -d.y))
     pitch = math.degrees(math.atan2(-d.z, math.hypot(d.x, d.y)))   # + = camera below eyes
     return yaw, pitch
 
 
+def _speech_env(rig, base, f0, f1):
+    """(envelope, audio strip names) of THIS character's speech: its own voice strips, or its
+    lip-sync shape keys when it has no recording."""
+    env, sources = _audio_activity(f0, f1, rig.name)
+    if env.max() <= 1e-6 and base is not None:
+        env = _viseme_activity(base, f0, f1)
+        env = np.maximum(0.0, env - np.percentile(env, 5))   # a held smile is not speech
+    return env, sources
+
+
 @command("talk_motion")
 def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head=True, eyes=True,
-                brows=True, look_at_camera=True, seed=3):
-    """Add speech-driven head nods/turns, brow flashes and eye saccades over a range."""
+                brows=True, look_at_camera=True, seed=3, look_at=None, listen_to=None):
+    """Add speech-driven head nods/turns, brow flashes and eye saccades over a range.
+
+    look_at: None = the shot camera (when look_at_camera), or a character/object name, or a
+    schedule [{"frame_start", "frame_end", "target"}] (dialog: look at whoever talks).
+    listen_to: another character — while they talk and this one is silent, add small
+    listener nods on their stressed words.
+    """
     rig = _rig_of(character)
     sc = bpy.context.scene
     fps = sc.render.fps
@@ -166,10 +220,11 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     except (ValueError, RuntimeError):
         base = None                     # rigs without a face still get head motion
 
-    env, sources = _audio_activity(f0, f1)
+    if look_at is None and look_at_camera:
+        look_at = "camera"
+    env, sources = _speech_env(rig, base, f0, f1)
     source = "audio:" + ",".join(sources) if sources else None
     if env.max() <= 1e-6 and base is not None:
-        env = _viseme_activity(base, f0, f1)
         source = "lip_sync_keys"
     if env.max() <= 1e-6:
         source = "idle (no speech found)"
@@ -178,6 +233,18 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     n = len(env)
     peaks = _peaks(env, fps)
     phrases = _phrases(env, fps)
+    listen_peaks = []
+    if listen_to:
+        other = _rig_of(listen_to)
+        try:
+            other_base = _basemesh(other.name)
+        except (ValueError, RuntimeError):
+            other_base = None
+        oenv, _src = _speech_env(other, other_base, f0, f1)
+        if oenv.max() > 1e-6:
+            oenv = _smooth(oenv / oenv.max(), 7)
+            listen_peaks = [p for p in _peaks(oenv, fps, min_gap_s=1.2)
+                            if (env[p] if env.max() > 0 else 0) < 0.15 and rng.random() < 0.6]
 
     # ---------------------------------------------------------------- head offsets per frame
     nod = np.zeros(n)
@@ -193,6 +260,10 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
         amp = rng.uniform(3.5, 6.5) * env[p]
         for i in range(max(0, p - 6), min(n, p + 14)):
             nod[i] += amp * _pulse(i, p, 5, 12)
+    for p in listen_peaks:                  # listener: small, slower acknowledging nods
+        amp = rng.uniform(2.0, 3.5)
+        for i in range(max(0, p - 8), min(n, p + 18)):
+            nod[i] += amp * _pulse(i, p, 7, 14)
     for a, b in phrases:                    # phrase rhythm: slight tilt per phrase, settle at end
         side = rng.choice((-1, 1)) * rng.uniform(1.5, 3.0)
         for i in range(a, min(n, b + 10)):
@@ -206,6 +277,8 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     neck_b, head_b = smap.get("neck"), smap.get("head")
     result = {"character": rig.name, "frames": [f0, f1], "driven_by": source,
               "emphasis_frames": [f0 + p for p in peaks], "phrases": len(phrases)}
+    if listen_to:
+        result["listener_nods"] = [f0 + p for p in listen_peaks]
 
     rq = rig.matrix_world.to_quaternion()
     if head and head_b:
@@ -225,9 +298,13 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
             bpy.context.view_layer.update()
             hp = rig.pose.bones[head_b]
             yaw_c, pitch_c = (0.0, 0.0)
-            if look_at_camera:
-                yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f)
-                yaw_c, pitch_c = max(-35, min(35, yaw_c)) * 0.45, max(-20, min(20, pitch_c)) * 0.35
+            target = _look_target(look_at, f)
+            if target:
+                yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f, target)
+                if target == "camera":
+                    yaw_c, pitch_c = max(-35, min(35, yaw_c)) * 0.45, max(-20, min(20, pitch_c)) * 0.35
+                else:     # a person: turn the head most of the way
+                    yaw_c, pitch_c = max(-60, min(60, yaw_c)) * 0.7, max(-25, min(25, pitch_c)) * 0.5
             q_char = (Quaternion((0, 0, 1), math.radians(turn[i] + yaw_c))
                       @ Quaternion((1, 0, 0), math.radians(nod[i] + pitch_c))
                       @ Quaternion((0, 1, 0), math.radians(tilt[i])))
@@ -283,13 +360,18 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
             prev_g = None
             for f in saccades:
                 yaw_c = pitch_c = 0.0
-                if look_at_camera:
+                target = _look_target(look_at, f)
+                if target:
                     sc.frame_set(f)
                     hp = rig.pose.bones[head_b] if head_b else None
                     if hp is not None:
-                        yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f)
-                        yaw_c = max(-30, min(30, yaw_c)) * 0.55     # head covers the rest
-                        pitch_c = max(-25, min(25, pitch_c)) * 0.65
+                        yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f, target)
+                        if target == "camera":
+                            yaw_c = max(-30, min(30, yaw_c)) * 0.55     # head covers the rest
+                            pitch_c = max(-25, min(25, pitch_c)) * 0.65
+                        else:
+                            yaw_c = max(-60, min(60, yaw_c)) * 0.3
+                            pitch_c = max(-25, min(25, pitch_c)) * 0.5
                 away = any(abs(f - s) < fps * 0.4 for s in phrase_starts) and rng.random() < 0.6
                 if away:   # thinking glance at the start of a phrase
                     yaw = rng.choice((-1, 1)) * rng.uniform(10, 18)

@@ -275,6 +275,20 @@ async def main():
             assert tgs["words_known"] >= 9 and "two" in kinds, tgs
             assert tgs["hand_bones"] == ["hand_l", "hand_r"] and tgs["max_palm_twist_deg"] > 10, tgs
             print("talk_gestures semantic:", [(g["word"], g["type"]) for g in tgs["semantic"]])
+            # dialog: two characters, an audio line and text lines, staged + covered
+            await call("remove_audio")
+            await call("create_realistic_human", name="Ko", gender=1.0, age=35)
+            dg = json.loads(text_of(await call("dialog", start_frame=200, lines=[
+                {"speaker": "Vo_rig", "text": "Ko, kamu sudah lihat dua hasil render kemarin?"},
+                {"speaker": "Ko_rig", "audio": wav},
+                {"speaker": "Vo_rig", "text": "Bagus, kita lanjutkan besok saja ya."}]))[0])
+            assert [t["speaker"] for t in dg["turns"]] == ["Vo_rig", "Ko_rig", "Vo_rig"], dg
+            assert len(dg["shots"]) == 3 and dg["shots"][0]["subject"] == "two_shot", dg["shots"]
+            assert dg["shots"][1]["subject"] == "Ko_rig" and dg["idle_added"] == ["Ko_rig"], dg
+            assert sum(m["listener_nods"] for m in dg["motion"].values()) >= 1, dg["motion"]
+            assert "dua" in dg["gestures"]["Vo_rig"]["semantic"], dg["gestures"]
+            print("dialog:", [(s_["subject"], s_["frames"]) for s_ in dg["shots"]],
+                  "| nods", {k: m["listener_nods"] for k, m in dg["motion"].items()})
             await call("remove_audio")
         aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
         assert aa["seconds"] > 2, aa

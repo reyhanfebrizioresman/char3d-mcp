@@ -659,17 +659,22 @@ async def lip_sync_audio(character: str, audio: str, start_frame: int = 1,
 @mcp.tool()
 async def talk_motion(character: str, frame_start: int | None = None, frame_end: int | None = None,
                       intensity: float = 1.0, head: bool = True, eyes: bool = True,
-                      brows: bool = True, look_at_camera: bool = True, seed: int = 3) -> dict:
+                      brows: bool = True, look_at_camera: bool = True, seed: int = 3,
+                      look_at: str | None = None, listen_to: str | None = None) -> dict:
     """Make a speaking character feel alive: speech-driven head nods on stressed words,
     gentle head drift and phrase tilts, brow flashes, and eye saccades with occasional
     'thinking' glances. Rhythm comes from the timeline audio (or the lip-sync keys).
     Layered on top: only neck/head rotation and brow/eye-gaze shape keys are keyed, body
     animation is untouched. look_at_camera turns eyes (and partly the head) toward the
     shot camera. Run it LAST, after animate/lip_sync_audio/camera_shot (re-running animate
-    over the same frames would overwrite the head). intensity 0.5 = calm, 1.5 = animated."""
+    over the same frames would overwrite the head). intensity 0.5 = calm, 1.5 = animated.
+    look_at = another character/object to look at instead of the camera; listen_to = a
+    character whose stressed words get small listener nods while this one is silent
+    (the `dialog` tool sets both automatically)."""
     return await run("talk_motion", character=character, frame_start=frame_start,
                      frame_end=frame_end, intensity=intensity, head=head, eyes=eyes, brows=brows,
-                     look_at_camera=look_at_camera, seed=seed)
+                     look_at_camera=look_at_camera, seed=seed, look_at=look_at,
+                     listen_to=listen_to)
 
 
 @mcp.tool()
@@ -702,6 +707,79 @@ async def talk_gestures(character: str, frame_start: int | None = None,
     return await run("talk_gestures", character=character, frame_start=frame_start,
                      frame_end=frame_end, style=style, hands=hands, intensity=intensity,
                      seed=seed, fingers=fingers, semantic=semantic, cues=cues)
+
+
+# --- dialog --------------------------------------------------------------------------
+@mcp.tool()
+async def stage_dialog(characters: list[str], layout: Literal["angled", "face_to_face",
+                       "side_by_side"] = "angled", distance: float = 1.3,
+                       cheat_deg: float = 35.0, center: list[float] | None = None) -> dict:
+    """Place 2-4 characters for a conversation (left to right in the given order): they face
+    each other, "cheated" cheat_deg toward the camera side (-Y) so faces stay visible
+    (angled); face_to_face = exact profile; side_by_side = both toward camera. distance in m."""
+    return await run("stage_dialog", characters=characters, layout=layout, distance=distance,
+                     cheat_deg=cheat_deg, center=center or [0.0, 0.0])
+
+
+@mcp.tool()
+async def dialog(lines: list[dict], characters: list[str] | None = None, stage: bool = True,
+                 layout: Literal["angled", "face_to_face", "side_by_side"] = "angled",
+                 distance: float = 1.3, start_frame: int = 1, gap_s: float = 0.35,
+                 camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
+                 shot: Literal["medium_full", "medium", "medium_close", "close_up"] = "medium",
+                 gestures: Literal["calm", "presenter", "energetic"] | None = "presenter",
+                 expression: Expression | None = "smile", language: str | None = None) -> dict:
+    """A conversation between 2-4 characters (realistic humans with faces work best), in one
+    call. lines = [{"speaker": "Ana_rig", "audio": "audio/ana1.wav"},
+                   {"speaker": "Budi_rig", "text": "Wah, ide yang bagus!"}, ...]
+    — each line is lip-synced back to back (audio: local Whisper word timing, the sound goes
+    on the timeline; text: mouth motion only), gap_s apart (per line "pause_s" overrides).
+    Then: characters are staged facing each other (stage=False keeps your placement),
+    everyone looks at whoever talks (the talker at the person they answer), listeners nod on
+    stressed words, each speaker gestures on their own words (gestures=None: off), blinks,
+    a light base expression, an idle clip on rigs without animation, and cameras: "mixed" =
+    two-shot for the first line then a clean single of each speaker, cut 4 frames before
+    they talk (same side of the action line). Run body clips (animate/walk) BEFORE this;
+    add_subtitles afterwards for captions. Returns turns, shots, next_start_frame."""
+    if not lines:
+        raise ValueError("lines is empty")
+    speakers = []
+    for ln in lines:
+        if "speaker" not in ln or not (ln.get("audio") or ln.get("text")):
+            raise ValueError(f"each line needs speaker and audio or text: {ln}")
+        if ln["speaker"] not in speakers:
+            speakers.append(ln["speaker"])
+    cast = characters or speakers
+    if stage and len(cast) >= 2:
+        fps = (await run("stage_dialog", characters=cast, layout=layout,
+                         distance=distance))["fps"]
+    else:
+        fps = (await run("scene_info"))["fps"]
+    frame = int(start_frame)
+    turns = []
+    for ln in lines:
+        frame += int(round(float(ln.get("delay_s", 0)) * fps))
+        if ln.get("audio"):
+            path = _workspace_path(ln["audio"])
+            words, transcript = None, None
+            if speech.available():
+                tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+                words, transcript = tr["words"], tr["text"]
+            r = await run("lip_sync_audio", character=ln["speaker"], audio=path,
+                          start_frame=frame, words=words,
+                          text=None if words else ln.get("text"), strength=0.9, add_sound=True)
+            text = transcript or ln.get("text")
+        else:
+            r = await run("lip_sync", character=ln["speaker"], text=ln["text"], start_frame=frame)
+            text = ln["text"]
+        a, b = r["frames"]
+        turns.append({"speaker": ln["speaker"], "start": a, "end": b, "text": text})
+        frame = b + 1 + int(round(float(ln.get("pause_s", gap_s)) * fps))
+    d = await run("dialog_direct", turns=turns, characters=cast, camera=camera, shot=shot,
+                  gestures=gestures, expression=expression)
+    d["lines"] = turns
+    d["next_start_frame"] = d["frames"][1] + 1
+    return d
 
 
 HandShape = Literal["relaxed", "open", "palm", "beat", "point", "fist", "thumbs_up", "peace",

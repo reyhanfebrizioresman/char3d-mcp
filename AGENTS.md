@@ -38,6 +38,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
 - Audio & voice: `add_audio`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
+- Dialog: `dialog`, `stage_dialog`
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
@@ -159,6 +160,27 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   `add_subtitles()` (optional captions) → `render_video` (use `shot="medium"` when gestures
   should be seen).
 - `transcribe_audio` gives text + word times without animating.
+
+## Dialog (2–4 characters)
+`dialog(lines, ...)` performs a whole conversation in one call. `lines =
+[{"speaker": "Ana_rig", "audio": "audio/a1.wav"}, {"speaker": "Budi_rig", "text": "..."}]`
+(audio = real voice with Whisper timing and sound on the timeline; text = mouth only;
+optional per line `pause_s` / `delay_s`). It:
+- stages the cast (`stage_dialog`: left→right in order, facing each other, cheated 35°
+  toward the camera; `layout` angled / face_to_face / side_by_side, `distance` m;
+  `stage=False` keeps your placement),
+- lip-syncs the lines back to back (`gap_s` apart) and tags each voice strip with its
+  speaker, so `talk_motion` / `talk_gestures` react only to the character's own voice,
+- gaze: everyone looks at whoever talks, the talker at the person they answer; listeners
+  give small nods on the talker's stressed words; blinks; base `expression` (smile 0.3);
+  an idle clip on rigs without animation; `gestures` per speaker (None = off),
+- cameras (`camera`): `mixed` = two-shot for the first line, then a clean single of each
+  speaker (`shot` size) cut 4 frames before they speak, all from the -Y side (180° rule);
+  `singles`, `two_shot`, `none` (then frame it yourself with `camera_shot`).
+Run body clips (animate, walk) BEFORE `dialog` (it keys head/eyes/arms on top); add
+`add_subtitles()` afterwards for captions of every speaker. `talk_motion(look_at=...,
+listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
+`render_frames([...], camera="scene", engine_name="eevee")` at a frame inside each line.
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
 

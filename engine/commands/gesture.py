@@ -230,7 +230,7 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
             raise ValueError(f"cue gesture must be one of {sorted(SEMANTIC)}: {c}")
 
     # ---- speech rhythm
-    env, sources = _audio_activity(f0, f1)
+    env, sources = _audio_activity(f0, f1, rig.name)
     source = "audio:" + ",".join(sources) if sources else None
     base_mesh = None
     try:
