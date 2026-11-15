@@ -47,7 +47,8 @@ Keep previews ≤ 512 px unless the user asks for more.
   `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
-  `remove_subtitles`, `render_options`, `render_video`, `render_status`, `cancel_render`
+  `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
+  `render_options`, `render_video`, `render_status`, `cancel_render`
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
@@ -405,6 +406,35 @@ MP4. `render_frames(camera="scene")` draws them too, so check the look there fir
   `font` (a .ttf/.otf path; default a bold system sans).
 - Captions break at sentence ends, pauses > 0.6 s and long clauses. Calling `add_subtitles`
   again replaces the settings; `remove_subtitles` or `render_video(subtitles=False)` skips them.
+
+**Video graphics** — titles and shot transitions share the subtitle Video Sequencer pass
+(including draft renders), stored in the .blend as scene JSON. They keep the movie's frame
+count and audio timing. Captions are drawn above titles; color fades cover everything.
+- `add_transition(shot="Shot2", kind="crossfade", duration_s=0.5, name="cut")` blends
+  into the named **incoming** shot; alternatively pass `at_frame=73` (its cut frame).
+  Crossfades start at the cut and render extra **outgoing camera handles** over the incoming
+  shot's first frames, then dissolve those handles in the compose pass. Both views show
+  the same scene times; no offset/replayed movie frames or timeline shortening. Body
+  animation continues; cameras whose keys stop at the cut hold the last transform/lens.
+  Extra render cost is approximately duration × fps frames per crossfade.
+- `kind="fade_black"` / `"dip_black"` (aliases) or `"fade_white"` dip through a solid
+  color at the cut, with the duration centered on it. `kind="fade_in"` / `"fade_out"`
+  need no target and fade from/to black at the scene start/end. Transitions must fit
+  the adjacent shots/scene and cannot overlap; stale shot references fail at render time.
+- `add_title("Maya", subtitle="Presenter", start_s=0.5, duration_s=3,
+  style="lower_third", name="speaker")` draws a name + role on a translucent bar.
+  `style="center"` gives a centered title card; `"corner"` puts it at top left.
+  Times are seconds from the **scene** start, including when rendering a cropped range.
+  Tune `size`, `color`, `background_color` (RGB 0..1), `background_opacity` (0..1), and
+  `font` (local TTF/OTF). Long text wraps/shrinks to fit. `animation="slide"` (tags)
+  or `"fade"` (center) enters/exits over `animation_s=0.3`, clamped for short titles;
+  `"none"` is static. Text uses blf; rectangular bars use numpy-filled image pixels.
+- Reuse `name` to replace a graphic; `list_graphics()` lists configs;
+  `remove_graphics(name="speaker")` removes one, `remove_graphics(all=True)` removes all.
+  Captions remain controlled by `remove_subtitles` / `subtitles=False` independently.
+- `render_frames(camera="scene")` shows animated titles (hide with `graphics=False`).
+  Transitions are video-only: inspect a draft's frames to check the dissolve/fade.
+  Graphics are baked into MP4, not exported as glTF geometry or animation.
 
 **Video** — `render_video(path, quality, resolution)` runs in a separate Blender process and
 returns `job_id` + `estimate`; poll `render_status(job_id)` (progress, ETA). Measured on this

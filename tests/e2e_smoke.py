@@ -249,6 +249,123 @@ async def isolate_mpfb(session):
     assert not res.isError, text_of(res)
 
 
+async def _graphics_checks(call):
+    """Decode real draft movies to check graphics timing, mixing and exact frame counts."""
+    import av
+    import numpy as np
+
+    def frames(path):
+        with av.open(path) as movie:
+            return [f.to_ndarray(format="rgb24") for f in movie.decode(video=0)]
+
+    def save_png(path, pixels):
+        with av.open(path, "w", format="image2") as image:
+            stream = image.add_stream("png", rate=1)
+            stream.width, stream.height = pixels.shape[1], pixels.shape[0]
+            stream.pix_fmt = "rgb24"
+            for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
+                image.mux(packet)
+            for packet in stream.encode():
+                image.mux(packet)
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def video(path, start=1, end=48, **args):
+        v = await data("render_video", path=path, quality="draft", width=640, height=360,
+                       frame_start=start, frame_end=end, wait=True, **args)
+        assert v["status"] == "done" and "warning" not in v, v
+        decoded = frames(v["path"])
+        assert len(decoded) == end - start + 1, (v, len(decoded))
+        return v, decoded
+
+    await call("new_scene", frame_end=48)
+    await call("add_primitive", kind="monkey", name="Blue", location=[-2, 0, 1])
+    await call("add_primitive", kind="cube", name="Orange", location=[2, 0, 1])
+    await call("set_material", objects=["Blue"], color=[0.03, 0.2, 0.9])
+    await call("set_material", objects=["Orange"], color=[0.95, 0.18, 0.02])
+    await call("set_lighting", preset="studio", ground=False)
+    await call("camera_shot", subject=["Blue"], shot="full", angle=0,
+               start_frame=1, end_frame=24, name="BlueShot")
+    await call("camera_shot", subject=["Orange"], shot="full", angle=30,
+               start_frame=25, end_frame=48, name="OrangeShot")
+    _, plain = await video("e2e_graphics_plain.mp4")
+    await call("add_transition", kind="fade_in", duration_s=0.25, name="intro")
+    await call("add_transition", shot="OrangeShot", duration_s=0.5, name="cut")
+    await call("add_transition", kind="fade_out", duration_s=0.25, name="outro")
+    await call("add_title", text="Reyhan", subtitle="Character artist", style="lower_third",
+               start_s=0.25, duration_s=1.5, name="speaker")
+    for args in ({"at_frame": 26}, {"shot": "BlueShot"},
+                 {"at_frame": 25, "shot": "OrangeShot"},
+                 {"at_frame": 25, "kind": "fade_black"}, {"duration_s": -1}):
+        try:
+            await call("add_transition", **args)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"invalid transition accepted: {args}")
+    assert len((await data("list_graphics"))["graphics"]) == 4
+    project = await data("save_project", path="e2e_graphics.blend")
+    await call("remove_graphics", all=True)
+    await call("open_project", path=project["path"])
+    assert len((await data("list_graphics"))["graphics"]) == 4
+    assert (await data("render_options", quality="draft"))["handle_frames"] == 12
+    preview = await data("render_frames", frames=[17], camera="scene", size=320)
+    assert preview["titles"] is True, preview
+    title_image = frames(preview["path"])[0]
+    bare = await data("render_frames", frames=[17], camera="scene", size=320, graphics=False)
+    bare_image = frames(bare["path"])[0]
+    assert np.abs(title_image.astype(float) - bare_image).mean() > 1
+    # Captions, title and transitions must all survive the same composition pass.
+    await call("add_subtitles", style="classic", position="top",
+               lines=[{"text": "Graphics on the timeline", "start": 0.4, "end": 1.7}])
+    v, mixed = await video("e2e_graphics.mp4")
+    assert v["graphics"] == {"titles": 1, "transitions": 3, "handle_frames": 12}, v
+    assert v["subtitles"]["captions"] == 1, v
+    assert mixed[0].mean() < 3 and mixed[-1].mean() < 3, (mixed[0].mean(), mixed[-1].mean())
+    assert mixed[7].mean() > 15
+    roi = np.s_[65:110, 100:220, :]
+    diff = lambda a, b: np.abs(a[roi].astype(float) - b[roi]).mean()
+    # Full outgoing camera at the cut, both pictures halfway, incoming at the end.
+    assert diff(mixed[24], plain[23]) < 6, diff(mixed[24], plain[23])
+    assert diff(mixed[29], plain[29]) > 8 and diff(mixed[29], plain[23]) > 8
+    assert diff(mixed[35], plain[35]) < 6, diff(mixed[35], plain[35])
+    tag_roi = np.s_[125:165, 15:95, :]
+    tag_diff = lambda i: np.abs(mixed[i][tag_roi].astype(float) - plain[i][tag_roi]).mean()
+    assert tag_diff(6) < 4 and tag_diff(13) > 5 and tag_diff(41) < 4
+    for frame in (1, 17, 25, 30, 36, 48):
+        save_png(os.path.join(ROOT, "output", "renders", f"e2e_graphics_f{frame:04d}.png"), mixed[frame - 1])
+    _, cropped = await video("e2e_graphics_crop.mp4", start=29, end=38)
+    assert diff(cropped[0], mixed[28]) < 6, diff(cropped[0], mixed[28])
+    await call("remove_subtitles")
+    await call("remove_graphics", name="speaker")
+    # Color dips and their alias, plus non-1 scene starts, must use local movie frames.
+    await call("set_timeline", frame_start=5)
+    for kind in ("fade_black", "fade_white", "dip_black"):
+        await call("remove_graphics", all=True)
+        await call("add_transition", at_frame=25, kind=kind, duration_s=0.5, name="dip")
+        _, dipped = await video(f"e2e_{kind}.mp4", start=19, end=30, subtitles=False)
+        mean = dipped[6].mean()  # scene frame 25: exact color at the cut
+        assert mean > 250 if kind == "fade_white" else mean < 3, (kind, mean)
+    await call("remove_graphics", name="all")
+    await call("add_transition", kind="fade_in", duration_s=0.25)
+    _, fade_only = await video("e2e_fade_only.mp4", start=5, end=10)
+    assert fade_only[0].mean() < 3 and fade_only[-1].mean() > 15
+    await call("remove_graphics", all=True)
+    for style in ("center", "corner"):
+        await call("add_title", text="A new chapter", subtitle="Video graphics", style=style,
+                   name="card", animation="fade" if style == "center" else "none",
+                   start_s=0, duration_s=1)
+        result = await data("render_frames", frames=[17], camera="scene", size=320)
+        assert result["titles"] is True
+    # Title-only composition, with captions disabled, no transition trigger to hide bugs.
+    assert len((await data("list_graphics"))["graphics"]) == 1
+    _, titled = await video("e2e_title_only.mp4", start=17, end=18, subtitles=False)
+    assert np.abs(titled[0].astype(float) - plain[16]).mean() > 1
+    assert (await data("remove_graphics", all=True))["graphics"] == []
+    print("graphics: 48/48 frames | fade in/out black | crossfade 12 handles | lower third + captions | crop + color dips + title-only OK")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -393,6 +510,7 @@ async def main():
                                             if o["resolution"] == "1080p"),
               "| test frame", cal["test_frame"], "| preview 1080p",
               next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
+        await _graphics_checks(call)
 
         # Sets/props through MCP: ownership, replacement, scaling, validation and isolation.
         presets = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk")
@@ -984,6 +1102,8 @@ result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
         assert [g["type"] for g in tgc["semantic"]] == ["stop"], tgc
         print("talk_gestures cue on mannequin OK")
         await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
+        await call("add_title", text="Audio + graphics", style="corner", duration_s=2)
+        await call("add_transition", kind="fade_in", duration_s=0.25)
         v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
                                           width=256, height=144, frame_start=1,
                                           frame_end=aa["frames"][1], wait=True))[0])
@@ -992,7 +1112,8 @@ result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
         with av.open(v["path"]) as c:
             kinds = sorted(st.type for st in c.streams)
         assert kinds == ["audio", "video"], kinds
-        print("audio: strip + AAC video OK")
+        assert v["graphics"]["titles"] == 1 and v["graphics"]["transitions"] == 1, v
+        print("audio: strip + AAC video with graphics OK")
 
         # Music: continuous repeats, fades over the whole track, voice/word ducking.
         # A brief pause between voices merges; sfx and muted voices never duck music.
@@ -1104,4 +1225,5 @@ result = samples
         print("E2E OK")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

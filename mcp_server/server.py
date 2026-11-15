@@ -347,14 +347,16 @@ async def clear_animation(armature: str) -> dict:
 async def render_frames(frames: list[int], view: View = "three_quarter", size: int = 256,
                         objects: list[str] | None = None,
                         camera: Literal["auto", "scene"] = "auto",
-                        engine_name: Engine = "workbench", subtitles: bool = True):
+                        engine_name: Engine = "workbench", subtitles: bool = True,
+                        graphics: bool = True):
     """Render several animation frames (workbench) so you can check a motion like a
     flip-book. Tip: use view="right" to judge walking/running, and list the character
     mesh in `objects` so the camera frames it alone. camera="scene" shows the actual
     shots (use eevee to judge lighting) with the add_subtitles captions drawn on top
-    (subtitles=False hides them)."""
+    (subtitles=False hides captions, graphics=False hides titles). Shot transitions
+    are applied only in render_video; use a draft to check their timing."""
     r = await run("render_frames", frames=frames, view=view, size=size, objects=objects,
-                  camera=camera, engine=engine_name, subtitles=subtitles)
+                  camera=camera, engine=engine_name, subtitles=subtitles, graphics=graphics)
     out = []
     for item in r["frames"]:
         out += _image_result(item)
@@ -533,7 +535,9 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
     (render_options lists them with time estimates). Poll render_status(job_id).
     wait=True blocks (only sensible for draft).
     subtitles: None = burn in the add_subtitles captions when set up (a short second pass
-    after the frames; an .srt is also written next to the video), False = without captions."""
+    after the frames; an .srt is also written next to the video), False = without captions.
+    Titles/transitions from add_title/add_transition always use the same compose pass.
+    Crossfades render extra outgoing-camera frames; duration and audio timing stay fixed."""
     return await run("render_video", path=path, frame_start=frame_start, frame_end=frame_end,
                      quality=quality, resolution=resolution, vertical=vertical, width=width,
                      height=height, fps=fps, wait=wait, subtitles=subtitles)
@@ -576,6 +580,60 @@ async def add_subtitles(style: SubtitleStyle = "tiktok",
 async def remove_subtitles() -> dict:
     """Turn captions off (render_video renders without them)."""
     return await run("remove_subtitles")
+
+
+@mcp.tool()
+async def add_transition(at_frame: int | None = None, shot: str | None = None,
+                          kind: Literal["crossfade", "fade_black", "fade_white", "dip_black",
+                                        "fade_in", "fade_out"] = "crossfade",
+                          duration_s: float = 0.5, name: str | None = None) -> dict:
+    """Add a video transition, or replace one by reusing name. Pass at_frame (the cut
+    frame) OR shot (incoming shot marker/camera name). crossfade starts at the cut and
+    blends extra outgoing-camera handle frames over the incoming shot for duration_s.
+    Animation keeps moving; camera keys beyond the shot hold their last value. No frames
+    are removed and audio stays synchronized. fade_black/dip_black and fade_white dip
+    through black/white centered on the cut; fade_in/fade_out need no target and run at
+    the scene start/end. Intervals must fit adjacent shots/the scene and cannot overlap.
+    Applied by render_video's compose pass, including drafts; still previews show cuts."""
+    return await run("add_transition", at_frame=at_frame, shot=shot, kind=kind,
+                     duration_s=duration_s, name=name)
+
+
+@mcp.tool()
+async def add_title(text: str, subtitle: str | None = None, start_s: float = 0.0,
+                     duration_s: float = 3.0,
+                     style: Literal["center", "lower_third", "corner"] = "center",
+                     name: str | None = None, size: float = 1.0,
+                     color: list[float] = [1, 1, 1],
+                     background_color: list[float] = [0.025, 0.035, 0.055],
+                     background_opacity: float = 0.7,
+                     animation: Literal["fade", "slide", "none"] | None = None,
+                     animation_s: float = 0.3, font: str | None = None) -> dict:
+    """Add a title card or name/role tag over the shot timeline; reuse name to replace.
+    start_s/duration_s are seconds from scene start. center = centered title/subtitle;
+    lower_third = name + role on a translucent bar at bottom left; corner = top left.
+    size scales text; colors are RGB 0..1 and background_opacity is 0..1 (0 hides the
+    box). Text wraps/shrinks to fit. animation defaults to fade for center, slide for
+    tags; animation_s is the in/out time (clamped to half the title). font is a local
+    TTF/OTF path. Shows in render_frames(camera='scene') and render_video with captions;
+    color fades cover the combined picture. No scene geometry is added."""
+    return await run("add_title", text=text, subtitle=subtitle, start_s=start_s,
+                     duration_s=duration_s, style=style, name=name, size=size, color=color,
+                     background_color=background_color, background_opacity=background_opacity,
+                     animation=animation, animation_s=animation_s, font=font)
+
+
+@mcp.tool()
+async def list_graphics() -> dict:
+    """List saved title and transition configs, including their names and timing."""
+    return await run("list_graphics")
+
+
+@mcp.tool()
+async def remove_graphics(name: str | None = None, all: bool = False) -> dict:
+    """Remove a named title/transition, or all graphics with all=True / name='all'.
+    Captions have their own remove_subtitles tool."""
+    return await run("remove_graphics", name=name, all=all)
 
 
 @mcp.tool()

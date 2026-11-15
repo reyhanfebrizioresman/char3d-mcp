@@ -205,10 +205,11 @@ def _render_scene_camera(sc, width, height, engine, filename, view):
 
 @command("render_frames")
 def render_frames(frames, view="three_quarter", size=320, engine="workbench", objects=None,
-                  prefix=None, camera="auto", subtitles=True):
+                  prefix=None, camera="auto", subtitles=True, graphics=True):
     """Render several animation frames (flip-book check of a motion). Through the scene
-    camera, captions from add_subtitles are drawn on top (subtitles=False to hide them)."""
-    from . import subtitles as subs
+    camera, titles and captions are drawn on top (graphics=False / subtitles=False
+    hide them independently). Transitions are video-only."""
+    from . import subtitles as subs, graphics as gfx
     stamp = prefix or f"frames_{time.strftime('%Y%m%d_%H%M%S')}"
     sc = bpy.context.scene
     show_subs = camera == "scene" and subtitles and subs.get_config(sc) is not None
@@ -217,6 +218,8 @@ def render_frames(frames, view="three_quarter", size=320, engine="workbench", ob
         item = render_preview(view=view, width=size, height=None if camera == "scene" else size,
                               engine=engine, frame=int(f), objects=objects,
                               filename=f"{stamp}_f{int(f):04d}.png", camera=camera)
+        if camera == "scene" and graphics:
+            item["titles"] = gfx.overlay_png(item["path"], sc, int(f))
         if show_subs:
             item["caption"] = subs.overlay_png(item["path"], sc, int(f))
         out.append(item)

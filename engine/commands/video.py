@@ -198,6 +198,12 @@ def _estimate(sc, quality, w, h, frames):
             "total": _fmt_duration(total)}
 
 
+def _handle_frames(sc, start, end):
+    from .graphics import resolve_transitions
+    return sum(max(0, min(end, t["end"]) - max(start, t["start"]) + 1)
+               for t in resolve_transitions(sc) if t["kind"] == "crossfade")
+
+
 def _test_frame(sc, quality, frame):
     """Render one frame in-process at 480p to measure this machine (after a warm-up render
     that compiles shaders). Samples are capped so the test stays short; the model scales."""
@@ -255,6 +261,7 @@ def _apply_settings(sc, quality, size, fps, start, end, base):
     r.resolution_percentage = pct
     if fps:
         r.fps = int(fps)
+        r.fps_base = 1.0
     sc.frame_start, sc.frame_end = int(start), int(end)
     if engine == "BLENDER_EEVEE":
         sc.eevee.taa_render_samples = samples
@@ -299,13 +306,13 @@ def _deliver(job, src):
 
 
 def _start_compose(job, movie):
-    """Second pass: lay the caption PNGs over the rendered movie (Video Sequencer)."""
+    """Second pass: combine titles, captions and shot transitions (Video Sequencer)."""
     w, h = job["size"]
     spec = {"movie": movie, "out_base": job["base"] + "subs_", "width": w, "height": h,
             "fps": job["fps"], "frames": job["frames"][1] - job["frames"][0] + 1,
             "audio": job.get("audio", False),
             "crf": "HIGH" if job["quality"] in ("final", "cycles") else "MEDIUM",
-            "overlays": job["overlays"]}
+            "overlays": job["overlays"] or [], "transitions": job["transitions"]}
     spec_path = os.path.join(os.path.dirname(job["log"]), f"{job['id']}_subs.json")
     with open(spec_path, "w") as f:
         json.dump(spec, f)
@@ -314,9 +321,10 @@ def _start_compose(job, movie):
     log = os.path.join(os.path.dirname(job["log"]), f"{job['id']}_subs.log")
     with open(log, "wb") as lf:
         job["proc"] = subprocess.Popen(
-            [bpy.app.binary_path, "-b", "--factory-startup", "--python", script, "--", spec_path],
+            [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1",
+             "--python", script, "--", spec_path],
             stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-    job.update(stage="subtitles", main_video=movie, subs_log=log, subs_started=time.time())
+    job.update(stage="compose", main_video=movie, subs_log=log, subs_started=time.time())
 
 
 def _cleanup(job):
@@ -337,15 +345,14 @@ def _finalize(job):
     code = job["proc"].poll()
     if code is None:
         return
-    if job.get("stage") == "subtitles":
+    if job.get("stage") == "compose":
         produced = sorted(glob.glob(glob.escape(job["base"] + "subs_") + "*.mp4"),
                           key=os.path.getmtime)
         if code == 0 and produced:
             _deliver(job, produced[-1])
-        else:      # keep the video, just without burned-in captions
-            _deliver(job, job["main_video"])
-            job.pop("main_video", None)
-            job["warning"] = f"subtitle pass failed (see {job['subs_log']}); video saved without captions"
+        else:
+            job["status"] = "failed"
+            job["error"] = f"graphics compose pass failed (see {job['subs_log']}); raw movie kept at {job['main_video']}"
         _cleanup(job)
         return
     produced = sorted((p for p in glob.glob(glob.escape(job["base"]) + "*.mp4")
@@ -357,7 +364,7 @@ def _finalize(job):
                 _learn_from_job(job, f.read())
         except OSError:
             pass
-        if job.get("overlays"):
+        if job.get("overlays") or job.get("transitions"):
             job["render_finished"] = time.time()
             _start_compose(job, produced[-1])
             return
@@ -382,14 +389,14 @@ def _report(job):
     last, text = _progress(job)
     total = job["frames"][1] - job["frames"][0] + 1
     done = 0 if last is None else max(0, last - job["frames"][0] + (1 if job["status"] == "done" else 0))
-    if job["status"] == "done" or job.get("stage") == "subtitles":
+    if job["status"] == "done" or job.get("stage") == "compose":
         done = total
     elapsed = (job.get("finished") or time.time()) - job["started"]
     out = {"job_id": job["id"], "status": job["status"], "path": job["path"],
            "quality": job["quality"], "size": job.get("size"), "frames": job["frames"],
            "progress": f"{done}/{total}", "elapsed_s": round(elapsed, 1)}
-    if job.get("stage") == "subtitles" and job["status"] == "running":
-        out["stage"] = "subtitles (laying captions over the rendered video)"
+    if job.get("stage") == "compose" and job["status"] == "running":
+        out["stage"] = "compose (transitions, titles and captions)"
     elif job["status"] == "running" and done > 0:
         out["eta_s"] = round(elapsed / done * (total - done), 1)
     elif job["status"] == "running" and job.get("estimate"):
@@ -401,6 +408,8 @@ def _report(job):
             out["learned_speed"] = job["learned_speed"]
     if job.get("subtitles"):
         out["subtitles"] = job["subtitles"]
+    if job.get("graphics"):
+        out["graphics"] = job["graphics"]
     if job.get("warning"):
         out["warning"] = job["warning"]
     if job.get("error"):
@@ -419,7 +428,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     subtitles: None = burn in captions when add_subtitles is set up, False = never,
     True = required (error when not set up). An .srt file is written next to the video.
     """
-    from . import subtitles as subs
+    from . import subtitles as subs, graphics as gfx
     if quality not in QUALITY:
         raise ValueError(f"quality must be one of {list(QUALITY)}")
     sc = bpy.context.scene
@@ -445,7 +454,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
 
     r = sc.render
     saved = dict(engine=r.engine, rx=r.resolution_x, ry=r.resolution_y, pct=r.resolution_percentage,
-                 fps=r.fps, fs=sc.frame_start, fe=sc.frame_end, fp=r.filepath,
+                 fps=r.fps, fps_base=r.fps_base, fs=sc.frame_start, fe=sc.frame_end, fp=r.filepath,
                  media=getattr(r.image_settings, "media_type", None), fmt=r.image_settings.file_format)
     try:
         size = _output_size(sc, quality, width, height, resolution, vertical)
@@ -454,22 +463,55 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     finally:
         r.engine, r.resolution_x, r.resolution_y = saved["engine"], saved["rx"], saved["ry"]
         r.resolution_percentage, r.fps, r.filepath = saved["pct"], saved["fps"], saved["fp"]
+        r.fps_base = saved["fps_base"]
         sc.frame_start, sc.frame_end = saved["fs"], saved["fe"]
         if saved["media"]:
             r.image_settings.media_type = saved["media"]
         r.image_settings.file_format = saved["fmt"]
 
     out_w, out_h = round(size[0] * size[2] / 100), round(size[1] * size[2] / 100)
-    overlays, sub_info, subs_dir = None, None, None
-    if want_subs:
-        subs_dir = os.path.join(jobs_dir, f"{job_id}_subs")
-        overlays, chunks = subs.build(sc, out_w, out_h, start, end, subs_dir)
-        fps_now = sc.render.fps / (sc.render.fps_base or 1)
-        srt = os.path.splitext(path)[0] + ".srt"
-        n = subs.write_srt(srt, chunks, fps_now, start, end)
-        sub_info = {"captions": n, "overlays": len(overlays), "srt": srt}
+    subs_dir = os.path.join(jobs_dir, f"{job_id}_subs")
+    sub_info = None
+    # Build using the output fps, but the original scene origin (seconds are measured
+    # from scene.frame_start, not from a cropped render's frame_start).
+    try:
+        if fps:
+            r.fps = int(fps)
+            r.fps_base = 1.0
+        overlays, transitions = gfx.build(sc, out_w, out_h, start, end, subs_dir)
+        title_count = len(overlays)
+        if want_subs:
+            captions, chunks = subs.build(sc, out_w, out_h, start, end, subs_dir)
+            overlays += captions
+            fps_now = sc.render.fps / (sc.render.fps_base or 1)
+            srt = os.path.splitext(path)[0] + ".srt"
+            n = subs.write_srt(srt, chunks, fps_now, start, end)
+            sub_info = {"captions": n, "overlays": len(captions), "srt": srt}
+    except Exception:
+        shutil.rmtree(subs_dir, ignore_errors=True)
+        os.remove(blend)
+        raise
+    finally:
+        r.fps = saved["fps"]
+        r.fps_base = saved["fps_base"]
+    handles = []
+    for i, t in enumerate(transitions):
+        if t["kind"] == "crossfade":
+            os.makedirs(subs_dir, exist_ok=True)
+            t["movie"] = os.path.join(subs_dir, f"handle_{i}.mp4")
+            handles.append({"path": t["movie"], "camera": t["camera"],
+                            "frames": [t["start"] + start - 1, t["end"] + start - 1]})
+    render_cmd = [bpy.app.binary_path, "-b", blend]
+    if handles:
+        spec_path = os.path.join(subs_dir, "handles.json")
+        with open(spec_path, "w") as f:
+            json.dump({"handles": handles}, f)
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "render_movie.py")
+        render_cmd += ["--python-exit-code", "1", "--python", script, "--", spec_path]
+    else:
+        render_cmd += ["-a"]
     with open(log, "wb") as lf:
-        proc = subprocess.Popen([bpy.app.binary_path, "-b", blend, "-a"], stdout=lf,
+        proc = subprocess.Popen(render_cmd, stdout=lf,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     from .audio import _sound_strips
     job = {"id": job_id, "proc": proc, "path": path, "base": base, "blend": blend, "log": log,
@@ -478,8 +520,10 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
            "started": time.time(),
            "size": [out_w, out_h],
            "fps": float(fps) if fps else sc.render.fps / (sc.render.fps_base or 1),
-           "overlays": overlays or None, "subs_dir": subs_dir, "subtitles": sub_info}
-    job["estimate"] = _estimate(sc, quality, out_w, out_h, end - start + 1)
+           "overlays": overlays, "transitions": transitions, "subs_dir": subs_dir, "subtitles": sub_info,
+           "graphics": {"titles": title_count, "transitions": len(transitions),
+                        "handle_frames": sum(h["frames"][1] - h["frames"][0] + 1 for h in handles)}}
+    job["estimate"] = _estimate(sc, quality, out_w, out_h, end - start + 1 + job["graphics"]["handle_frames"])
     job["model_spf"] = _model_spf(QUALITY[quality][0], QUALITY[quality][2], out_w, out_h,
                                   _scene_weight(sc))
     JOBS[job_id] = job
@@ -509,16 +553,18 @@ def render_options(quality="final", frame_start=None, frame_end=None, vertical=F
             raise RuntimeError("no camera: create one with camera_shot first")
         test = _test_frame(sc, quality, (start + end) // 2)
     frames = max(1, end - start + 1)
+    handles = _handle_frames(sc, start, end)
     fps = sc.render.fps / (sc.render.fps_base or 1)
     options = []
     for name, (w, h) in RESOLUTIONS.items():
         if vertical:
             w, h = h, w
         options.append({"resolution": name, "size": f"{w}x{h}",
-                        **_estimate(sc, quality, w, h, frames)})
+                        **_estimate(sc, quality, w, h, frames + handles)})
     engine = QUALITY[quality][0]
     calib = _calibration_report()
     out = {"quality": quality, "frames": [start, end], "duration_s": round(frames / fps, 2),
+           "handle_frames": handles,
            "scene_weight": "heavy" if _scene_weight(sc) >= 1 else "light",
            "options": options, "machine_speed": calib[ENGINE_KEY[engine]]}
     if test:
@@ -549,5 +595,5 @@ def cancel_render(job_id):
         job["proc"].terminate()
         job["proc"].wait(timeout=10)
     job["status"] = "failed"
-    job["finished"] = time.time()
+    _cleanup(job)
     return _report(job)
