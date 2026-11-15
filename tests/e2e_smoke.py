@@ -6,12 +6,15 @@ import asyncio
 import json
 import os
 import sys
+import textwrap
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
+# Inspect baked world-space contacts, rather than trusting the planner's IK report.
+os.environ["CHAR3D_ALLOW_PYTHON"] = "1"
 # keep the test's render-speed measurements out of the user's real calibration
 CALIB = os.path.join(ROOT, "output", "e2e_render_speed.json")
 os.environ["CHAR3D_RENDER_CALIB"] = CALIB
@@ -57,6 +60,122 @@ def text_of(res):
     return [c.text for c in res.content if c.type == "text"]
 
 
+async def check_navigation(call, nav, points=(), face=None, stationary=False):
+    """Measure the final animation on the visible rig, including proxy-retarget results."""
+    code = textwrap.dedent(f'''\
+        import math
+        from engine.commands.anim import semantic_map, _facing
+        from engine.commands.footlock import _legs, _sole_points
+        nav = {nav!r}
+        rig = bpy.data.objects[nav['armature']]
+        smap = semantic_map(rig)
+        sc = bpy.context.scene
+        saved = sc.frame_current
+        mw = rig.matrix_world
+        drift, rotation_drift = 0.0, 0.0
+        floor_error = 0.0
+        legs, _ = _legs(rig)
+        for side, intervals in nav['foot_lock']['contacts'].items():
+            sole = _sole_points(rig, legs[side], 0.0)
+            for a, b in intervals:
+                anchor, orientation = None, None
+                for f in range(a, b + 1):
+                    sc.frame_set(f)
+                    foot = mw @ rig.pose.bones[smap['foot.' + side]].matrix
+                    p, q = foot.translation, foot.to_quaternion()
+                    anchor = p.copy() if anchor is None else anchor
+                    orientation = q.copy() if orientation is None else orientation
+                    drift = max(drift, (p - anchor).length)
+                    change = orientation.rotation_difference(q).angle
+                    rotation_drift = max(rotation_drift, min(change, 2*math.pi-change))
+                    floor_error = max(floor_error, abs(min((foot @ p).z for p in sole)))
+        rest = (mw @ rig.data.bones[smap['hips']].matrix_local).to_quaternion()
+        forward = _facing(rig, smap).inverted() @ Vector((0, -1, 0))
+        roots, yaws = [], []
+        for f in range(nav['frames'][0], nav['frames'][1] + 1):
+            sc.frame_set(f)
+            mat = mw @ rig.pose.bones[smap['hips']].matrix
+            roots.append(mat.translation.copy())
+            fw = mat.to_quaternion() @ rest.inverted() @ forward
+            yaws.append(math.atan2(fw.x, -fw.y))
+        angle = lambda a, b: (b - a + math.pi) % (2*math.pi) - math.pi
+        rate = max(abs(angle(a, b)) for a, b in zip(yaws, yaws[1:]))
+        rate *= sc.render.fps / sc.render.fps_base * 180 / math.pi
+        waypoint_errors, waypoint_frames = [], []
+        for x, y in {list(points)!r}:
+            errors = [math.hypot(p.x-x, p.y-y) for p in roots]
+            waypoint_errors.append(min(errors))
+            waypoint_frames.append(nav['frames'][0] + errors.index(min(errors)))
+        facing_error = 0.0
+        if {face!r} is not None:
+            target = Vector({face!r}) - roots[-1]
+            facing_error = abs(angle(yaws[-1], math.atan2(target.x, -target.y)))
+        motion = max(math.hypot(p.x-roots[0].x, p.y-roots[0].y) for p in roots)
+        stop = max((p - roots[-1]).length for p in roots[-4:])
+        stop_feet = 0.0
+        for side in 'LR':
+            anchor = None
+            for f in range(nav['frames'][1] - 3, nav['frames'][1] + 1):
+                sc.frame_set(f)
+                p = (mw @ rig.pose.bones[smap['foot.' + side]].matrix).translation
+                anchor = p.copy() if anchor is None else anchor
+                stop_feet = max(stop_feet, (p - anchor).length)
+        sc.frame_set(saved)
+        result = dict(drift=drift, rotation_drift=rotation_drift, floor_error=floor_error,
+                      turn_rate=rate, waypoint_errors=waypoint_errors,
+                      waypoint_frames=waypoint_frames, first=list(roots[0]), last=list(roots[-1]),
+                      facing_error=facing_error, motion=motion, stop=stop, stop_feet=stop_feet)
+    ''')
+    measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert measured["drift"] < 0.02, measured
+    assert measured["rotation_drift"] < 0.02, measured
+    assert measured["floor_error"] < 0.02, measured
+    assert measured["turn_rate"] < 100.1, measured
+    assert all(e < 0.08 for e in measured["waypoint_errors"]), measured
+    assert measured["facing_error"] < 0.02 and measured["stop"] < 0.001, measured
+    assert measured["stop_feet"] < 0.001, measured
+    assert nav["foot_lock"]["max_ik_error_m"] < 0.02, nav
+    assert all(nav["foot_lock"]["contacts"].values()), nav
+    if stationary:
+        assert measured["motion"] < 0.005, measured
+    if points:
+        import math
+        assert math.dist(measured["last"][:2], points[-1]) < 0.01, measured
+    return measured
+
+
+async def isolate_mpfb(session):
+    """Keep MPFB's logs, caches and writable asset data inside this test workspace.
+
+    MPFB otherwise opens logs in Blender's portable install, which can be read-only in
+    a worktree sandbox. Configure its supported user-data preference before enabling it.
+    """
+    code = textwrap.dedent(f'''\
+        import addon_utils
+        import importlib
+        import os
+        import shutil
+        module = 'bl_ext.user_default.mpfb'
+        if any(m.__name__ == module for m in addon_utils.modules()):
+            source = os.path.join(bpy.utils.extension_path_user(module), 'data')
+            home = {os.path.join(ROOT, 'output', 'mpfb_test')!r}
+            os.makedirs(home, exist_ok=True)
+            data = os.path.join(home, 'data')
+            if os.path.isdir(source) and not os.path.isdir(data):
+                shutil.copytree(source, data)
+            cls = importlib.import_module(module + '._preferences').MpfbPreferences
+            if 'bl_rna' not in cls.__dict__:
+                bpy.utils.register_class(cls)
+            addon = bpy.context.preferences.addons.get(module)
+            if addon is None:
+                addon = bpy.context.preferences.addons.new()
+                addon.module = module
+            addon.preferences.mpfb_user_data = home
+    ''')
+    res = await session.call_tool("run_blender_python", {"code": code})
+    assert not res.isError, text_of(res)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -70,6 +189,8 @@ async def main():
             res = await s.call_tool(tool, args)
             if res.isError:
                 raise RuntimeError(f"{tool} failed: {text_of(res)}")
+            if tool == "new_scene":
+                await isolate_mpfb(s)
             return res
 
         print("status:", text_of(await call("engine_status")))
@@ -191,9 +312,89 @@ async def main():
               "| test frame", cal["test_frame"], "| preview 1080p",
               next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
 
+        # Floor routes: rounded bend, sharp reversal, final facing and chained stepping turn.
+        for kind in ("basic", "rigify"):
+            await call("new_scene")
+            await call("create_human", name="Navigator", location=[0.4, 0.2, 0])
+            await call("auto_rig_humanoid", mesh="Navigator", rig_type=kind)
+            if kind == "basic":
+                # Enter from a moving gait whose final support is the right foot.
+                await call("animate", armature="Navigator_rig", clip="walk", cycles=1)
+            points = [[0.4, -3.0], [1.6, -3.0], [0.6, -2.8]]
+            nav = json.loads(text_of(await call("walk_path", armature="Navigator_rig",
+                                                points=[points[0], *points],
+                                                face_end=[-1, 1]))[0])
+            measured = await check_navigation(call, nav, points, face=[-1, 1, 0])
+            assert nav["via"] == ("direct" if kind == "basic" else "proxy-retarget"), nav
+            assert nav["distance_m"] > 3.5 and nav["duration_seconds"] > 3, nav
+            if kind == "basic":
+                # Fixed floor references make the route readable in top-view frames.
+                trail = textwrap.dedent(f'''\
+                    rig = bpy.data.objects['Navigator_rig']
+                    saved = bpy.context.scene.frame_current
+                    path = []
+                    for f in range({nav['frames'][0]}, {nav['frames'][1] + 1}):
+                        bpy.context.scene.frame_set(f)
+                        p = (rig.matrix_world @ rig.pose.bones['hips'].matrix).translation
+                        path.append((p.x, p.y, 0.012, 1.0))
+                    curve = bpy.data.curves.new('NavigationTrail', 'CURVE')
+                    curve.dimensions, curve.bevel_depth = '3D', 0.009
+                    spline = curve.splines.new('POLY')
+                    spline.points.add(len(path) - 1)
+                    for point, co in zip(spline.points, path):
+                        point.co = co
+                    bpy.context.scene.collection.objects.link(bpy.data.objects.new('NavigationTrail', curve))
+                    bpy.context.scene.frame_set(saved)
+                ''')
+                await call("run_blender_python", code=trail)
+                markers = ["NavigationTrail"]
+                for i, p in enumerate([measured["first"][:2], *points]):
+                    name = f"Waypoint{i}"
+                    await call("add_primitive", kind="sphere", name=name,
+                               location=[*p, 0.02], size=0.06)
+                    markers.append(name)
+                frames = sorted(set([nav["frames"][0], *measured["waypoint_frames"], nav["frames"][1]]))
+                for view in ("top", "three_quarter"):
+                    images = await call("render_frames", frames=frames, view=view, size=256,
+                                        objects=["Navigator_rig", *markers] if view == "top"
+                                        else ["Navigator_rig"])
+                    assert sum(c.type == "image" for c in images.content) == len(frames)
+                await call("save_project", path="e2e_walk_path.blend")
+                await call("export_asset", path="e2e_walk_path.glb", objects=["Navigator_rig"])
+            turn = json.loads(text_of(await call("turn_to", armature="Navigator_rig",
+                                                 target=[2, -1, 1]))[0])
+            assert turn["frames"][0] == nav["next_start_frame"], turn
+            tm = await check_navigation(call, turn, face=[2, -1, 0], stationary=True)
+            import math
+            assert math.dist(tm["first"][:2], measured["last"][:2]) < 0.005, tm
+            # A later route appends from that position; turn_to also accepts object names.
+            again = json.loads(text_of(await call("walk_path", armature="Navigator_rig",
+                                                  points=[[0.6, -2.8], [1.0, -2.8]],
+                                                  speed=1.3, face_end="Navigator"))[0])
+            assert again["frames"][0] == turn["next_start_frame"], again
+            await check_navigation(call, again, [[1.0, -2.8]])
+            object_turn = json.loads(text_of(await call("turn_to", armature="Navigator_rig",
+                                                       target="Navigator"))[0])
+            await check_navigation(call, object_turn, stationary=True)
+            if kind == "basic":
+                fast = json.loads(text_of(await call("walk_path", armature="Navigator_rig",
+                                                     points=[[1.4, -2.8]], clip="run", speed=4))[0])
+                await check_navigation(call, fast, [[1.4, -2.8]])
+            print(f"walk_path ({kind}): distance {nav['distance_m']:.3f} m | "
+                  f"planted drift {measured['drift']:.6f} m | turn_to drift {tm['drift']:.6f} m")
+            for bad in ({"points": []}, {"points": [[1, 2, 3]]},
+                        {"points": [[0, 0]], "speed": 0},
+                        {"points": [[0, 0]], "clip": "idle"},
+                        {"points": [[0, 0]], "start_frame": -1},
+                        {"points": [[1e9, 0]]},
+                        {"points": [[0, 0]], "face_end": "missing-target"}):
+                assert (await s.call_tool("walk_path", {"armature": "Navigator_rig", **bad})).isError
+            assert (await s.call_tool("turn_to", {"armature": "Navigator_rig", "target": "camera"})).isError
+
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})
         if mp.isError:
+            assert "MPFB is not installed" in " ".join(text_of(mp)), text_of(mp)
             print("mpfb: not installed, skipped")
         else:
             await call("new_scene")
@@ -209,6 +410,28 @@ async def main():
             img = await call("render_preview", objects=["Rina_rig"], width=160, height=160)
             assert "image" in [c.type for c in img.content]
             print("mpfb:", h["skin"], h["height_m"], "m,", len(h["parts"]), "parts, wave OK")
+            # Game-engine rig with face keys: running, turning and facing the scene camera.
+            await call("lip_sync", character="Rina_rig", text="Mari berjalan bersama", start_frame=1)
+            await call("camera_shot", subject=["Rina_rig"], shot="full", start_frame=1, end_frame=400)
+            run = json.loads(text_of(await call("walk_path", armature="Rina_rig", clip="run",
+                                                points=[[0, -1.5], [1.2, -1.5], [0.2, -1.4]],
+                                                speed=1.15, face_end="camera"))[0])
+            assert run["via"] == "proxy-retarget" and run["frames"][0] == an["next_start_frame"], run
+            planted = [{f for a, b in run["foot_lock"]["contacts"][side] for f in range(a, b + 1)}
+                       for side in "LR"]
+            assert any(f not in planted[0] and f not in planted[1]
+                       for f in range(*run["frames"])), "run needs flight intervals"
+            rm = await check_navigation(call, run, [[0, -1.5], [1.2, -1.5], [0.2, -1.4]])
+            # Camera target is read at the final turn, and a following turn samples it too.
+            ct = json.loads(text_of(await call("turn_to", armature="Rina_rig", target="camera"))[0])
+            assert abs(ct["turn_degrees"]) < 1.0, ct
+            await check_navigation(call, ct, stationary=True)
+            images = await call("render_frames", frames=rm["waypoint_frames"] + [run["frames"][1]],
+                                view="three_quarter", size=256, objects=["Rina_rig"])
+            assert sum(c.type == "image" for c in images.content) == 4
+            await call("save_project", path="e2e_walk_path_mpfb.blend")
+            print(f"walk_path (MPFB game_engine/run): distance {run['distance_m']:.3f} m | "
+                  f"planted drift {rm['drift']:.6f} m | camera facing OK")
             # Rigify + face: expression, lip sync, blink
             await call("new_scene")
             d = json.loads(text_of(await call("create_realistic_human", name="Dani", gender=1.0,
