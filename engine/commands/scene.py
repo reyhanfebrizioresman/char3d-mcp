@@ -39,6 +39,7 @@ def _describe(obj):
         "scale": vec(obj.scale),
         "dimensions": vec(obj.dimensions),
         "visible": not obj.hide_render,
+        "collections": [c.name for c in obj.users_collection],
     }
     if obj.type == "MESH":
         me = obj.data

@@ -397,13 +397,61 @@ async def set_lighting(preset: Light = "studio", subject: list[str] | None = Non
                        strength: float = 1.0, rotate: float = 0.0,
                        background: list[float] | None = None, ground: bool = True,
                        ground_color: list[float] = [0.32, 0.32, 0.33]) -> dict:
-    """Replace the scene lighting with a preset aimed at `subject` (default: everything):
+    """Replace the scene lighting aimed at subject (default: visible subjects, excluding sets):
     studio, soft, dramatic, sunset, noon, overcast, night, neon, silhouette, horror.
     rotate spins all lights around the subject (degrees). background overrides the sky
     color (RGB 0..1). ground adds a large floor at the subject's feet."""
     return await run("set_lighting", preset=preset, subject=subject, strength=strength,
                      rotate=rotate, background=background, ground=ground,
                      ground_color=ground_color)
+
+
+Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk"]
+Prop = Literal["chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
+               "bookshelf", "sofa", "whiteboard"]
+
+
+@mcp.tool()
+async def set_environment(preset: Environment, subject: list[str] | None = None,
+                          scale: float = 1.0, variant: int = 0,
+                          color_theme: str | dict[str, list[float]] | None = None,
+                          screen_image: str | None = None) -> dict:
+    """Replace all char3d sets/props with a procedural furnished set and practical lights.
+    subject: character armature/mesh names (None = visible subjects; empty scene = origin).
+    Furniture is sized to subject height * scale, anchored at its feet, facing -Y; the
+    character is never moved. Podcast/news desks sit in front of the standing presenter;
+    the stage platform top stays at their feet. Central -Y camera aisle stays open.
+    variant: nonnegative deterministic seed (odd variants mirror side decor).
+    color_theme: warm/cool/neutral or {wall, accent, fabric: [R,G,B]} overrides in 0..1.
+    screen_image: optional local image, relative to imports/ or absolute; mapped upright
+    across screens/whiteboards (stretched to fit). All objects are in char3d_env; returns
+    object names and a transformable root. Set lighting and camera_shot separately with
+    the character as subject. Replaces add_prop objects too; preserves characters/cameras
+    and set_lighting lights. Static set: no automatic seating or collision avoidance."""
+    return await run("set_environment", preset=preset, subject=subject, scale=scale,
+                     variant=variant, color_theme=color_theme, screen_image=screen_image)
+
+
+@mcp.tool()
+async def add_prop(kind: Prop, location: list[float] = [0, 0, 0], rotation_z: float = 0,
+                   scale: float = 1.0, screen_image: str | None = None) -> dict:
+    """Add procedural furniture in char3d_env without replacing existing sets/props.
+    location is the floor/base center in world meters; rotation_z is degrees about Z
+    (0 faces -Y); scale is a positive uniform multiplier, independent of character height.
+    Desk is standing height (1.02 m), table is a coffee table (0.43 m), microphone/laptop
+    bases sit at location.z (use a desktop height). Lamp includes a practical light.
+    screen_image: optional local image for screen/laptop/whiteboard, relative to imports/.
+    Returns all part names and a root; move/rotate/scale that root to move the whole prop."""
+    return await run("add_prop", kind=kind, location=location, rotation_z=rotation_z,
+                     scale=scale, screen_image=screen_image)
+
+
+@mcp.tool()
+async def clear_environment() -> dict:
+    """Remove all managed sets, props and practical lights (plus unused owned data).
+    Preserves characters, cameras, set_lighting lights, ground and unrelated user objects.
+    Returns removed names/count. Safe to call again when already empty."""
+    return await run("clear_environment")
 
 
 @mcp.tool()

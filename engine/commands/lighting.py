@@ -120,6 +120,8 @@ def list_lighting_presets():
 def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, background=None,
                  ground=True, ground_color=(0.32, 0.32, 0.33)):
     """Replace char3d lights with a preset aimed at the subject; optional ground plane."""
+    from .environment import _sync_ground
+
     if preset not in PRESETS:
         raise ValueError(f"preset must be one of {list(PRESETS)}")
     sc = bpy.context.scene
@@ -172,6 +174,7 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
         g["c3d_role"] = "ground"
         g.location.z = lo.z
         g.data.materials.append(make_material("c3d_ground_mat", ground_color, roughness=0.8))
+        _sync_ground()
         ground_name = g.name
     if sc.render.engine == "BLENDER_WORKBENCH":
         sc.render.engine = "BLENDER_EEVEE"

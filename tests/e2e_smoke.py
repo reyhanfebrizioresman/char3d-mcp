@@ -1,6 +1,9 @@
 """End-to-end check: real MCP client -> MCP server (stdio) -> Blender engine.
 
     .venv/bin/python tests/e2e_smoke.py
+
+Set CHAR3D_ENV_VISUALS=1 to render every environment in Eevee. By default the
+office and screen-image cases provide a cheaper rendering smoke check.
 """
 import asyncio
 import json
@@ -191,6 +194,62 @@ async def main():
               "| test frame", cal["test_frame"], "| preview 1080p",
               next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
 
+        # Sets/props through MCP: ownership, replacement, scaling, validation and isolation.
+        presets = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk")
+        props = ("chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
+                 "bookshelf", "sofa", "whiteboard")
+        assert {"set_environment", "add_prop", "clear_environment"} <= tools
+        before = json.loads(text_of(await call("scene_info"))[0])
+        keep = {o["name"] for o in before["objects"]}
+        presenter = next(o for o in before["objects"] if o["name"] == "Walker_rig")
+        ground_z = next(o["location"][2] for o in before["objects"] if o["name"] == "c3d_ground")
+        for preset in presets:
+            env = json.loads(text_of(await call("set_environment", preset=preset,
+                                                subject=["Walker_rig"], variant=1))[0])
+            info = json.loads(text_of(await call("scene_info"))[0])
+            objects = {o["name"]: o for o in info["objects"]}
+            assert env["collection"] == "char3d_env" and len(env["objects"]) > 15, env
+            assert env["lights"] and all("char3d_env" in objects[n]["collections"]
+                                         for n in env["objects"]), env
+            assert keep <= set(objects), keep - set(objects)
+            assert objects["Walker_rig"]["location"] == presenter["location"]
+            if preset == "stage":
+                assert objects["c3d_ground"]["location"][2] < ground_z - 0.05, objects["c3d_ground"]
+            else:
+                assert objects["c3d_ground"]["location"][2] == ground_z, objects["c3d_ground"]
+            if preset != presets[0]:
+                assert env["replaced"] > 0, env
+        removed = json.loads(text_of(await call("clear_environment"))[0])
+        assert removed["count"] == len(env["objects"]), removed
+        # Unit-sized props transform as one group; all eleven kinds must be constructible.
+        for i, kind in enumerate(props):
+            prop = json.loads(text_of(await call("add_prop", kind=kind, location=[i*2, 3, 0.2],
+                                                 rotation_z=90, scale=0.5))[0])
+            info = json.loads(text_of(await call("scene_info"))[0])
+            objects = {o["name"]: o for o in info["objects"]}
+            root = objects[prop["root"]]
+            assert root["location"] == [i*2, 3, 0.2] and root["scale"] == [0.5]*3, root
+            assert root["rotation_deg"][2] == 90, root
+            assert all(objects[n]["parent"] == prop["root"] for n in prop["objects"][1:]), prop
+            if kind == "lamp":
+                assert prop["lights"], prop
+        prop_names = set(objects)
+        # Invalid inputs must not discard existing sets/props.
+        for name, args in (("set_environment", {"preset": "office", "scale": 0}),
+                           ("set_environment", {"preset": "office", "variant": -1}),
+                           ("set_environment", {"preset": "office", "color_theme": "invalid"}),
+                           ("set_environment", {"preset": "office", "screen_image": "missing.png"}),
+                           ("add_prop", {"kind": "chair", "scale": -1})):
+            err = await s.call_tool(name, args)
+            assert err.isError, (name, args)
+        info = json.loads(text_of(await call("scene_info"))[0])
+        assert {o["name"] for o in info["objects"]} == prop_names
+        assert json.loads(text_of(await call("clear_environment"))[0])["count"] > 50
+        assert json.loads(text_of(await call("clear_environment"))[0])["count"] == 0
+        after = json.loads(text_of(await call("scene_info"))[0])
+        assert {o["name"] for o in after["objects"]} == keep
+        print("environments: 6 presets, 11 props, collection/replace/clear/validation OK")
+
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})
         if mp.isError:
@@ -199,6 +258,7 @@ async def main():
             await call("new_scene")
             h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
                                               age=30, hair="ponytail01",
+                                              location=[1.25, 0.35, 0],
                                               clothes=["female_sportsuit01", "shoes03"]))[0])
             assert h["armature"] == "Rina_rig" and h["mapped_bones"] >= 20, h
             vr = json.loads(text_of(await call("validate_rig", mesh="Rina"))[0])
@@ -209,6 +269,56 @@ async def main():
             img = await call("render_preview", objects=["Rina_rig"], width=160, height=160)
             assert "image" in [c.type for c in img.content]
             print("mpfb:", h["skin"], h["height_m"], "m,", len(h["parts"]), "parts, wave OK")
+            # Every furnished set around a clothed, rigged, lip-synced MPFB presenter.
+            # Render office by default; opt into all six for a full visual review.
+            visual_presets = presets if os.environ.get("CHAR3D_ENV_VISUALS") == "1" else ("office",)
+            await call("clear_animation", armature="Rina_rig")
+            await call("apply_pose", armature="Rina_rig", pose="relaxed")
+            await call("set_expression", character="Rina_rig", expression="smile", strength=0.4)
+            await call("lip_sync", character="Rina_rig", text="Halo, selamat datang di studio.")
+            await call("auto_blink", character="Rina_rig", frame_start=1, frame_end=72)
+            await call("set_lighting", preset="studio", subject=["Rina_rig"])
+            await call("camera_shot", subject=["Rina_rig"], shot="wide", angle=8,
+                       elevation=6, start_frame=1, end_frame=24, name="EnvironmentWide")
+            image_path = json.loads(text_of(prev)[0])["path"]
+            for i, preset in enumerate(presets):
+                env = json.loads(text_of(await call("set_environment", preset=preset,
+                                                    subject=["Rina_rig"], variant=i % 2))[0])
+                assert env["standing_position"][:2] == [1.25, 0.35], env
+                # Omitted subject in set_lighting must still frame the character only,
+                # and must preserve the set's independently owned practical lights.
+                light = json.loads(text_of(await call("set_lighting", preset="studio"))[0])
+                assert light["lights"]
+                if preset in visual_presets:
+                    look = await call("render_frames", frames=[1], camera="scene",
+                                      engine_name="eevee", size=256)
+                    assert [c.type for c in look.content].count("image") == 1
+                info = json.loads(text_of(await call("scene_info"))[0])
+                names = {o["name"] for o in info["objects"]}
+                assert set(env["lights"]) <= names
+                if preset in visual_presets:
+                    paths = [json.loads(t)["path"] for t in text_of(look)]
+                    print("environment visual:", preset, *paths)
+            # Image mapping, root anchoring, scale and deterministic replacement.
+            env = json.loads(text_of(await call("set_environment", preset="office",
+                                                subject=["Rina_rig"], scale=1.2, variant=3,
+                                                color_theme={"accent": [0.8, 0.1, 0.05]},
+                                                screen_image=image_path))[0])
+            assert env["screen_image"] == image_path and env["scale"] == 1.2, env
+            assert any(n.endswith("_image") for n in env["objects"]), env
+            image_look = await call("render_frames", frames=[1], camera="scene",
+                                    engine_name="eevee", size=256)
+            print("environment image visual:", *text_of(image_look))
+            # Reusing the same image while replacing a set must retain its material data.
+            repeated = json.loads(text_of(await call("set_environment", preset="office",
+                                                     subject=["Rina_rig"], scale=1.2, variant=3,
+                                                     screen_image=image_path))[0])
+            assert repeated["objects"] == env["objects"] and repeated["unit_scale"] == env["unit_scale"]
+            # Environment geometry must not affect implicit subject measurement on replacement.
+            implicit = json.loads(text_of(await call("set_environment", preset="classroom"))[0])
+            assert abs(implicit["unit_scale"] * 1.2 - env["unit_scale"]) < 0.001
+            await call("clear_environment")
+            print("environment MPFB: 6 sets,", len(visual_presets), "wide Eevee checks + screen image OK")
             # Rigify + face: expression, lip sync, blink
             await call("new_scene")
             d = json.loads(text_of(await call("create_realistic_human", name="Dani", gender=1.0,
@@ -291,6 +401,7 @@ async def main():
         print("talk_gestures cue on mannequin OK")
         await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
         v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
+                                          frame_end=aa["frames"][1],
                                           wait=True))[0])
         assert v["status"] == "done" and v["has_audio"], v
         import av
@@ -301,6 +412,11 @@ async def main():
 
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text
+        await call("new_scene")
+        empty_env = json.loads(text_of(await call("set_environment", preset="living_room"))[0])
+        assert empty_env["unit_scale"] == 1 and empty_env["standing_position"] == [0, 0, 0]
+        await call("clear_environment")
+        assert not json.loads(text_of(await call("scene_info"))[0])["objects"]
         await call("engine_shutdown")
         print("saved:", text_of(saved))
         print("E2E OK")

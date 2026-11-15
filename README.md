@@ -41,6 +41,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; material cepat |
+| `set_environment`, `add_prop`, `clear_environment` | Set prosedural: podcast_studio, classroom, office, stage, living_room, news_desk; 11 properti terpisah + lampu praktis dalam koleksi char3d_env, skala mengikuti karakter, variant/tema warna dan gambar lokal pada layar/papan; bersihkan tanpa menghapus karakter/kamera |
 | `add_subtitles`, `remove_subtitles` | Subtitle otomatis dari waktu kata lip sync (atau teks/audio): gaya tiktok (kata aktif menyala + pop-in), karaoke, classic; dibakar ke video + file .srt |
 | `render_options`, `render_video`, `render_status`, `cancel_render` | Render MP4 (H.264) di proses latar belakang: draft, preview, final, cycles; pilih resolusi 480p–4K (atau vertikal) dengan estimasi waktu render yang dikalibrasi per mesin (belajar dari render sebelumnya, atau `calibrate=True` untuk frame uji) |
 | `set_timeline` | Rentang frame dan fps |
@@ -72,6 +73,8 @@ chmod +x run_mcp.sh
 ```bash
 .venv/bin/python tests/e2e_smoke.py
 ```
+Tambahkan `CHAR3D_ENV_VISUALS=1` untuk merender keenam set dengan karakter MPFB di Eevee;
+tes standar merender kantor dan contoh gambar layar agar lebih cepat.
 
 ## Menyambungkan ke AI
 Ganti `/PATH/KE/char3d` dengan lokasi folder ini.

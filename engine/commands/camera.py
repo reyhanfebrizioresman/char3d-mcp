@@ -107,7 +107,7 @@ def _subjects(names):
         return objs
     return [o for o in bpy.context.scene.objects
             if o.type in RENDERABLE and o.visible_get() and not is_helper(o)
-            and o.get("c3d_role") != "ground"]
+            and o.get("c3d_role") not in {"ground", "environment"}]
 
 
 def _noise(t, seed):
