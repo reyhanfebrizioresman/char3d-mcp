@@ -26,6 +26,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `set_expression`, `list_expressions` | 24 ekspresi wajah (senyum, tawa, sedih, marah, kaget, kedip, dll.) + 52 unit ARKit |
 | `lip_sync`, `auto_blink` | Gerak mulut dari teks dan kedipan otomatis |
 | `lip_sync_audio`, `transcribe_audio` | Gerak mulut dari rekaman suara (Whisper lokal: waktu tiap kata), audio ikut masuk ke video |
+| `lip_sync`, `lip_sync_audio` — `detail="phoneme"` | Lip sync per fonem (default): `language="id"/"ms"/"en"` atau otomatis, durasi relatif di dalam tiap kata, transisi halus, antisipasi bibir bulat o/u/w, penutupan m/b/p dan kontak f/v; `detail="word"` untuk perilaku lama. Pelafalan dan waktu fonem berupa perkiraan aturan, bukan forced alignment akustik |
 | `talk_motion` | Gerak kepala (angguk saat penekanan, miring per kalimat), alis, dan lirikan mata saat bicara; menatap kamera |
 | `talk_gestures` | Gerak tangan saat bicara: postur bicara + beat, buka telapak, sapuan, menunjuk (lengkap dengan jari); mengikuti penekanan kata, plus gesture sesuai makna kata ("dua" → dua jari, "saya" → tangan di dada, "besar" → tangan melebar, "tidak" → telapak menyapu, ...) atau `cues` manual |
 | `set_hand_pose` | Pose jari: rileks, terbuka, kepal, menunjuk, jempol, peace, tiga, empat, OK, dll. (rig MPFB, Mixamo, Rigify) |

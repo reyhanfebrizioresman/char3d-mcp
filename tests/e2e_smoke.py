@@ -12,6 +12,8 @@ from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
+# Inspect evaluated shape keys through the test-only escape hatch.
+os.environ["CHAR3D_ALLOW_PYTHON"] = "1"
 # keep the test's render-speed measurements out of the user's real calibration
 CALIB = os.path.join(ROOT, "output", "e2e_render_speed.json")
 os.environ["CHAR3D_RENDER_CALIB"] = CALIB
@@ -194,7 +196,7 @@ async def main():
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})
         if mp.isError:
-            print("mpfb: not installed, skipped")
+            print("mpfb: unavailable, skipped:", text_of(mp))
         else:
             await call("new_scene")
             h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
@@ -222,6 +224,7 @@ async def main():
             ls = json.loads(text_of(await call("lip_sync", character="Dani_rig",
                                                text="Halo semuanya", start_frame=5))[0])
             assert ls["mouth_shapes"] >= 8 and ls["next_start_frame"] > 20, ls
+            assert ls["detail"] == "phoneme" and ls["language"] == "id", ls
             bl = json.loads(text_of(await call("auto_blink", character="Dani_rig",
                                                frame_start=1, frame_end=200))[0])
             assert len(bl["blinks"]) >= 1, bl
@@ -230,6 +233,78 @@ async def main():
             assert an["via"] == "proxy-retarget", an
             print("mpfb rigify+face:", vr["bones_total"], "bones,", len(ex["meshes"]),
                   "face meshes, lip sync", ls["mouth_shapes"], "shapes")
+            # Slow, easy-to-inspect phonemes: closure m/b/p, rounded o/u, open a, f/v contact.
+            await call("scene_info")
+            await call("set_expression", character="Dani_rig", expression="smile",
+                       strength=0.45, frame=40, keyframe=True, transition_frames=0)
+            ph = json.loads(text_of(await call("lip_sync", character="Dani_rig",
+                                               text="mama popo bubu fava", start_frame=40,
+                                               chars_per_second=4, language="id"))[0])
+            samples = {p: next(e for e in ph["phonemes"] if e["phoneme"] == p and e["frame"])
+                       for p in ("m", "b", "p", "ow", "uw", "aa", "f", "v")}
+            frames = {p: e["frame"] for p, e in samples.items()}
+            values = json.loads(text_of(await call("run_blender_python", code=f'''
+from engine.commands.face import _face_meshes
+meshes = _face_meshes(bpy.data.objects["Dani"])
+result = {{}}
+for phone, frame in {frames!r}.items():
+    bpy.context.scene.frame_set(frame)
+    result[phone] = {{m.name: {{k.name: k.value for k in m.data.shape_keys.key_blocks
+                             if k.name in ("p_b_m_21", "ow_08", "w_uw_07", "aa_02", "f_v_18", "jawOpen", "mouthClose", "mouthPucker")}}
+                     for m in meshes}}
+'''))[0])["result"]
+            for p in ("m", "b", "p"):
+                assert values[p]["Dani"]["p_b_m_21"] > 0.99, values[p]
+                assert values[p]["Dani"]["jawOpen"] < 0.001, values[p]
+                assert 0.09 < values[p]["Dani"]["mouthClose"] < 0.11, values[p]
+                assert values[p]["Dani"]["aa_02"] < 0.001, values[p]
+                assert values[p]["Dani"]["w_uw_07"] < 0.001, values[p]
+            for p, vis in (("ow", "ow_08"), ("uw", "w_uw_07"), ("aa", "aa_02"),
+                           ("f", "f_v_18"), ("v", "f_v_18")):
+                assert values[p]["Dani"][vis] >= 0.89, values[p]
+                assert values[p]["Dani"]["p_b_m_21"] < 0.001, values[p]
+            for mesh_values in values["m"].values():
+                if "p_b_m_21" in mesh_values:
+                    assert mesh_values["p_b_m_21"] > 0.99, mesh_values
+            assert values["uw"]["Dani"]["mouthPucker"] > 0.5, values["uw"]
+            await call("set_lighting", preset="studio", subject=["Dani_rig"])
+            await call("camera_shot", name="phoneme_closeup", subject=["Dani_rig"],
+                       shot="close_up", angle=0, start_frame=40, end_frame=ph["frames"][1])
+            look = await call("render_frames", frames=[frames[p] for p in ("m", "b", "p", "ow", "uw", "aa")],
+                              camera="scene", engine_name="eevee", size=512)
+            assert [c.type for c in look.content].count("image") == 6
+            print("phoneme closeups:", frames, text_of(look))
+            await call("save_project", path="e2e_phonemes.blend")
+            legacy = json.loads(text_of(await call("lip_sync", character="Dani_rig",
+                                                   text="hello world", detail="word", start_frame=200))[0])
+            assert legacy["detail"] == "word" and not legacy["phonemes"], legacy
+            english = json.loads(text_of(await call("lip_sync", character="Dani_rig",
+                                                    text="hello people you’re", start_frame=250))[0])
+            assert english["language"] == "en", english
+            assert [e["phoneme"] for e in english["phonemes"][:4]] == ["h", "ax", "l", "ow"], english
+            assert [e["phoneme"] for e in english["phonemes"] if e["word"] == "you’re"] == ["y", "ao", "r"], english
+            fallback = json.loads(text_of(await call("run_blender_python", code='''
+from engine.commands.face import ARKIT, lip_sync
+mesh = bpy.data.meshes.new("ArkitFixture")
+mesh.from_pydata([(0, 0, 0)], [], [])
+obj = bpy.data.objects.new("ArkitFixture", mesh)
+bpy.context.collection.objects.link(obj)
+obj.shape_key_add(name="Basis")
+for name in ARKIT:
+    obj.shape_key_add(name=name)
+r = lip_sync(obj.name, "mama fava", chars_per_second=4, language="id")
+keys = obj.data.shape_keys.key_blocks
+for phone, shape, minimum in (("m", "mouthClose", 0.99), ("aa", "jawOpen", 0.6),
+                               ("f", "mouthRollLower", 0.79)):
+    e = next(e for e in r["phonemes"] if e["phoneme"] == phone and e["frame"])
+    bpy.context.scene.frame_set(e["frame"])
+    assert keys[shape].value > minimum, (phone, shape, keys[shape].value)
+bpy.data.objects.remove(obj, do_unlink=True)
+bpy.data.meshes.remove(mesh)
+result = True
+'''))[0])["result"]
+            assert fallback, fallback
+            print("phoneme lip sync: ID/EN, m/b/p closure, o/u rounding, a opening, f/v contact, legacy OK")
 
         # audio: synthetic "speech" (vowels via formant filters, hiss, pauses) -> timeline,
         # lip sync from audio/text, and a draft video that must carry an AAC track
@@ -244,6 +319,34 @@ async def main():
                     "lip_sync_audio", character="Vo_rig", audio=wav, timing=timing,
                     text="aa ee oo ss aa", add_sound=False))[0])
                 assert la["mode"] == timing and la["mouth_shapes"] >= 4, la
+                assert la["detail"] == ("audio" if timing == "audio" else "phoneme"), la
+            # Whisper-shaped word intervals, without downloading an ASR model for synthetic audio.
+            # Use the same engine command the Whisper MCP path calls, and inspect actual curves.
+            aligned = json.loads(text_of(await call("run_blender_python", code=f'''
+from engine.commands.audio import lip_sync_audio
+from engine.commands.semantic import load_words
+words = [{{"word": "mama", "start": 0.2, "end": 1.0}},
+         {{"word": "buka", "start": 1.4, "end": 2.0}}]
+r = lip_sync_audio("Vo_rig", {wav!r}, start_frame=9, words=words, language="ms", add_sound=False)
+assert r["detail"] == "phoneme" and r["language"] == "ms"
+for e in r["phonemes"]:
+    w = next(w for w in words if w["word"] == e["word"])
+    assert 9 + w["start"] * 24 - 0.001 <= e["start"] < e["end"] <= 9 + w["end"] * 24 + 0.001
+    if e["phoneme"] in ("m", "b", "p") and e["frame"] is not None:
+        bpy.context.scene.frame_set(e["frame"])
+        assert bpy.data.objects["Vo"].data.shape_keys.key_blocks["p_b_m_21"].value > 0.99
+assert len(load_words(bpy.data.objects["Vo"], 9, r["frames"][1])) == 2
+bpy.context.scene.frame_set(38)  # pause between supplied words
+assert all(k.value < 0.001 for k in bpy.data.objects["Vo"].data.shape_keys.key_blocks
+           if k.name in ("p_b_m_21", "aa_02", "w_uw_07"))
+result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
+'''))[0])["result"]
+            assert aligned["bounded"] and aligned["phonemes"] >= 8, aligned
+            old_audio = json.loads(text_of(await call("lip_sync_audio", character="Vo_rig", audio=wav,
+                                                       timing="text", text="mama buka", detail="word",
+                                                       start_frame=90, add_sound=False))[0])
+            assert old_audio["detail"] == "word" and not old_audio["phonemes"], old_audio
+            print("audio phonemes: word boundaries, quiet closure, stored words, legacy OK")
             print("audio lip sync: audio/text modes OK")
             await call("add_audio", path=wav, start_frame=1)
             await call("animate", armature="Vo_rig", clip="idle", cycles=1)

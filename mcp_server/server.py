@@ -579,13 +579,18 @@ async def set_expression(character: str, expression: Expression = "neutral",
 @mcp.tool()
 async def lip_sync(character: str, text: str, start_frame: int = 1,
                    chars_per_second: float = 14.0, strength: float = 0.9,
-                   expression: Expression | None = None) -> dict:
-    """Animate the mouth to `text` (letter-to-viseme approximation; works for English and
-    Indonesian-style spelling). No audio is generated - this is mouth motion only.
+                   expression: Expression | None = None, language: str | None = None,
+                   detail: Literal["phoneme", "word"] = "phoneme") -> dict:
+    """Animate timed phonemes from text, with smooth coarticulation and closed m/b/p.
+    language: id (Indonesian), ms (Malay), en (English), or auto/None (lexicon hit rate;
+    ties use id). Spelling rules approximate pronunciation; no audio is generated.
+    detail="word" keeps legacy letter-to-viseme timing. Default phoneme results include
+    word, phoneme, viseme, start/end frames and peak frame (null for sub-frame phones).
     chars_per_second ~14 = normal speech. Returns next_start_frame for chaining. Word times
     are stored so talk_gestures can add meaning gestures."""
     return await run("lip_sync", character=character, text=text, start_frame=start_frame,
-                     chars_per_second=chars_per_second, strength=strength, expression=expression)
+                     chars_per_second=chars_per_second, strength=strength, expression=expression,
+                     language=language, detail=detail)
 
 
 @mcp.tool()
@@ -635,21 +640,31 @@ async def lip_sync_audio(character: str, audio: str, start_frame: int = 1,
                          timing: Literal["auto", "whisper", "text", "audio"] = "auto",
                          language: str | None = None, strength: float = 0.9,
                          add_sound: bool = True, volume: float = 1.0,
-                         expression: Expression | None = None) -> dict:
+                         expression: Expression | None = None,
+                         detail: Literal["phoneme", "word"] = "phoneme") -> dict:
     """Lip-sync a character's mouth to a voice recording and (add_sound) put the audio on the
     timeline so render_video has sound. timing: "whisper" = local speech recognition gives
     exact word times (best; any language); "text" = spread the given `text` over the voiced
     parts; "audio" = guess mouth shapes from the sound alone; "auto" = whisper if available,
-    else text if given, else audio. Combine with set_expression/auto_blink for life."""
+    else text if given, else audio. With whisper/text, detail="phoneme" distributes
+    spelling-derived phonemes INSIDE each word, with duration weights, rounding anticipation,
+    full m/b/p closure and f/v contact. detail="word" keeps the old letter mapping.
+    language: id/ms/en or auto/None (lexicon hit rate; ties use id). Whisper detects the
+    transcription language when auto. Phoneme timing is approximate, not forced alignment.
+    Results include language and phonemes with start/end/peak frames; audio-only mode
+    stays acoustic (detail="audio"). Combine with set_expression/auto_blink for life."""
     path = _workspace_path(audio)
     words, transcript = None, None
     use_whisper = timing == "whisper" or (timing == "auto" and speech.available())
     if use_whisper:
-        tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+        from engine.phonemes import choose_language
+        asr_language = choose_language("", language) if language and language.lower() != "auto" else None
+        tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, asr_language))
         words, transcript = tr["words"], tr["text"]
     r = await run("lip_sync_audio", character=character, audio=path, start_frame=start_frame,
                   words=words, text=None if timing == "audio" or words else text,
-                  strength=strength, add_sound=add_sound, expression=expression, volume=volume)
+                  strength=strength, add_sound=add_sound, expression=expression, volume=volume,
+                  language=language, detail=detail)
     if transcript is not None:
         r["mode"] = "whisper"
         r["transcript"] = transcript
