@@ -8,7 +8,9 @@ Lip sync modes (picked automatically from what is provided):
   audio - nothing else: mouth shapes guessed per frame from loudness and spectrum.
 In every mode the loudness envelope scales how wide the mouth opens.
 """
+import math
 import os
+import uuid
 
 import bpy
 import numpy as np
@@ -17,7 +19,7 @@ from .. import context
 from . import command
 from .face import (VISEMES, VOWEL_VISEMES, _basemesh, _ensure_face, _face_meshes, _set,
                    key_viseme, text_tokens)
-from .semantic import store_words
+from .semantic import load_words, store_words
 
 
 def _resolve(path):
@@ -185,21 +187,140 @@ def _strips(se):
     return se.strips if hasattr(se, "strips") else se.sequences
 
 
+def _volume_curve(strip):
+    from .talk import _fcurves
+    sc = bpy.context.scene
+    action = sc.animation_data.action if sc.animation_data else None
+    path = strip.path_from_id("volume")
+    return next((fc for fc in _fcurves(action) if fc.data_path == path), None)
+
+
+def _key_volume(strip, ranges=(), amount_db=-12, attack=0.15, release=0.4):
+    """Replace this strip's volume curve with its fades times the ducking envelope."""
+    sc = bpy.context.scene
+    fps = sc.render.fps / sc.render.fps_base
+    start, end = int(strip.frame_final_start), int(strip.frame_final_end)
+    frames = np.arange(start, end + 1, dtype=float)
+    gain = np.ones(len(frames))
+    floor = 10 ** (amount_db / 20)
+    for a, b in ranges:
+        envelope = np.full(len(frames), floor)
+        before, after = frames < a, frames > b
+        envelope[before] = (floor + (1 - floor) * np.clip((a - frames[before]) / (attack * fps), 0, 1)
+                            if attack else 1)
+        envelope[after] = (floor + (1 - floor) * np.clip((frames[after] - b) / (release * fps), 0, 1)
+                           if release else 1)
+        gain = np.minimum(gain, envelope)
+    fade_in, fade_out = strip.get("char3d_fade_in", 0), strip.get("char3d_fade_out", 0)
+    if fade_in:
+        gain *= np.clip((frames - strip["char3d_audio_start"]) / (fade_in * fps), 0, 1)
+    if fade_out:
+        gain *= np.clip((strip["char3d_audio_end"] - frames) / (fade_out * fps), 0, 1)
+    volume = strip.get("char3d_volume", strip.volume)
+    strip["char3d_volume"] = volume
+    # Dense samples preserve overlapping fades/ramps exactly at each video frame.
+    strip.keyframe_insert(data_path="volume", frame=start)
+    curve = _volume_curve(strip)
+    curve.keyframe_points.clear()
+    curve.keyframe_points.add(len(frames))
+    curve.keyframe_points.foreach_set("co", np.column_stack((frames, gain * volume)).ravel())
+    for key in curve.keyframe_points:
+        key.interpolation = "LINEAR"
+    curve.update()
+
+
 @command("add_audio")
-def add_audio(path, start_frame=1, volume=1.0, channel=None, name=None):
-    """Place a sound file on the timeline so render_video includes it."""
+def add_audio(path, start_frame=1, volume=1.0, channel=None, name=None,
+              kind="voice", loop=False, fade_in=0.0, fade_out=0.0):
+    """Place voice/music/sfx on the timeline, with optional music repeats and fades."""
+    if kind not in {"voice", "music", "sfx"}:
+        raise ValueError("kind must be voice, music or sfx")
+    if loop and kind != "music":
+        raise ValueError("loop=True requires kind='music'")
+    if not all(math.isfinite(v) and v >= 0 for v in (volume, fade_in, fade_out)):
+        raise ValueError("volume, fade_in and fade_out must be finite and nonnegative")
     path = _resolve(path)
     sc = bpy.context.scene
+    start = int(start_frame)
+    if loop and start > sc.frame_end:
+        raise ValueError("looped music must start within or before the scene range")
     se = sc.sequence_editor or sc.sequence_editor_create()
     strips = _strips(se)
     used = {s.channel for s in _sound_strips(sc)}
     ch = int(channel) if channel else next(c for c in range(1, 64) if c not in used)
-    strip = strips.new_sound(name or os.path.basename(path), path, ch, int(start_frame))
-    strip.volume = float(volume)
-    end = strip.frame_final_end
-    sc.frame_end = max(sc.frame_end, int(end))
-    return {"strip": strip.name, "channel": ch, "frames": [int(start_frame), int(end) - 1],
-            "seconds": round((end - start_frame) / sc.render.fps, 2), "path": path}
+    strip = strips.new_sound(name or os.path.basename(path), path, ch, start)
+    duration = int(strip.frame_final_duration)
+    if duration < 1:
+        strips.remove(strip)
+        raise ValueError("audio must contain at least one frame")
+    end = sc.frame_end + 1 if loop else int(strip.frame_final_end)
+    group = uuid.uuid4().hex
+    added = [strip]
+    if loop:
+        strip.frame_final_end = min(start + duration, end)
+        for frame in range(start + duration, end, duration):
+            repeat = strips.new_sound(strip.name + "_loop", path, ch, frame)
+            repeat.frame_final_end = min(frame + duration, end)
+            added.append(repeat)
+    for sound in added:
+        sound.volume = float(volume)
+        sound["char3d_audio_kind"] = kind
+        sound["char3d_audio_group"] = group
+        sound["char3d_volume"] = float(volume)
+        sound["char3d_audio_start"], sound["char3d_audio_end"] = start, end
+        sound["char3d_fade_in"], sound["char3d_fade_out"] = float(fade_in), float(fade_out)
+        if fade_in or fade_out:
+            _key_volume(sound)
+    if not loop:
+        sc.frame_end = max(sc.frame_end, end)
+    sc.frame_set(sc.frame_current)
+    return {"strip": strip.name, "strips": [s.name for s in added], "kind": kind,
+            "channel": ch, "frames": [start, end - 1],
+            "seconds": round((end - start) / (sc.render.fps / sc.render.fps_base), 2), "path": path}
+
+
+def _speech_ranges(sc):
+    """Union of unmuted voice-strip spans and every character's lip-sync word times."""
+    ranges = [(float(s.frame_final_start), float(s.frame_final_end)) for s in _sound_strips(sc)
+              if s.get("char3d_audio_kind", "voice") == "voice" and not s.mute]
+    ranges += [(a, b) for obj in sc.objects for _word, a, b in load_words(obj)]
+    gap = 0.5 * sc.render.fps / sc.render.fps_base
+    merged = []
+    for a, b in sorted(ranges):
+        a, b = max(a, sc.frame_start), min(b, sc.frame_end + 1)
+        if b <= a:
+            continue
+        if merged and a - merged[-1][1] <= gap:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return merged
+
+
+@command("duck_music")
+def duck_music(music_strip=None, amount_db=-12, attack=0.15, release=0.4):
+    """Key music down during speech; selecting one repeat also selects its loop group."""
+    if not math.isfinite(amount_db) or amount_db > 0:
+        raise ValueError("amount_db must be finite and <= 0")
+    if not all(math.isfinite(v) and v >= 0 for v in (attack, release)):
+        raise ValueError("attack and release must be finite and nonnegative seconds")
+    sc = bpy.context.scene
+    music = [s for s in _sound_strips(sc) if s.get("char3d_audio_kind") == "music"]
+    if music_strip is not None:
+        target = next((s for s in music if s.name == music_strip), None)
+        if target is None:
+            raise ValueError(f"music strip {music_strip!r} not found; use list_audio")
+        group = target.get("char3d_audio_group")
+        music = [s for s in music if s == target or (group and s.get("char3d_audio_group") == group)]
+    if not music:
+        raise ValueError("no music strips; use add_audio(kind='music') first")
+    ranges = _speech_ranges(sc)
+    for strip in music:
+        _key_volume(strip, ranges, amount_db, attack, release)
+    sc.frame_set(sc.frame_current)
+    return {"strips": [s.name for s in music], "speech_ranges": ranges,
+            "amount_db": amount_db, "gain": round(10 ** (amount_db / 20), 6),
+            "attack": attack, "release": release}
 
 
 @command("list_audio")
@@ -207,6 +328,7 @@ def list_audio():
     sc = bpy.context.scene
     return {"strips": [{"name": s.name, "channel": s.channel,
                         "frames": [int(s.frame_final_start), int(s.frame_final_end) - 1],
+                        "kind": s.get("char3d_audio_kind", "voice"),
                         "volume": round(s.volume, 2), "path": s.sound.filepath if s.sound else None}
                        for s in _sound_strips(sc)]}
 

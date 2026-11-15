@@ -103,11 +103,15 @@ async def import_model(path: str) -> dict:
 
 
 @mcp.tool()
-async def export_asset(path: str, objects: list[str] | None = None) -> dict:
+async def export_asset(path: str, objects: list[str] | None = None,
+                       max_influences: int | None = None) -> dict:
     """Export to .glb (recommended: mesh + rig + animation), .gltf, .fbx, .obj, .usd, or
     .bvh (animation only, first armature in `objects`/scene).
-    `objects` limits the export to those objects and their children."""
-    return await run("export_asset", path=path, objects=objects)
+    `objects` limits the export to those objects and their children. max_influences:
+    None keeps existing export behavior; a positive integer keeps the N largest deform
+    weights per vertex and normalizes them on temporary copies (scene unchanged).
+    Use 4 for games (Unity/Unreal/glTF). Returns vertices_limited (count trimmed)."""
+    return await run("export_asset", path=path, objects=objects, max_influences=max_influences)
 
 
 @mcp.tool()
@@ -651,15 +655,35 @@ def _workspace_path(path: str, sub: str = "imports") -> str:
 
 
 @mcp.tool()
-async def add_audio(path: str, start_frame: int = 1, volume: float = 1.0) -> dict:
+async def add_audio(path: str, start_frame: int = 1, volume: float = 1.0,
+                    kind: Literal["voice", "music", "sfx"] = "voice", loop: bool = False,
+                    fade_in: float = 0.0, fade_out: float = 0.0) -> dict:
     """Put a sound file (wav/mp3/flac/ogg/m4a) on the timeline; render_video then includes
-    it as AAC audio. Relative paths are inside imports/."""
-    return await run("add_audio", path=path, start_frame=start_frame, volume=volume)
+    it as AAC audio. Relative paths are inside imports/. kind tags voice (default), music,
+    or sfx. loop=True (music only) repeats to the current scene end and trims the last
+    strip; set the timeline first. fade_in/fade_out are seconds across the whole track,
+    including repeats. Returns the first strip and all repeat names in strips."""
+    return await run("add_audio", path=path, start_frame=start_frame, volume=volume,
+                     kind=kind, loop=loop, fade_in=fade_in, fade_out=fade_out)
+
+
+@mcp.tool()
+async def duck_music(music_strip: str | None = None, amount_db: float = -12,
+                     attack: float = 0.15, release: float = 0.4) -> dict:
+    """Lower music during speech using volume keys. music_strip=None selects all music;
+    a strip name selects that track and its repeats. Speech is the union of unmuted voice
+    strip spans (untagged legacy strips count as voice) and all stored lip-sync word times;
+    gaps <= 0.5 s are merged. amount_db <= 0 is relative to the original track volume;
+    attack seconds leads speech, release seconds follows it. Fades are preserved.
+    Replaces selected music volume curves; safe to rerun after changing speech/timeline.
+    Returns affected strips and merged speech_ranges in frames."""
+    return await run("duck_music", music_strip=music_strip, amount_db=amount_db,
+                     attack=attack, release=release)
 
 
 @mcp.tool()
 async def list_audio() -> dict:
-    """Sound strips on the timeline."""
+    """Sound strips on the timeline, with names, kinds, frame spans, volumes and paths."""
     return await run("list_audio")
 
 
@@ -711,7 +735,7 @@ async def talk_motion(character: str, frame_start: int | None = None, frame_end:
                       look_at: str | None = None, listen_to: str | None = None) -> dict:
     """Make a speaking character feel alive: speech-driven head nods on stressed words,
     gentle head drift and phrase tilts, brow flashes, and eye saccades with occasional
-    'thinking' glances. Rhythm comes from the timeline audio (or the lip-sync keys).
+    'thinking' glances. Rhythm comes from timeline voice audio (or the lip-sync keys).
     Layered on top: only neck/head rotation and brow/eye-gaze shape keys are keyed, body
     animation is untouched. look_at_camera turns eyes (and partly the head) toward the
     shot camera. Run it LAST, after animate/lip_sync_audio/camera_shot (re-running animate
@@ -735,7 +759,7 @@ async def talk_gestures(character: str, frame_start: int | None = None,
     """Speech-timed hand gestures: while talking the arms move into a speaking posture
     (hands in front of the belly) and hit beats, open-palm, sweep and point gestures on
     stressed words (stroke lands on the syllable), then relax back to the base animation in
-    pauses. Rhythm from timeline audio or lip-sync keys. Layered: only arm/hand/finger
+    pauses. Rhythm from timeline voice audio or lip-sync keys. Layered: only arm/hand/finger
     rotations are keyed, legs/torso/head untouched; gestures follow the chest. Works on
     create_realistic_human, Rigify and basic rigs. Run after lip_sync_audio / lip_sync and
     body clips, before/after talk_motion (independent bones).

@@ -53,7 +53,7 @@ def _viseme_activity(base, f0, f1):
 
 
 def _audio_activity(f0, f1, character=None):
-    """Loudness envelope of sound strips on the timeline, aligned to frames.
+    """Loudness envelope of voice strips (music/SFX excluded) on the timeline, aligned to frames.
 
     With `character` (a rig name), voice strips tagged for other speakers (lip_sync_audio
     sets ``char3d_speaker``) are ignored, so in a dialog everyone reacts to their own voice.
@@ -69,7 +69,7 @@ def _audio_activity(f0, f1, character=None):
         strips = mine if tagged else strips
     fps = sc.render.fps
     for st in strips:
-        if not st.sound or st.mute:
+        if not st.sound or st.mute or st.get("char3d_audio_kind", "voice") != "voice":
             continue
         path = bpy.path.abspath(st.sound.filepath)
         if not os.path.isfile(path):

@@ -1,5 +1,6 @@
 """Import / export / save / open."""
 import os
+from contextlib import contextmanager
 
 import bpy
 
@@ -59,21 +60,86 @@ def _select_only(names):
             child.select_set(True)
 
 
+@contextmanager
+def _limited_weights(objects, maximum):
+    """Swap in private mesh data for export; always restore the original weights/keys."""
+    copies = []
+    limited = 0
+    try:
+        for obj in objects:
+            if maximum is None or obj.type != "MESH":
+                continue
+            rig = obj.find_armature()
+            if rig is None:
+                continue
+            deform = {b.name for b in rig.data.bones if b.use_deform}
+            original = obj.data
+            temporary = original.copy()
+            copies.append((obj, original, temporary))
+            obj.data = temporary
+            # Blender 5 stores group definitions on the mesh: fetch RNA after swapping.
+            groups = {g.index: g for g in obj.vertex_groups if g.name in deform}
+            for vertex in temporary.vertices:
+                weights = sorted(((g.group, g.weight) for g in vertex.groups
+                                  if g.group in groups and g.weight > 0),
+                                 key=lambda pair: (-pair[1], pair[0]))
+                if len(weights) > maximum:
+                    limited += 1
+                    for index, _weight in weights[maximum:]:
+                        groups[index].remove([vertex.index])
+                kept = weights[:maximum]
+                total = sum(weight for _index, weight in kept)
+                for index, weight in kept:
+                    groups[index].add([vertex.index], weight / total, "REPLACE")
+            temporary.update()
+        if copies:
+            bpy.context.view_layer.update()
+        yield limited
+    finally:
+        for obj, original, temporary in reversed(copies):
+            obj.data = original
+            bpy.data.meshes.remove(temporary)
+        if copies:
+            bpy.context.view_layer.update()
+
+
 @command("export_asset")
-def export_asset(path, objects=None):
-    """Export to .glb/.gltf/.fbx/.obj/.usd. `objects` limits the export (children included)."""
+def export_asset(path, objects=None, max_influences=None):
+    """Export an asset, optionally limiting deform weights on temporary mesh copies."""
+    if max_influences is not None and (type(max_influences) is not int or max_influences < 1):
+        raise ValueError("max_influences must be a positive integer or None")
     path = context.resolve(path, "exports")
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    selected = list(bpy.context.selected_objects)
+    active = bpy.context.view_layer.objects.active
+    try:
+        if objects:
+            _select_only(objects)
+        exported = [o for o in bpy.context.scene.objects
+                    if (not objects or o.select_get()) and o.visible_get()]
+        with _limited_weights(exported, max_influences) as limited:
+            _export(path, objects, max_influences)
+        return {"path": path, "bytes": os.path.getsize(path),
+                "max_influences": max_influences, "vertices_limited": limited}
+    finally:
+        for obj in bpy.context.selected_objects:
+            obj.select_set(False)
+        for obj in selected:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = active
+
+
+def _export(path, objects, max_influences):
     ext = os.path.splitext(path)[1].lower()
     sel = bool(objects)
-    if sel:
-        _select_only(objects)
     if ext in (".glb", ".gltf"):
+        weights = {"export_all_influences": True} if max_influences is not None else {}
         _op("export_scene.gltf")(
             filepath=path, export_format="GLB" if ext == ".glb" else "GLTF_SEPARATE",
             use_selection=sel, use_visible=True, export_animations=True, export_skins=True,
             export_def_bones=True,  # Rigify: ship only the deform skeleton
             export_animation_mode="ACTIVE_ACTIONS",  # only what each exported rig plays
+            **weights,
         )
     elif ext == ".fbx":
         _op("export_scene.fbx")(filepath=path, use_selection=sel, use_visible=True,
@@ -97,7 +163,6 @@ def export_asset(path, objects=None):
         _op("wm.usd_export")(filepath=path, selected_objects_only=sel)
     else:
         raise ValueError("export format must be .glb, .gltf, .fbx, .obj, .bvh or .usd*")
-    return {"path": path, "bytes": os.path.getsize(path)}
 
 
 def _external_files():
