@@ -22,15 +22,79 @@ QUALITY = {
     "final": ("BLENDER_EEVEE", 100, 64),
     "cycles": ("CYCLES", 100, 96),
 }
+# named output sizes (landscape; vertical=True swaps them)
+RESOLUTIONS = {
+    "480p": (854, 480), "540p": (960, 540), "720p": (1280, 720),
+    "1080p": (1920, 1080), "1440p": (2560, 1440), "4k": (3840, 2160),
+}
+# seconds per frame on this CPU-only machine: overhead + k * pixels * samples (Eevee),
+# fitted to measured renders with a clothed MPFB character + hair (960x540@16 ~ 4 s,
+# 1920x1080@64 ~ 48 s). Lighter scenes (mannequins) render ~35% faster.
+EEVEE_OVERHEAD_S, EEVEE_K = 1.1, 3.55e-7
+WORKBENCH_K = 1.0e-7
+CYCLES_K = 2.4e-6
 JOBS = {}
 
 
-def _apply_settings(sc, quality, width, height, fps, start, end, base):
-    engine, pct, samples = QUALITY[quality]
+def _output_size(sc, quality, width, height, resolution, vertical):
+    """Final pixel size (w, h) and resolution percentage for a render."""
+    pct = QUALITY[quality][1]
+    if resolution:
+        key = str(resolution).lower()
+        if key not in RESOLUTIONS:
+            raise ValueError(f"resolution must be one of {list(RESOLUTIONS)}")
+        w, h = RESOLUTIONS[key]
+        pct = 100
+    elif width and height:
+        w, h = int(width), int(height)
+    else:
+        w, h = sc.render.resolution_x, sc.render.resolution_y
+    if vertical and w > h:
+        w, h = h, w
+    return w, h, pct
+
+
+def _scene_weight(sc):
+    """1.0 for heavy scenes (realistic human with hair/clothes), ~0.65 for light ones."""
+    verts = 0
+    for ob in sc.objects:
+        if ob.type == "MESH" and not ob.hide_render:
+            verts += len(ob.data.vertices)
+    return 1.0 if verts > 30000 else 0.65
+
+
+def _seconds_per_frame(quality, w, h, weight):
+    engine, _pct, samples = QUALITY[quality]
+    px = w * h
+    if engine == "BLENDER_WORKBENCH":
+        return 0.05 + WORKBENCH_K * px
+    if engine == "CYCLES":
+        return (2.0 + CYCLES_K * px * samples) * weight
+    return (EEVEE_OVERHEAD_S + EEVEE_K * px * samples) * weight
+
+
+def _fmt_duration(sec):
+    sec = int(round(sec))
+    if sec < 90:
+        return f"~{sec} s"
+    if sec < 5400:
+        return f"~{round(sec / 60)} min"
+    return f"~{sec / 3600:.1f} h"
+
+
+def _estimate(sc, quality, w, h, frames):
+    spf = _seconds_per_frame(quality, w, h, _scene_weight(sc))
+    total = spf * frames
+    return {"seconds_per_frame": round(spf, 1), "total_s": round(total),
+            "total": _fmt_duration(total)}
+
+
+def _apply_settings(sc, quality, size, fps, start, end, base):
+    engine, _pct, samples = QUALITY[quality]
     r = sc.render
     r.engine = engine
-    if width and height:
-        r.resolution_x, r.resolution_y = int(width), int(height)
+    w, h, pct = size
+    r.resolution_x, r.resolution_y = int(w), int(h)
     r.resolution_percentage = pct
     if fps:
         r.fps = int(fps)
@@ -109,10 +173,12 @@ def _report(job):
         done = total
     elapsed = (job.get("finished") or time.time()) - job["started"]
     out = {"job_id": job["id"], "status": job["status"], "path": job["path"],
-           "quality": job["quality"], "frames": job["frames"],
+           "quality": job["quality"], "size": job.get("size"), "frames": job["frames"],
            "progress": f"{done}/{total}", "elapsed_s": round(elapsed, 1)}
     if job["status"] == "running" and done > 0:
         out["eta_s"] = round(elapsed / done * (total - done), 1)
+    elif job["status"] == "running" and job.get("estimate"):
+        out["estimate"] = job["estimate"]
     if job["status"] == "done":
         out["bytes"] = job["bytes"]
         out["has_audio"] = job.get("audio", False)
@@ -125,7 +191,7 @@ def _report(job):
 
 @command("render_video")
 def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="preview",
-                 width=None, height=None, fps=None, wait=False):
+                 width=None, height=None, fps=None, wait=False, resolution=None, vertical=False):
     """Render the scene camera / shot timeline to MP4 (H.264) in a background process."""
     if quality not in QUALITY:
         raise ValueError(f"quality must be one of {list(QUALITY)}")
@@ -152,7 +218,8 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
                  fps=r.fps, fs=sc.frame_start, fe=sc.frame_end, fp=r.filepath,
                  media=getattr(r.image_settings, "media_type", None), fmt=r.image_settings.file_format)
     try:
-        _apply_settings(sc, quality, width, height, fps, start, end, base)
+        size = _output_size(sc, quality, width, height, resolution, vertical)
+        _apply_settings(sc, quality, size, fps, start, end, base)
         bpy.ops.wm.save_as_mainfile(filepath=blend, copy=True)
     finally:
         r.engine, r.resolution_x, r.resolution_y = saved["engine"], saved["rx"], saved["ry"]
@@ -169,11 +236,37 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     job = {"id": job_id, "proc": proc, "path": path, "base": base, "blend": blend, "log": log,
            "audio": bool(_sound_strips(sc)),
            "quality": quality, "frames": [start, end], "status": "running",
-           "started": time.time()}
+           "started": time.time(),
+           "size": [round(size[0] * size[2] / 100), round(size[1] * size[2] / 100)]}
+    out_w, out_h = job["size"]
+    job["estimate"] = _estimate(sc, quality, out_w, out_h, end - start + 1)
     JOBS[job_id] = job
     if wait:
         proc.wait()
     return _report(job)
+
+
+@command("render_options")
+def render_options(quality="final", frame_start=None, frame_end=None, vertical=False):
+    """Resolution choices with estimated render time for this scene, to offer the user."""
+    if quality not in QUALITY:
+        raise ValueError(f"quality must be one of {list(QUALITY)}")
+    sc = bpy.context.scene
+    start = int(frame_start if frame_start is not None else sc.frame_start)
+    end = int(frame_end if frame_end is not None else sc.frame_end)
+    frames = max(1, end - start + 1)
+    fps = sc.render.fps / (sc.render.fps_base or 1)
+    options = []
+    for name, (w, h) in RESOLUTIONS.items():
+        if vertical:
+            w, h = h, w
+        options.append({"resolution": name, "size": f"{w}x{h}",
+                        **_estimate(sc, quality, w, h, frames)})
+    return {"quality": quality, "frames": [start, end], "duration_s": round(frames / fps, 2),
+            "scene_weight": "heavy" if _scene_weight(sc) >= 1 else "light",
+            "options": options,
+            "note": "estimates for this CPU-only machine; render_status gives the real ETA "
+                    "once frames are done"}
 
 
 @command("render_status")

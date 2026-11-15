@@ -45,7 +45,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
   `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
-  `list_lighting_presets`, `set_lighting`, `set_material`, `render_video`,
+  `list_lighting_presets`, `set_lighting`, `set_material`, `render_options`, `render_video`,
   `render_status`, `cancel_render`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
@@ -257,12 +257,21 @@ intensity, handheld, roll, depth_of_field)`:
 - Check framing through the real cameras:
   `render_frames([first, middle, last], camera="scene", engine_name="eevee")`.
 
-**Video** — `render_video(path, quality)` runs in a separate Blender process and returns
-`job_id`; poll `render_status(job_id)` (progress, ETA). Measured on this machine
-(960×540): draft ≈ 0.1 s/frame (clay, for timing), preview ≈ 2.7 s/frame (Eevee),
-final is full-res 64 samples (~4× preview). Always do a draft first, then preview/final.
-Vertical video: `width=1080, height=1920`. Output is H.264 MP4, 24 fps unless
-`set_timeline(fps=...)`.
+**Video** — `render_video(path, quality, resolution)` runs in a separate Blender process and
+returns `job_id` + `estimate`; poll `render_status(job_id)` (progress, ETA). Measured on this
+machine (960×540): draft ≈ 0.1 s/frame (clay, for timing), preview ≈ 2.7 s/frame (Eevee; ~4 s
+with a clothed MPFB character + hair). final at 1920×1080, 64 samples: ≈ 48 s/frame with an
+MPFB character (~10× preview, ≈ 4.5 h for a 15 s clip). Always do a draft first.
+- **Let the user choose the resolution** before every preview/final/cycles render: call
+  `render_options(quality, vertical)` — it lists 480p, 540p, 720p, 1080p, 1440p, 4k with the
+  size and estimated total time for *this* scene — and ask the user to pick (show 3–4 sensible
+  options with their times, e.g. 720p / 1080p / 1440p for final). Then
+  `render_video(quality=..., resolution="<choice>")`. Don't start a render longer than ~10 min
+  without that answer.
+- `resolution` renders at exactly that size for any quality; without it, preview/draft use
+  half the scene size and final the full scene size. `width`/`height` for custom sizes.
+- Vertical video: `vertical=True` (e.g. 1080p → 1080×1920). Output is H.264 MP4, 24 fps
+  unless `set_timeline(fps=...)`.
 
 ## AI generation (external services)
 - **Only use `ai_*` generation tools when the user explicitly asks for AI generation** —
@@ -314,7 +323,8 @@ Vertical video: `width=1080, height=1920`. Output is H.264 MP4, 24 fps unless
 → `camera_shot(..., shot="full", move="tracking_side", start_frame=41, end_frame=96)`
 → `camera_shot(..., shot="medium", move="crash_zoom", start_frame=97, end_frame=134)`
 → `render_frames(camera="scene")` check → `render_video(quality="draft", wait=True)`
-→ `render_video("final.mp4", quality="final")` → poll `render_status`.
+→ `render_options("final")` → user picks a resolution
+→ `render_video("final.mp4", quality="final", resolution="1080p")` → poll `render_status`.
 
 **Mocap on your character**
 `auto_rig_humanoid(mesh, rig_type="rigify")` → `import_mocap("dance.bvh", rig)`

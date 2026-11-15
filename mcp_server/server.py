@@ -30,7 +30,8 @@ Working loop:
 Characters: create_human -> auto_rig_humanoid -> set_pose test -> render_views.
 Motion: apply_pose / animate / import_mocap -> render_frames to check it.
 Film: set_lighting -> camera_shot (one per shot, consecutive frames) -> render_frames
-camera="scene" -> render_video(quality="draft") -> render_video(quality="preview"/"final").
+camera="scene" -> render_video(quality="draft") -> render_options (let the user pick a
+resolution, shown with estimated time) -> render_video(quality="preview"/"final", resolution=...).
 Read resource char3d://guide for the full workflow guide.
 """
 
@@ -414,19 +415,40 @@ async def set_material(objects: list[str], color: list[float] = [0.8, 0.8, 0.8],
                      metallic=metallic, emission_strength=emission_strength, name=name)
 
 
+Resolution = Literal["480p", "540p", "720p", "1080p", "1440p", "4k"]
+
+
+@mcp.tool()
+async def render_options(quality: Literal["draft", "preview", "final", "cycles"] = "final",
+                         frame_start: int | None = None, frame_end: int | None = None,
+                         vertical: bool = False) -> dict:
+    """Resolution choices (480p..4k) with the estimated render time of THIS scene at the
+    given quality. Call before a preview/final/cycles render and let the user pick the
+    resolution (show size + estimated total time); then render_video(resolution=...)."""
+    return await run("render_options", quality=quality, frame_start=frame_start,
+                     frame_end=frame_end, vertical=vertical)
+
+
 @mcp.tool()
 async def render_video(path: str = "video.mp4", frame_start: int | None = None,
                        frame_end: int | None = None,
                        quality: Literal["draft", "preview", "final", "cycles"] = "preview",
+                       resolution: Resolution | None = None, vertical: bool = False,
                        width: int | None = None, height: int | None = None,
                        fps: int | None = None, wait: bool = False) -> dict:
-    """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id.
+    """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id
+    and an `estimate` of the render time.
     draft = clay workbench, half res (~0.1 s/frame) for checking timing/cameras;
-    preview = Eevee half res (~3 s/frame here); final = Eevee full res 64 samples;
-    cycles = slowest, photoreal. width/height e.g. 1920x1080, 1080x1920 (vertical).
-    Poll render_status(job_id). wait=True blocks (only sensible for draft)."""
+    preview = Eevee half res (~3-4 s/frame here); final = Eevee full res 64 samples
+    (~48 s/frame at 1080p with a realistic human); cycles = slowest, photoreal.
+    resolution = output size chosen by the user (480p, 540p, 720p, 1080p, 1440p, 4k; renders
+    at exactly that size for any quality); vertical=True for 9:16 (e.g. 1080x1920).
+    width/height = custom size instead. Ask the user which resolution first
+    (render_options lists them with time estimates). Poll render_status(job_id).
+    wait=True blocks (only sensible for draft)."""
     return await run("render_video", path=path, frame_start=frame_start, frame_end=frame_end,
-                     quality=quality, width=width, height=height, fps=fps, wait=wait)
+                     quality=quality, resolution=resolution, vertical=vertical, width=width,
+                     height=height, fps=fps, wait=wait)
 
 
 @mcp.tool()

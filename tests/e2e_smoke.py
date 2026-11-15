@@ -149,7 +149,18 @@ async def main():
         vid = json.loads(text_of(await call("render_video", path="e2e.mp4", quality="draft",
                                             frame_start=1, frame_end=36, wait=True))[0])
         assert vid["status"] == "done" and vid["bytes"] > 1000, vid
-        print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes")
+        opts = json.loads(text_of(await call("render_options", quality="final", vertical=True))[0])
+        sizes = {o["resolution"]: o["size"] for o in opts["options"]}
+        assert sizes["1080p"] == "1080x1920" and sizes["4k"] == "2160x3840", opts
+        times = [o["total_s"] for o in opts["options"]]
+        assert times == sorted(times) and times[0] > 0, opts
+        vid2 = json.loads(text_of(await call("render_video", path="e2e_480.mp4", quality="draft",
+                                             resolution="480p", frame_start=1, frame_end=6,
+                                             wait=True))[0])
+        assert vid2["status"] == "done" and vid2["size"] == [854, 480], vid2
+        print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes",
+              "| options final 1080p", next(o["total"] for o in opts["options"]
+                                            if o["resolution"] == "1080p"))
 
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})
