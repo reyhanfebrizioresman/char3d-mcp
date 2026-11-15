@@ -12,6 +12,11 @@ from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
+# keep the test's render-speed measurements out of the user's real calibration
+CALIB = os.path.join(ROOT, "output", "e2e_render_speed.json")
+os.environ["CHAR3D_RENDER_CALIB"] = CALIB
+if os.path.exists(CALIB):
+    os.remove(CALIB)
 
 
 def _synthetic_speech(path, rate=22050):
@@ -158,9 +163,19 @@ async def main():
                                              resolution="480p", frame_start=1, frame_end=6,
                                              wait=True))[0])
         assert vid2["status"] == "done" and vid2["size"] == [854, 480], vid2
+        # speed calibration: finished renders teach workbench speed, a test frame eevee
+        assert vid["learned_speed"]["engine"] == "workbench", vid
+        cal = json.loads(text_of(await call("render_options", quality="preview",
+                                            calibrate=True))[0])
+        assert cal["test_frame"]["engine"] == "eevee" and cal["test_frame"]["measured_s"] > 0, cal
+        assert cal["machine_speed"]["measurements"] >= 1, cal
+        speeds = json.load(open(CALIB))
+        assert {"workbench", "eevee"} <= set(speeds), speeds
         print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes",
               "| options final 1080p", next(o["total"] for o in opts["options"]
-                                            if o["resolution"] == "1080p"))
+                                            if o["resolution"] == "1080p"),
+              "| test frame", cal["test_frame"], "| preview 1080p",
+              next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
 
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})

@@ -268,6 +268,12 @@ MPFB character (~10× preview, ≈ 4.5 h for a 15 s clip). Always do a draft fir
   options with their times, e.g. 720p / 1080p / 1440p for final). Then
   `render_video(quality=..., resolution="<choice>")`. Don't start a render longer than ~10 min
   without that answer.
+- Render speed depends on the machine (a GPU can be 10–50× faster than the CPU-only numbers
+  above). The engine learns it per machine: every finished `render_video` stores the median
+  frame time (`learned_speed` in `render_status`) in `~/.cache/char3d/render_speed.json`
+  (override with `CHAR3D_RENDER_CALIB`). If `render_options` reports
+  `machine_speed.measurements == 0` for that engine, call it with `calibrate=True` (one 480p
+  test frame of the scene, ~5–20 s) before showing the times to the user.
 - `resolution` renders at exactly that size for any quality; without it, preview/draft use
   half the scene size and final the full scene size. `width`/`height` for custom sizes.
 - Vertical video: `vertical=True` (e.g. 1080p → 1080×1920). Output is H.264 MP4, 24 fps

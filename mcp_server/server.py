@@ -421,12 +421,15 @@ Resolution = Literal["480p", "540p", "720p", "1080p", "1440p", "4k"]
 @mcp.tool()
 async def render_options(quality: Literal["draft", "preview", "final", "cycles"] = "final",
                          frame_start: int | None = None, frame_end: int | None = None,
-                         vertical: bool = False) -> dict:
+                         vertical: bool = False, calibrate: bool = False) -> dict:
     """Resolution choices (480p..4k) with the estimated render time of THIS scene at the
-    given quality. Call before a preview/final/cycles render and let the user pick the
-    resolution (show size + estimated total time); then render_video(resolution=...)."""
+    given quality ON THIS MACHINE. Call before a preview/final/cycles render and let the user
+    pick the resolution (show size + estimated total time); then render_video(resolution=...).
+    Speed is learned per machine from every finished render_video (`machine_speed`); when
+    `machine_speed.measurements` is 0 the numbers are developer-machine defaults (CPU only) —
+    pass calibrate=True to render one 480p test frame now (~5-20 s) and measure."""
     return await run("render_options", quality=quality, frame_start=frame_start,
-                     frame_end=frame_end, vertical=vertical)
+                     frame_end=frame_end, vertical=vertical, calibrate=calibrate)
 
 
 @mcp.tool()
