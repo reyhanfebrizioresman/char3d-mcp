@@ -264,6 +264,35 @@ async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int =
 
 
 @mcp.tool()
+async def walk_path(armature: str, points: list[list[float]],
+                    clip: Literal["walk", "run"] = "walk", start_frame: int | None = None,
+                    speed: float = 1.0, face_end: list[float] | str | None = None) -> dict:
+    """Walk/run from the current position through absolute world XY points (meters, Z=0).
+    Curves pass through the points; duplicates are ignored. Body yaw is limited to 100
+    degrees/s: tight bends slow down, corners over 100 degrees stop for stepping turns.
+    speed (0.1..4) scales natural travel speed and cadence; shorter steps handle slowing.
+    Foot IK keeps each planted foot's world position and rotation fixed through turns.
+    Ends standing with both feet gathered. face_end optionally faces a world XY/XYZ point,
+    object name or "camera" (sampled when the final turn begins). Works on basic, Rigify
+    and MPFB rigs. start_frame=None appends after the rig's action, or uses the scene start.
+    Returns frames, next_start_frame, distance_m, duration_seconds and foot_lock contacts.
+    Flat floor only; at most 1000 points and 24000 frames per call."""
+    return await run("walk_path", armature=armature, points=points, clip=clip,
+                     start_frame=start_frame, speed=speed, face_end=face_end)
+
+
+@mcp.tool()
+async def turn_to(armature: str, target: list[float] | str,
+                  start_frame: int | None = None) -> dict:
+    """Turn in place with alternating lifted steps, then stand with planted feet.
+    target is a world XY/XYZ point, object name or "camera", sampled at start_frame.
+    Takes the shortest yaw turn, at most 100 degrees/s, without horizontal root travel.
+    Works on basic, Rigify and MPFB rigs. start_frame=None appends to the rig's action.
+    Returns next_start_frame, distance_m (zero), duration_seconds and foot_lock contacts."""
+    return await run("turn_to", armature=armature, target=target, start_frame=start_frame)
+
+
+@mcp.tool()
 async def import_mocap(path: str, armature: str, start_frame: int = 1, in_place: bool = False,
                        bone_map: dict[str, str] | None = None, foot_lock: bool = True,
                        blend_frames: int | None = None) -> dict:

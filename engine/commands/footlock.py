@@ -118,9 +118,11 @@ def _intervals(mask, fill=2, min_len=3):
 
 def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
               speed_tolerance=None, blend_frames=None, adjust_hips=True, key=True,
-              contacts=None):
+              contacts=None, foot_targets=None):
     """contacts: optional {"L": [[first, last], ...], "R": [...]} absolute frames where each
-    foot is planted (skips detection). speed_tolerance: m/s a planted foot may drift."""
+    foot is planted (skips detection). speed_tolerance: m/s a planted foot may drift.
+    Internal foot_targets: per-side world (ankle, quaternion) samples from a step planner;
+    these replace rolling corrections, sharing the same reach adjustment and IK solve."""
     from .anim import _key_rot
     sc = bpy.context.scene
     fps = sc.render.fps
@@ -186,6 +188,12 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
     report = {}
     corr = {}
     for s in legs:
+        if foot_targets is not None:
+            targets = foot_targets[s]
+            corr[s] = [p - a for (p, _q), a in zip(targets, S[s]["A"])]
+            S[s]["R"] = [q.to_matrix() for _p, q in targets]
+            report[s] = {"contacts": contacts[s], "slide_removed_m": 0.0}
+            continue
         pts = S[s]["pts"]
         low = [min(range(3), key=lambda k: pts[i][k].z) for i in range(n)]
         height = [pts[i][low[i]].z - floor for i in range(n)]

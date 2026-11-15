@@ -43,7 +43,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
   four, ok)
-- Animation: `list_animations`, `apply_pose`, `animate`, `import_mocap`,
+- Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`, `turn_to`, `import_mocap`,
   `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
@@ -287,6 +287,26 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   idle (96 f), walk (32 f/cycle, moves forward −Y), run (18 f), wave (36 f),
   cheer (30 f), jump (40 f, one-shot), nod, head_shake (30 f). 24 fps.
   **Chain** clips with `start_frame = previous["next_start_frame"]`.
+- **Floor routes and turns** — `walk_path(armature, points, clip="walk", start_frame=None,
+  speed=1.0, face_end=None)` walks/runs from the current position through absolute world
+  XY targets in meters, e.g. `walk_path("Maya_rig", [[0, -2], [2, -2], [2, 0]],
+  face_end="camera")`. Ordinary corners use a smooth curve through the targets; duplicate
+  consecutive points are ignored. Body yaw is limited to 100°/s, tight bends shorten steps
+  and slow down, and corners sharper than 100° stop for an in-place stepping turn.
+  Cadence and natural travel speed scale together with `speed` (0.1..4). Foot IK holds
+  each support foot's world position **and rotation** throughout its contact, including
+  turns. Two gathering steps finish in a still standing pose.
+  `face_end` optionally faces an XY/XYZ point, object name or `"camera"`, sampled when the
+  final turn begins. `turn_to("Maya_rig", "camera", start_frame=None)` turns in place
+  by the shortest angle with alternating steps, then stands. Targets at the root's XY
+  position leave its heading unchanged; `"camera"` requires a scene camera/shot.
+  Both tools support basic, Rigify and MPFB rigs through the same proxy as `animate`;
+  `start_frame=None` appends after the rig's existing action (otherwise scene start).
+  Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`, and
+  `foot_lock.contacts`. Check `render_frames(..., view="top")` with waypoint markers
+  for the route and `view="three_quarter"` for steps. Flat Z=0 floor only, no obstacle
+  avoidance; feet use flat contacts rather than heel/toe rolls (running has short flights).
+  Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - `import_mocap(path, armature)` — .bvh/.fbx/.glb motion (CMU, Mixamo "without skin",
   Rokoko...). Matches names, T/A rest pose, facing and body size automatically;
   the imported source skeleton is deleted afterwards. If `mapped` is missing bones,
