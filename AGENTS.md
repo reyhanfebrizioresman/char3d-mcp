@@ -81,8 +81,13 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   fedora01, fedora_cocked. Full list: `mpfb_assets`.
 - ~1.5–3.5 s to build; ~19k vertices + clothes. Use Eevee to see skin/clothes; workbench
   shows untextured grey. glTF export with textures is ~20 MB per character.
-- MPFB weights use up to ~7 influences per vertex; game engines limited to 4 may need
-  a weight-limit step on import.
+- MPFB weights use up to ~7 influences per vertex. For Unity/Unreal/glTF games use
+  `export_asset("hero.glb", objects=["Maya_rig"], max_influences=4)`: keeps the N largest
+  deform-bone weights and normalizes them on temporary mesh copies. The scene stays
+  unchanged; the result reports `vertices_limited`. Default `None` keeps existing export
+  behavior. Any positive integer is supported on skinned meshes; non-bone groups stay intact.
+  Existing glTF modifier defaults can leave MPFB helper geometry visible after re-import;
+  this also occurs without `max_influences`.
 - Use `create_human` (mannequin) for stylized/blockout work or when MPFB is missing
   (`mpfb_assets` errors → tell the user to run `scripts/install_mpfb.sh`).
 

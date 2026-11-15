@@ -103,11 +103,15 @@ async def import_model(path: str) -> dict:
 
 
 @mcp.tool()
-async def export_asset(path: str, objects: list[str] | None = None) -> dict:
+async def export_asset(path: str, objects: list[str] | None = None,
+                       max_influences: int | None = None) -> dict:
     """Export to .glb (recommended: mesh + rig + animation), .gltf, .fbx, .obj, .usd, or
     .bvh (animation only, first armature in `objects`/scene).
-    `objects` limits the export to those objects and their children."""
-    return await run("export_asset", path=path, objects=objects)
+    `objects` limits the export to those objects and their children. max_influences:
+    None keeps existing export behavior; a positive integer keeps the N largest deform
+    weights per vertex and normalizes them on temporary copies (scene unchanged).
+    Use 4 for games (Unity/Unreal/glTF). Returns vertices_limited (count trimmed)."""
+    return await run("export_asset", path=path, objects=objects, max_influences=max_influences)
 
 
 @mcp.tool()

@@ -18,7 +18,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `new_scene` | Adegan kosong |
 | `add_primitive`, `transform_object`, `delete_objects` | Objek dasar |
 | `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
-| `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; untuk Rigify hanya tulang deform yang ikut |
+| `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; Rigify hanya tulang deform; `max_influences=4` membatasi bobot untuk game tanpa mengubah adegan (hasil: `vertices_limited`) |
 | `save_project`, `open_project` | File .blend |
 | `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |

@@ -12,6 +12,7 @@ from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
+os.environ["CHAR3D_ALLOW_PYTHON"] = "1"  # inspect weights and animation data in assertions
 # keep the test's render-speed measurements out of the user's real calibration
 CALIB = os.path.join(ROOT, "output", "e2e_render_speed.json")
 os.environ["CHAR3D_RENDER_CALIB"] = CALIB
@@ -57,6 +58,47 @@ def text_of(res):
     return [c.text for c in res.content if c.type == "text"]
 
 
+WEIGHT_STATE = """
+import hashlib, json
+state = [(o.name, o.data.name, [[(g.group, g.weight) for g in v.groups]
+          for v in o.data.vertices]) for o in bpy.context.scene.objects if o.type == 'MESH']
+result = dict(weights=hashlib.sha256(json.dumps(state).encode()).hexdigest(),
+              meshes=sorted(m.name for m in bpy.data.meshes),
+              keys=sorted(k.name for k in bpy.data.shape_keys),
+              selected=sorted(o.name for o in bpy.context.selected_objects),
+              active=bpy.context.view_layer.objects.active.name
+                     if bpy.context.view_layer.objects.active else None)
+"""
+
+
+def _check_glb_weights(path, maximum):
+    """Check the actual exported skin attributes, including weight normalization."""
+    import struct
+    with open(path, "rb") as f:
+        raw = f.read()
+    json_len = struct.unpack_from("<I", raw, 12)[0]
+    gltf = json.loads(raw[20:20 + json_len])
+    binary = raw[28 + json_len:]
+    skinned = 0
+    for mesh in gltf["meshes"]:
+        for primitive in mesh["primitives"]:
+            attrs = primitive["attributes"]
+            if "JOINTS_0" not in attrs:
+                continue
+            assert not any(k.startswith("JOINTS_") and k != "JOINTS_0" for k in attrs), attrs
+            acc = gltf["accessors"][attrs["WEIGHTS_0"]]
+            view = gltf["bufferViews"][acc["bufferView"]]
+            assert acc["componentType"] == 5126 and acc["type"] == "VEC4", acc
+            offset = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
+            for i in range(acc["count"]):
+                weights = struct.unpack_from("<4f", binary, offset + i * view.get("byteStride", 16))
+                assert sum(w > 0 for w in weights) <= maximum, weights
+                assert abs(sum(weights) - 1.0) < 1e-5, weights
+            skinned += 1
+    assert skinned, "no exported skin attributes"
+    return skinned
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -100,6 +142,12 @@ async def main():
         assert "image" in [c.type for c in posed.content]
         glb = json.loads(text_of(await call("export_asset", path="e2e_hero_rigged.glb"))[0])
         assert glb["bytes"] > 10000, glb
+        one = json.loads(text_of(await call("export_asset", path="e2e_hero_one_weight.glb",
+                                            objects=["Hero_rig"], max_influences=1))[0])
+        assert one["vertices_limited"] > 0, one
+        _check_glb_weights(one["path"], 1)
+        invalid = await s.call_tool("export_asset", {"path": "invalid.glb", "max_influences": 0})
+        assert invalid.isError, invalid
         print("phase 2 rig:", rep["rig_type"], rep["deform_bones"], "deform bones")
 
         # phase 3: poses, clips, chaining, BVH round-trip mocap, animated glb
@@ -152,7 +200,8 @@ async def main():
         look = await call("render_frames", frames=[1, 30], camera="scene", size=160)
         assert [c.type for c in look.content].count("image") == 2
         vid = json.loads(text_of(await call("render_video", path="e2e.mp4", quality="draft",
-                                            frame_start=1, frame_end=36, wait=True))[0])
+                                            width=320, height=180, frame_start=1, frame_end=36,
+                                            wait=True))[0])
         assert vid["status"] == "done" and vid["bytes"] > 1000, vid
         opts = json.loads(text_of(await call("render_options", quality="final", vertical=True))[0])
         sizes = {o["resolution"]: o["size"] for o in opts["options"]}
@@ -170,7 +219,8 @@ async def main():
         capf = await call("render_frames", frames=[8], camera="scene", size=200)
         assert json.loads(text_of(capf)[0])["caption"] is True
         vs = json.loads(text_of(await call("render_video", path="e2e_subs.mp4", quality="draft",
-                                           frame_start=1, frame_end=36, wait=True))[0])
+                                           width=320, height=180, frame_start=1, frame_end=36,
+                                           wait=True))[0])
         assert vs["status"] == "done" and vs["subtitles"]["captions"] == 2, vs
         assert "warning" not in vs and os.path.exists(vs["subtitles"]["srt"]), vs
         import av
@@ -209,6 +259,34 @@ async def main():
             img = await call("render_preview", objects=["Rina_rig"], width=160, height=160)
             assert "image" in [c.type for c in img.content]
             print("mpfb:", h["skin"], h["height_m"], "m,", len(h["parts"]), "parts, wave OK")
+            # Limit on export only: actual glTF weights and exact scene restoration.
+            before = json.loads(text_of(await call("run_blender_python", code=WEIGHT_STATE))[0])["result"]
+            limited = json.loads(text_of(await call("export_asset", path="e2e_rina_4.glb",
+                                                    objects=["Rina_rig"], max_influences=4))[0])
+            after = json.loads(text_of(await call("run_blender_python", code=WEIGHT_STATE))[0])["result"]
+            assert before == after, (before, after)
+            assert limited["vertices_limited"] > 0, limited
+            await call("run_blender_python", code="""
+from unittest.mock import patch
+from engine.commands.io import export_asset
+with patch('engine.commands.io._export', side_effect=RuntimeError('simulated export failure')):
+    try:
+        export_asset('e2e_failed.glb', objects=['Rina_rig'], max_influences=4)
+    except RuntimeError as exc:
+        assert str(exc) == 'simulated export failure'
+    else:
+        raise AssertionError('expected export failure')
+""")
+            restored = json.loads(text_of(await call("run_blender_python", code=WEIGHT_STATE))[0])["result"]
+            assert before == restored, (before, restored)
+            skins = _check_glb_weights(limited["path"], 4)
+            imported = json.loads(text_of(await call("import_model", path=limited["path"]))[0])
+            imported_rig = next(o["name"] for o in imported["imported"] if o["type"] == "ARMATURE")
+            look = await call("render_views", objects=[imported_rig], size=256, frame=9)
+            assert [c.type for c in look.content].count("image") == 4
+            await call("delete_objects", names=[o["name"] for o in imported["imported"]])
+            print("export weights:", limited["vertices_limited"], "vertices limited |", skins,
+                  "skinned primitives <= 4 | normalized | scene unchanged")
             # Rigify + face: expression, lip sync, blink
             await call("new_scene")
             d = json.loads(text_of(await call("create_realistic_human", name="Dani", gender=1.0,
@@ -226,7 +304,7 @@ async def main():
                                                frame_start=1, frame_end=200))[0])
             assert len(bl["blinks"]) >= 1, bl
             an = json.loads(text_of(await call("animate", armature="Dani_rig", clip="nod",
-                                               cycles=1))[0])
+                                               cycles=1, speed=6))[0])
             assert an["via"] == "proxy-retarget", an
             print("mpfb rigify+face:", vr["bones_total"], "bones,", len(ex["meshes"]),
                   "face meshes, lip sync", ls["mouth_shapes"], "shapes")
