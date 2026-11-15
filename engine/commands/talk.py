@@ -53,14 +53,14 @@ def _viseme_activity(base, f0, f1):
 
 
 def _audio_activity(f0, f1):
-    """Loudness envelope of sound strips on the timeline, aligned to frames."""
+    """Loudness envelope of voice strips (including legacy audio), aligned to frames."""
     from .audio import _sound_strips, analyze, load_audio
     sc = bpy.context.scene
     fps = sc.render.fps
     env = np.zeros(f1 - f0 + 1)
     used = []
     for st in _sound_strips(sc):
-        if not st.sound or st.mute:
+        if not st.sound or st.mute or st.get("char3d_audio_kind", "voice") != "voice":
             continue
         path = bpy.path.abspath(st.sound.filepath)
         if not os.path.isfile(path):

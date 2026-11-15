@@ -58,6 +58,20 @@ def text_of(res):
     return [c.text for c in res.content if c.type == "text"]
 
 
+def _tone(path, seconds=0.5, rate=22050):
+    """Short deterministic sound used as a repeating music/voice/sfx fixture."""
+    import math
+    import struct
+    import wave
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"".join(struct.pack("<h", int(4000 * math.sin(2 * math.pi * 220 * i / rate)))
+                               for i in range(int(rate * seconds))))
+    return path
+
+
 WEIGHT_STATE = """
 import hashlib, json
 state = [(o.name, o.data.name, [[(g.group, g.weight) for g in v.groups]
@@ -369,13 +383,112 @@ with patch('engine.commands.io._export', side_effect=RuntimeError('simulated exp
         print("talk_gestures cue on mannequin OK")
         await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
         v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
-                                          wait=True))[0])
+                                          width=256, height=144, frame_start=1,
+                                          frame_end=aa["frames"][1], wait=True))[0])
         assert v["status"] == "done" and v["has_audio"], v
         import av
         with av.open(v["path"]) as c:
             kinds = sorted(st.type for st in c.streams)
         assert kinds == ["audio", "video"], kinds
         print("audio: strip + AAC video OK")
+
+        # Music: continuous repeats, fades over the whole track, voice/word ducking.
+        # A brief pause between voices merges; sfx and muted voices never duck music.
+        await call("remove_audio")
+        await call("set_timeline", frame_start=1, frame_end=144, fps=24)
+        tone = _tone(os.path.join(ROOT, "output", "imports", "audio", "e2e_tone.wav"))
+        music = json.loads(text_of(await call("add_audio", path=tone, kind="music", volume=0.6,
+                                              loop=True, fade_in=0.25, fade_out=0.5))[0])
+        other_music = json.loads(text_of(await call("add_audio", path=tone, kind="music",
+                                                    volume=0.1))[0])
+        assert music["frames"] == [1, 144] and len(music["strips"]) == 12, music
+        voices = []
+        for frame in (25, 43, 97):
+            voice = json.loads(text_of(await call("add_audio", path=tone, start_frame=frame))[0])
+            assert voice["kind"] == "voice", voice
+            voices.append(voice["strip"])
+        muted = json.loads(text_of(await call("add_audio", path=tone, start_frame=73))[0])
+        sfx = json.loads(text_of(await call("add_audio", path=tone, kind="sfx", start_frame=73))[0])
+        setup = f"""
+from engine.commands.audio import _sound_strips
+from engine.commands.semantic import store_words
+for obj in bpy.context.scene.objects:
+    if 'char3d_words' in obj:
+        del obj['char3d_words']
+store_words(bpy.data.objects['Mic'], [('word', 113, 117)], 113, 117)
+for st in _sound_strips(bpy.context.scene):
+    if st.name == {muted['strip']!r}:
+        st.mute = True
+    if st.name == {voices[1]!r}:
+        del st['char3d_audio_kind']  # old projects' untagged strips are voice
+"""
+        await call("run_blender_python", code=setup)
+        duck = json.loads(text_of(await call("duck_music", music_strip=music["strips"][3]))[0])
+        assert set(duck["strips"]) == set(music["strips"]), duck
+        assert duck["speech_ranges"] == [[25.0, 55.0], [97.0, 117]], duck
+        inspect = f"""
+from engine.commands.audio import _sound_strips, _volume_curve
+from engine.commands.talk import _audio_activity
+assert set(_audio_activity(1, 144)[1]) == set({voices!r})
+music = [st for st in _sound_strips(bpy.context.scene) if st.name in {music['strips']!r}]
+assert all(st.get('char3d_audio_kind') == 'music' for st in music)
+spans = sorted((int(st.frame_final_start), int(st.frame_final_end)) for st in music)
+assert spans[0][0] == 1 and spans[-1][1] == 145
+assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
+samples = {{}}
+for frame in [1, 7, 19, 23, 30, 60, 73, 96, 103, 128, 139, 145]:
+    st = next((st for st in music if st.frame_final_start <= frame < st.frame_final_end), music[-1])
+    fc = _volume_curve(st)
+    assert fc and all(k.interpolation == 'LINEAR' and -1e-6 <= k.co.y <= 0.60001
+                      for k in fc.keyframe_points)
+    samples[str(frame)] = fc.evaluate(frame)
+other = next(st for st in _sound_strips(bpy.context.scene) if st.name == {other_music['strip']!r})
+assert _volume_curve(other) is None  # only the selected loop group was changed
+result = samples
+"""
+        samples = json.loads(text_of(await call("run_blender_python", code=inspect))[0])["result"]
+        floor = 0.6 * 10 ** (-12 / 20)
+        assert abs(samples["1"]) < 1e-6 and abs(samples["145"]) < 1e-6, samples
+        for frame in (7, 19, 73, 128):
+            assert abs(samples[str(frame)] - 0.6) < 1e-5, samples
+        for frame in (30, 103):
+            assert abs(samples[str(frame)] - floor) < 1e-5, samples
+        for frame in (23, 60, 96):
+            assert floor < samples[str(frame)] < 0.6, samples
+        assert abs(samples["139"] - 0.3) < 1e-5, samples
+        await call("duck_music", music_strip=music["strip"])
+        repeated = json.loads(text_of(await call("run_blender_python", code=inspect))[0])["result"]
+        assert samples == repeated, (samples, repeated)  # no cumulative attenuation
+        listing = json.loads(text_of(await call("list_audio"))[0])["strips"]
+        assert {st["kind"] for st in listing} == {"music", "voice", "sfx"}, listing
+        await call("camera_shot", shot="medium", start_frame=1, end_frame=144)
+        check = await call("render_frames", frames=[7, 30, 73], camera="scene", size=256)
+        assert [c.type for c in check.content].count("image") == 3
+        await call("save_project", path="e2e_music.blend")
+        mv = json.loads(text_of(await call("render_video", path="e2e_music.mp4", quality="draft",
+                                           width=256, height=144, frame_start=1, frame_end=144,
+                                           wait=True))[0])
+        assert mv["status"] == "done" and mv["has_audio"], mv
+        energy = {"normal": [], "ducked": []}
+        with av.open(mv["path"]) as movie:
+            assert movie.streams.audio[0].codec_context.name == "aac"
+            for frame in movie.decode(audio=0):
+                # These windows contain music only; the second is ducked by word times.
+                for label, a, b in (("normal", 85 / 24, 90 / 24), ("ducked", 110 / 24, 116 / 24)):
+                    if a <= frame.time and frame.time + frame.samples / frame.sample_rate <= b:
+                        energy[label].append(float((frame.to_ndarray().astype("float64") ** 2).mean()))
+        normal = (sum(energy["normal"]) / len(energy["normal"])) ** 0.5
+        quiet = (sum(energy["ducked"]) / len(energy["ducked"])) ** 0.5
+        assert normal > 0.001 and 0.15 < quiet / normal < 0.4, (normal, quiet)
+        # Removing speech restores the original volume while keeping the fades.
+        for name in voices:
+            await call("remove_audio", name=name)
+        words_only = json.loads(text_of(await call("duck_music"))[0])
+        assert words_only["speech_ranges"] == [[113, 117]], words_only
+        await call("run_blender_python", code="del bpy.data.objects['Mic']['char3d_words']")
+        reset = json.loads(text_of(await call("duck_music"))[0])
+        assert reset["speech_ranges"] == [] and other_music["strip"] in reset["strips"], reset
+        print("music: 12 continuous loops | fades + -12 dB duck curves OK | rerun stable | AAC draft OK")
 
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text

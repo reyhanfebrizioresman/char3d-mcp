@@ -36,7 +36,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Look: `render_preview`, `render_views`
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
 - Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
-- Audio & voice: `add_audio`, `list_audio`, `remove_audio`, `transcribe_audio`,
+- Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
@@ -117,6 +117,19 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
 - Expressions and lip sync are shape keys: they export to glTF as morph targets.
 
 ## Voice & audio lip sync
+- Background music: set the timeline first, then
+  `add_audio("audio/music.wav", kind="music", volume=0.4, loop=True, fade_in=0.5, fade_out=1)`.
+  `kind` is voice (default), music or sfx; it is saved on each sound strip. Music loops
+  repeat to the current scene end (last repeat trimmed); fades in seconds span the whole
+  track, not each repeat. Result `strips` lists all repeats; `strip` is the first.
+- Run `duck_music(music_strip=None, amount_db=-12, attack=0.15, release=0.4)` after adding
+  speech: music drops by the given dB relative to its original volume. Attack seconds
+  lead speech and release seconds follow it. Speech is the union of unmuted voice-strip
+  spans (legacy untagged strips count as voice) and all `char3d_words` lip-sync word times;
+  gaps <= 0.5 s merge. Split voice strips at long silent pauses for music to recover there.
+  Sfx/music do not count as speech. None ducks all music; a strip name selects its entire
+  loop group. Fades remain; rerunning replaces that music's volume keys without cumulative
+  attenuation. Rerun after changing speech; recreate loops if extending the timeline.
 - `lip_sync_audio(character, audio, start_frame)` — mouth follows a real recording and the
   audio is placed on the timeline (render_video then outputs AAC sound). Timing modes:
   `whisper` (local speech recognition, exact word times, any language — default when
