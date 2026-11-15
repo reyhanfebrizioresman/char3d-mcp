@@ -266,6 +266,24 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed):
     fade = anim._crossfade(rig, prev, start, end)
     if fade:
         info["crossfade"] = fade
+        # The route already starts at the preceding pose's heading and limits yaw
+        # over time. Blending that moving heading from a frozen pose delays the turn,
+        # then speeds it up to catch the route. Keep the planned world yaw while
+        # retaining the crossfade's tilt and the rest of the blended body pose.
+        smap = anim.semantic_map(rig)
+        mw = rig.matrix_world
+        rest = (mw @ rig.data.bones[hips_name].matrix_local).to_quaternion()
+        forward = anim._facing(rig, smap).inverted() @ Vector((0, -1, 0))
+        previous = {}
+        for f in range(fade["frames"][0], fade["frames"][1] + 1):
+            sc.frame_set(f)
+            hp = rig.pose.bones[hips_name]
+            q = (mw @ hp.matrix).to_quaternion()
+            heading = _yaw(q @ rest.inverted() @ forward)
+            correction = Quaternion((0, 0, 1), _angle(heading, samples[f - start][1]))
+            anim._set_world_rot(rig, hp, correction @ q)
+            anim._key_rot(hp, f, previous)
+        bpy.context.view_layer.update()
     targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run")
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],

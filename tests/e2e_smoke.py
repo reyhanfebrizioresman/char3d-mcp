@@ -91,6 +91,10 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
                     floor_error = max(floor_error, abs(min((foot @ p).z for p in sole)))
         rest = (mw @ rig.data.bones[smap['hips']].matrix_local).to_quaternion()
         forward = _facing(rig, smap).inverted() @ Vector((0, -1, 0))
+        sc.frame_set(nav['frames'][0] - 1)
+        mat = mw @ rig.pose.bones[smap['hips']].matrix
+        fw = mat.to_quaternion() @ rest.inverted() @ forward
+        previous_yaw = math.atan2(fw.x, -fw.y)
         roots, yaws = [], []
         for f in range(nav['frames'][0], nav['frames'][1] + 1):
             sc.frame_set(f)
@@ -99,7 +103,7 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
             fw = mat.to_quaternion() @ rest.inverted() @ forward
             yaws.append(math.atan2(fw.x, -fw.y))
         angle = lambda a, b: (b - a + math.pi) % (2*math.pi) - math.pi
-        rate = max(abs(angle(a, b)) for a, b in zip(yaws, yaws[1:]))
+        rate = max(abs(angle(a, b)) for a, b in zip([previous_yaw, *yaws], yaws))
         rate *= sc.render.fps / sc.render.fps_base * 180 / math.pi
         waypoint_errors, waypoint_frames = [], []
         for x, y in {list(points)!r}:
@@ -381,7 +385,8 @@ async def main():
                                                      points=[[1.4, -2.8]], clip="run", speed=4))[0])
                 await check_navigation(call, fast, [[1.4, -2.8]])
             print(f"walk_path ({kind}): distance {nav['distance_m']:.3f} m | "
-                  f"planted drift {measured['drift']:.6f} m | turn_to drift {tm['drift']:.6f} m")
+                  f"planted drift {measured['drift']:.6f} m | turn_to drift {tm['drift']:.6f} m | "
+                  f"peak yaw {measured['turn_rate']:.3f} deg/s")
             for bad in ({"points": []}, {"points": [[1, 2, 3]]},
                         {"points": [[0, 0]], "speed": 0},
                         {"points": [[0, 0]], "clip": "idle"},
@@ -399,7 +404,7 @@ async def main():
         else:
             await call("new_scene")
             h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
-                                              age=30, hair="ponytail01",
+                                              age=30, hair="ponytail01", location=[1.25, 0.35, 0],
                                               clothes=["female_sportsuit01", "shoes03"]))[0])
             assert h["armature"] == "Rina_rig" and h["mapped_bones"] >= 20, h
             vr = json.loads(text_of(await call("validate_rig", mesh="Rina"))[0])
@@ -410,7 +415,9 @@ async def main():
             img = await call("render_preview", objects=["Rina_rig"], width=160, height=160)
             assert "image" in [c.type for c in img.content]
             print("mpfb:", h["skin"], h["height_m"], "m,", len(h["parts"]), "parts, wave OK")
-            # Game-engine rig with face keys: running, turning and facing the scene camera.
+            # Enter from a wave at an offset position, requiring an initial turn during
+            # the crossfade. Starting on X=0 misses the blend's yaw-rate regression.
+            # Face keys also move the scene frame before navigation samples the rig.
             await call("lip_sync", character="Rina_rig", text="Mari berjalan bersama", start_frame=1)
             await call("camera_shot", subject=["Rina_rig"], shot="full", start_frame=1, end_frame=400)
             run = json.loads(text_of(await call("walk_path", armature="Rina_rig", clip="run",
@@ -431,7 +438,8 @@ async def main():
             assert sum(c.type == "image" for c in images.content) == 4
             await call("save_project", path="e2e_walk_path_mpfb.blend")
             print(f"walk_path (MPFB game_engine/run): distance {run['distance_m']:.3f} m | "
-                  f"planted drift {rm['drift']:.6f} m | camera facing OK")
+                  f"planted drift {rm['drift']:.6f} m | camera facing OK | "
+                  f"peak yaw {rm['turn_rate']:.3f} deg/s")
             # Rigify + face: expression, lip sync, blink
             await call("new_scene")
             d = json.loads(text_of(await call("create_realistic_human", name="Dani", gender=1.0,
@@ -529,4 +537,5 @@ async def main():
         print("E2E OK")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
