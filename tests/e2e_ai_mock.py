@@ -30,7 +30,7 @@ async def main():
     mock = MockFal(files)
     base = mock.start()
     env = dict(os.environ, FAL_KEY="test-key", CHAR3D_FAL_BASE=base, CHAR3D_POLL_SECONDS="0.2",
-               CHAR3D_PORT="9897")
+               CHAR3D_PORT=os.environ.get("CHAR3D_PORT", "9897"))
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=env)
     try:

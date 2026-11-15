@@ -45,7 +45,6 @@ FONT_CANDIDATES = (
 )
 SENTENCE_END = re.compile(r"[.!?…]+[\"')\]]*$")
 CLAUSE_END = re.compile(r"[,;:]+[\"')\]]*$")
-_FONTS = {}
 
 
 # ---- configuration
@@ -83,10 +82,10 @@ def _font_path(cfg):
 def _font_id(path):
     if path is None:
         return 0
-    if path not in _FONTS:
-        fid = blf.load(path)
-        _FONTS[path] = fid if fid != -1 else 0
-    return _FONTS[path]
+    # BLF deduplicates loads by path. Let it own the cache: font IDs cached in Python
+    # become invalid when read_factory_settings / open_mainfile resets Blender's fonts.
+    fid = blf.load(path)
+    return fid if fid != -1 else 0
 
 
 # ---- words
@@ -186,7 +185,7 @@ def caption_states(chunks, highlight):
 
 
 # ---- drawing
-def _layout(font, words, size, max_w, lines):
+def _layout(font, words, size, max_w, lines, min_size=10):
     """Wrap words into lines that fit max_w; shrink the font when they don't."""
     while True:
         blf.size(font, size)
@@ -205,9 +204,9 @@ def _layout(font, words, size, max_w, lines):
             rows.append(cur)
         fits = len(rows) <= lines and all(
             sum(widths[i] for i in r) + space * (len(r) - 1) <= max_w for r in rows)
-        if fits or size <= 10:
+        if fits or size <= min_size:
             return size, space, widths, rows
-        size = int(size * 0.92)
+        size = max(min_size, int(size * 0.92))
 
 
 def draw_caption(path, width, height, words, active, cfg, style):
