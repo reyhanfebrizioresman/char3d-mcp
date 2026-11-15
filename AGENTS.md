@@ -48,6 +48,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `render_options`, `render_video`, `render_status`, `cancel_render`
+- Sets & props: `set_environment`, `add_prop`, `clear_environment`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
   `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
@@ -260,6 +261,37 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   clip's last pose (it does not keep playing the old clip underneath).
 
 ## Film: cameras, lighting, video
+**Sets & props** — `set_environment(preset, subject=["Maya_rig"])` replaces the current
+managed set (including added props) with procedural furniture and practical lights:
+podcast_studio, classroom, office, stage, living_room, news_desk. Everything lives in
+`char3d_env`, with clearly named parts and one transformable root. No downloads; original
+low-poly geometry and simple materials, suitable for CPU Eevee.
+- Sets anchor at the subject's feet and scale to its height; `scale=1.0` is the default
+  multiplier. None = visible characters/geometry, or a 1.75 m reference at origin in an
+  empty scene. Characters are never moved/posed. Podcast/news place a standing presenter
+  behind the desk; the stage is raised by lowering its surroundings (top at the foot plane).
+  The lighting ground is lowered with the stage and restored when the set is cleared.
+- `variant=0` is a deterministic seed; odd values mirror side decor. `color_theme` accepts
+  warm/cool/neutral or RGB overrides, e.g. `{"accent": [0.1, 0.5, 0.8]}` (wall/fabric too).
+- `screen_image="slides.png"` uses a local image from imports/ (or an absolute path) on
+  screens, laptop displays and whiteboards; upright UVs, stretched to fit. Otherwise,
+  screens/boards show original geometric graphics. User images retain their own license.
+- `add_prop(kind, location=[x,y,z], rotation_z=0, scale=1)` adds chair, desk, table,
+  microphone, laptop, plant, lamp, screen, bookshelf, sofa or whiteboard. Units are meters,
+  rotation_z is degrees (0 faces -Y); scale is independent of characters. Location is the
+  floor/base center: desk height 1.02 m, coffee table 0.43 m; put microphones/laptops at
+  desktop Z. Optional screen_image works here too. Move the returned root to move all parts.
+- Practical lights survive `set_lighting`; `clear_environment()` removes only owned
+  furniture/lights and unused owned data, preserving characters, cameras and lighting rigs.
+  Set calls replace prior sets/props. The central -Y camera path is open; backdrops are
+  open at the front/sides/top, designed for frontal medium/wide shots. Static furniture
+  does not follow walking characters or solve seating, hands/desk collisions or arbitrary
+  camera orbits. Use explicit character subjects for lighting and camera framing.
+- Recipe: `set_environment("podcast_studio", subject=["Maya_rig"])` →
+  `set_lighting("studio", subject=["Maya_rig"])` →
+  `camera_shot(subject=["Maya_rig"], shot="wide", angle=8)` →
+  `render_frames([1], camera="scene", engine_name="eevee")`. Inspect the result.
+
 **Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane by default and
 switches the scene to Eevee. `rotate` spins the rig of lights around the subject.
