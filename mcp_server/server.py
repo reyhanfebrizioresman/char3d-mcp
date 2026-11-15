@@ -577,6 +577,32 @@ async def set_expression(character: str, expression: Expression = "neutral",
 
 
 @mcp.tool()
+async def auto_expression(character: str, frame_start: int | None = None,
+                          frame_end: int | None = None, base: Expression = "smile",
+                          base_strength: float = 0.35, intensity: float = 1.0,
+                          language: Literal["auto", "id", "ms", "en"] = "auto",
+                          cues: list[dict] | None = None) -> dict:
+    """Animate sentence emotions from the meaning of stored speech words (local lexicon,
+    Indonesian/Malay + English; auto matches both). Run after lip_sync or lip_sync_audio
+    with text/whisper timing; audio-only timing has no words. Detects joy, sadness,
+    surprise, anger, fear/worry and thinking, suppresses nearby negated words, boosts !,
+    and adds a slight questioning brow for ?. Emotions arrive ~0.2 s before sentences,
+    hold through speech and relax to base in pauses. Range defaults to the scene range.
+    Only brows/eyes/cheeks/nose and smile/frown corners are replaced in the range; jaw,
+    mouth articulation/visemes, blink and gaze keys stay intact. Compatible with
+    auto_blink in either order. Run before talk_motion (which adds brow/gaze accents).
+    base_strength 0..1, intensity >=0 scales inferred emotions (not base or explicit cues).
+    cues=[{"frame": 48, "expression": "sad", "strength": 0.7}] forces the containing
+    sentence, or holds ~0.6 s without words; cues outside the range are ignored. Cues
+    use the same protected channels as inferred expressions. Returns sentences with
+    emotion, expression, strength, speech frames, keyed peak/hold frames and relax frame.
+    This lexicon does not understand sarcasm or wider context."""
+    return await run("auto_expression", character=character, frame_start=frame_start,
+                     frame_end=frame_end, base=base, base_strength=base_strength,
+                     intensity=intensity, language=language, cues=cues)
+
+
+@mcp.tool()
 async def lip_sync(character: str, text: str, start_frame: int = 1,
                    chars_per_second: float = 14.0, strength: float = 0.9,
                    expression: Expression | None = None) -> dict:

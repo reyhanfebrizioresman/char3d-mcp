@@ -5,6 +5,7 @@ Microsoft viseme names (aa_02, p_b_m_21, ...). MPFB humans get them from the CC0
 faceunits01 / visemes01 packs (loaded on demand); child meshes of the same rig
 (eyebrows, eyelashes, eyes) carry interpolated copies and are driven together.
 """
+import math
 import random
 import re
 
@@ -232,6 +233,154 @@ def set_expression(character, expression="neutral", units=None, strength=1.0, cl
     return {"character": base.name, "expression": expression, "frame": f, "keyed": bool(keyframe),
             "active_units": active, "meshes": [m.name for m in meshes],
             "loaded_face_targets": loaded}
+
+
+# Expression corners are separate from articulation (jaw, funnel, pucker, press,
+# tongue and visemes). Blinks and gaze also belong to their own animation layers.
+EMOTION_UNITS = [k for k in ARKIT if k.startswith((
+    "brow", "cheek", "nose", "eyeWide", "eyeSquint", "mouthSmile", "mouthFrown", "mouthDimple"))]
+
+
+def _emotion_values(expression, strength, question=False, intensity=1.0):
+    values = {k: min(1.0, max(0.0, EXPRESSIONS[expression].get(k, 0.0) * strength))
+              for k in EMOTION_UNITS}
+    if question:
+        for name, weight in (("browInnerUp", 0.12), ("browOuterUpLeft", 0.08),
+                             ("browOuterUpRight", 0.08)):
+            values[name] = min(1.0, values[name] + weight * intensity)
+    return values
+
+
+def _clear_emotion_keys(meshes, start, end):
+    """Replace this layer only; keep speech, blink, gaze and out-of-range keys."""
+    from .talk import _fcurves
+    for mesh in meshes:
+        sk = mesh.data.shape_keys
+        action = sk.animation_data.action if sk.animation_data else None
+        paths = {sk.key_blocks[k].path_from_id("value") for k in EMOTION_UNITS
+                 if k in sk.key_blocks}
+        for fc in _fcurves(action):
+            if fc.data_path not in paths:
+                continue
+            # Blender's RNA references are invalidated when points are removed.
+            for i in range(len(fc.keyframe_points) - 1, -1, -1):
+                key = fc.keyframe_points[i]
+                if start <= key.co.x <= end:
+                    fc.keyframe_points.remove(key, fast=True)
+            fc.update()
+
+
+@command("auto_expression")
+def auto_expression(character, frame_start=None, frame_end=None, base="smile",
+                    base_strength=0.35, intensity=1.0, language="auto", cues=None):
+    """Key sentence emotions from stored speech words, preserving articulation and blinks."""
+    from .emotion import EXPRESSION, classify, sentences
+    from .semantic import load_words
+    if base not in EXPRESSIONS:
+        raise ValueError(f"unknown base expression '{base}'. Use list_expressions.")
+    if language not in ("auto", "id", "ms", "en"):
+        raise ValueError("language must be 'auto', 'id', 'ms' or 'en'")
+    if not math.isfinite(base_strength) or not 0 <= base_strength <= 1:
+        raise ValueError("base_strength must be between 0 and 1")
+    if not math.isfinite(intensity) or intensity < 0:
+        raise ValueError("intensity must be finite and non-negative")
+    sc = bpy.context.scene
+    fs = int(frame_start if frame_start is not None else sc.frame_start)
+    fe = int(frame_end if frame_end is not None else sc.frame_end)
+    if fe < fs:
+        raise ValueError("frame_end must be >= frame_start")
+    forced = []
+    for cue in cues or []:
+        if not {"frame", "expression", "strength"} <= cue.keys():
+            raise ValueError("each cue needs frame, expression and strength")
+        if cue["expression"] not in EXPRESSIONS:
+            raise ValueError(f"unknown cue expression '{cue['expression']}'. Use list_expressions.")
+        strength = float(cue["strength"])
+        if not math.isfinite(strength) or not 0 <= strength <= 1:
+            raise ValueError("cue strength must be between 0 and 1")
+        frame = int(cue["frame"])
+        if fs <= frame <= fe:
+            forced.append((frame, cue["expression"], strength))
+
+    mesh = _basemesh(character)
+    fps = sc.render.fps / sc.render.fps_base
+    anticipation = max(1, round(0.2 * fps))
+    blend = max(1, round(0.15 * fps))
+    relax = max(1, round(0.3 * fps))
+    events = []
+    for words in sentences(load_words(mesh)):
+        start, end = words[0][1], max(w[2] for w in words)
+        if end < fs or start > fe:
+            continue
+        emotion, strength, question = classify(words, language)
+        expression = base if emotion == "base" else EXPRESSION[emotion]
+        strength = base_strength if emotion == "base" else min(1.0, strength * intensity)
+        peak = max(fs, round(start) - anticipation)
+        events.append({"sentence": " ".join(w[0] for w in words), "emotion": emotion,
+                       "expression": expression, "strength": round(strength, 3),
+                       "sentence_frames": [round(start, 2), round(end, 2)],
+                       "frames": [peak, min(fe, max(peak, round(end)))],
+                       "question": question, "source": "text"})
+    text_events = list(events)
+    for frame, expression, strength in forced:
+        candidates = [e for e in text_events if e["frames"][0] <= frame <= e["sentence_frames"][1]]
+        containing = min(candidates, key=lambda e: abs(frame - e["frames"][0]), default=None)
+        if containing is not None:
+            events = [e for e in events if e is not containing]
+        events.append({"sentence": containing["sentence"] if containing else "",
+                       "emotion": expression, "expression": expression, "strength": strength,
+                       "sentence_frames": containing["sentence_frames"] if containing else None,
+                       "frames": [frame, min(fe, max(frame, round(containing["sentence_frames"][1]))
+                                             if containing else frame + round(0.6 * fps))],
+                       "question": False, "source": "cue"})
+    if not events:
+        raise ValueError("no word times in the range: run lip_sync or lip_sync_audio with "
+                         "text/whisper timing first, or supply cues")
+    # Last event at a frame wins (explicit cues follow inferred sentences).
+    events = sorted({e["frames"][0]: e for e in events}.values(), key=lambda e: e["frames"][0])
+    _ensure_face(mesh)
+    meshes = _face_meshes(mesh)
+    _clear_emotion_keys(meshes, fs, fe)
+    baseline = _emotion_values(base, base_strength)
+    current = sc.frame_current
+    last = fs
+
+    def key(values, frame, transition=0):
+        set_expression(character, expression=None, units=values, clear=False, frame=frame,
+                       keyframe=True, transition_frames=transition)
+
+    try:
+        key(baseline, fs)
+        for i, event in enumerate(events):
+            peak, end = event["frames"]
+            next_peak = events[i + 1]["frames"][0] if i + 1 < len(events) else None
+            hold = max(peak, min(end, next_peak - blend)) if next_peak is not None else end
+            values = _emotion_values(event["expression"], event["strength"],
+                                     event["question"], intensity)
+            key(values, peak, min(blend, peak - last))
+            key(values, hold)
+            event["frames"][1] = hold
+            last = hold
+            # Short gaps blend directly to the next emotion. Longer pauses settle
+            # to the base, leaving room for the next sentence's anticipation.
+            room = (next_peak - blend if next_peak is not None else fe) - hold
+            tail_values = values
+            if room >= relax or (next_peak is None and room > 0):
+                last = min(hold + relax, fe)
+                key(baseline, last, last - hold)
+                tail_values = baseline
+                event["relax_frame"] = last
+            else:
+                event["relax_frame"] = None
+        # Hold the final state to the boundary even when later animation exists.
+        if last < fe:
+            key(tail_values, fe)
+    finally:
+        sc.frame_set(current)
+    return {"character": mesh.name, "frames": [fs, fe], "language": language,
+            "base": base, "base_strength": base_strength, "intensity": intensity,
+            "sentences": events, "keyed_units": EMOTION_UNITS,
+            "meshes": [m.name for m in meshes]}
 
 
 @command("lip_sync")

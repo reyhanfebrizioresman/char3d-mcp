@@ -12,6 +12,9 @@ from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
+# Test-only introspection: inspect the actual Blender animation curves, including
+# sibling face meshes, to prove speech and blinks survive expression generation.
+os.environ["CHAR3D_ALLOW_PYTHON"] = "1"
 # keep the test's render-speed measurements out of the user's real calibration
 CALIB = os.path.join(ROOT, "output", "e2e_render_speed.json")
 os.environ["CHAR3D_RENDER_CALIB"] = CALIB
@@ -57,6 +60,20 @@ def text_of(res):
     return [c.text for c in res.content if c.type == "text"]
 
 
+FACE_CURVES = '''
+from engine.commands.face import _basemesh, _face_meshes
+from engine.commands.talk import _fcurves
+result = {}
+for mesh in _face_meshes(_basemesh("Dani_rig")):
+    sk = mesh.data.shape_keys
+    action = sk.animation_data.action if sk.animation_data else None
+    result[mesh.name] = {
+        fc.data_path: [[list(k.co), k.interpolation] for k in fc.keyframe_points]
+        for fc in _fcurves(action)
+    }
+'''
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -65,6 +82,7 @@ async def main():
         assert "char3d" in (init.instructions or ""), "server instructions missing"
         tools = {t.name for t in (await s.list_tools()).tools}
         print("tools:", sorted(tools))
+        assert "auto_expression" in tools
 
         async def call(tool, **args):
             res = await s.call_tool(tool, args)
@@ -231,6 +249,136 @@ async def main():
             print("mpfb rigify+face:", vr["bones_total"], "bones,", len(ex["meshes"]),
                   "face meshes, lip sync", ls["mouth_shapes"], "shapes")
 
+            # Sentence emotions: bilingual phrases, negation, punctuation and real
+            # MPFB shape keys. Compare protected curves before/after, not just reports.
+            await call("set_expression", character="Dani_rig", expression="neutral",
+                       frame=1, keyframe=True)
+            ls3 = json.loads(text_of(await call(
+                "lip_sync", character="Dani_rig", start_frame=12, chars_per_second=22,
+                text="Senang sekali! Sayang sekali. Wow amazing! Saya kesal. "
+                     "Takut bahaya. Hmm mungkin? Tidak senang."))[0])
+            face_end = ls3["frames"][1] + 24
+            await call("set_timeline", frame_end=face_end)
+            await call("auto_blink", character="Dani_rig", frame_end=face_end)
+
+            async def face_curves():
+                return json.loads(text_of(await call("run_blender_python", code=FACE_CURVES))[0])["result"]
+
+            before = await face_curves()
+            ae = json.loads(text_of(await call("auto_expression", character="Dani_rig"))[0])
+            emotions = [e["emotion"] for e in ae["sentences"]]
+            assert emotions == ["joy", "sad", "surprise", "anger", "fear", "thinking", "neutral"], ae
+            assert len(ae["meshes"]) >= 3 and ae["frames"] == [1, face_end], ae
+            assert ae["sentences"][-1]["relax_frame"] is not None, ae
+            for event in ae["sentences"]:
+                peak, hold = event["frames"]
+                assert 1 <= peak <= hold <= face_end, event
+                assert abs(event["sentence_frames"][0] - peak - 5) <= 0.6, event
+            assert ae["sentences"][0]["strength"] > ae["sentences"][3]["strength"], ae
+            after = await face_curves()
+            paths = {f'key_blocks["{name}"].value' for name in ae["keyed_units"]}
+            protected = 0
+            for mesh, curves in before.items():
+                for path, points in curves.items():
+                    if path not in paths:
+                        assert after[mesh][path] == points, (mesh, path)
+                        protected += 1
+            assert protected > 20, protected
+            # Re-running replaces its layer instead of accumulating old expression keys.
+            await call("auto_expression", character="Dani_rig")
+            assert await face_curves() == after
+            await call("auto_blink", character="Dani_rig", frame_end=face_end)
+            blinked = await face_curves()
+            for mesh, curves in after.items():
+                for path in curves.keys() & paths:
+                    assert blinked[mesh][path] == curves[path], (mesh, path)
+
+            # Check evaluated weights and visemes during speech, also on brows/lashes.
+            check = '''
+from engine.commands.face import _basemesh, _face_meshes, VISEMES
+mesh = _basemesh("Dani_rig")
+sk = mesh.data.shape_keys.key_blocks
+samples = []
+for event in EVENTS[:6]:
+    bpy.context.scene.frame_set(event["frames"][0])
+    unit = {"joy": "cheekSquintLeft", "sad": "browInnerUp",
+            "surprise": "eyeWideLeft", "anger": "browDownLeft",
+            "fear": "eyeWideLeft", "thinking": "browInnerUp"}[event["emotion"]]
+    value = sk[unit].value
+    assert value > 0.05, (event, unit, value)
+    for part in _face_meshes(mesh):
+        key = part.data.shape_keys.key_blocks.get(unit)
+        if key is not None:
+            assert abs(key.value - value) < 1e-5, (part.name, unit)
+    samples.append(round(value, 3))
+bpy.context.scene.frame_set(EVENTS[-1]["frames"][0])
+assert sk["mouthSmileLeft"].value < 1e-5     # negated joy has no smile
+bpy.context.scene.frame_set(EVENTS[-1]["relax_frame"])
+assert abs(sk["mouthSmileLeft"].value - 0.7 * 0.35) < 1e-5  # back to base in pause
+assert sk["browInnerUp"].value < 1e-5
+assert any(fc.evaluate(f) > 0.1 for fc in _fcurves(mesh.data.shape_keys.animation_data.action)
+           if any(v in fc.data_path for v in VISEMES) for f in range(12, END))
+result = samples
+'''
+            checked = json.loads(text_of(await call("run_blender_python", code=(
+                "from engine.commands.talk import _fcurves\nEVENTS = " + repr(ae["sentences"])
+                + "\nEND = " + str(face_end) + "\n" + check)))[0])
+            await call("set_lighting", preset="studio", subject=["Dani_rig"])
+            await call("camera_shot", subject=["Dani_rig"], shot="close_up",
+                       start_frame=1, end_frame=face_end)
+            # Render inside each sentence, while the mouth is also speaking.
+            view_frames = [round(sum(e["sentence_frames"]) / 2) for e in ae["sentences"][:6]]
+            faces = await call("render_frames", frames=view_frames, camera="scene",
+                               engine_name="eevee", size=512)
+            assert [c.type for c in faces.content].count("image") == 6
+            print("auto_expression:", emotions, "| protected curves", protected,
+                  "| evaluated weights", checked["result"], "| close_up frames", view_frames)
+            await call("save_project", path="e2e_auto_expression.blend")
+
+            # Explicit cues work without word times and stay within the requested range.
+            cue_start, cue_end = face_end + 10, face_end + 60
+            cued = json.loads(text_of(await call(
+                "auto_expression", character="Dani", frame_start=cue_start, frame_end=cue_end,
+                base="neutral", cues=[{"frame": cue_start + 10, "expression": "sad", "strength": 0.8}]))[0])
+            assert cued["sentences"][0]["source"] == "cue", cued
+            assert cued["sentences"][0]["frames"][0] == cue_start + 10, cued
+            limited = await face_curves()
+            for mesh, curves in blinked.items():
+                for path, points in curves.items():
+                    assert ([p for p in limited[mesh][path] if p[0][0] <= face_end]
+                            == [p for p in points if p[0][0] <= face_end]), (mesh, path)
+            no_words = await s.call_tool("auto_expression", {"character": "Dani_rig",
+                                        "frame_start": cue_end + 10, "frame_end": cue_end + 20})
+            assert no_words.isError and "no word times" in str(text_of(no_words)), no_words
+            forced = json.loads(text_of(await call(
+                "auto_expression", character="Dani_rig",
+                cues=[{"frame": ae["sentences"][0]["frames"][0], "expression": "sad", "strength": 0.9},
+                      {"frame": ae["sentences"][0]["frames"][0] + 2,
+                       "expression": "angry", "strength": 0.8}]))[0])
+            assert forced["sentences"][0]["source"] == "cue", forced
+            assert forced["sentences"][0]["expression"] == "sad", forced
+            assert forced["sentences"][1]["source"] == "cue", forced
+            assert forced["sentences"][1]["sentence"] == forced["sentences"][0]["sentence"], forced
+            # Matcher edge cases exercise phrases, suffixes, language selection,
+            # clause-scoped negation and the question-only fallback.
+            lexicon = '''
+from engine.commands.emotion import classify
+def emotion(text, language="auto"):
+    return classify([(w, i, i + 1) for i, w in enumerate(text.split())], language)[0]
+for text, expected in [("Tidak senang.", "neutral"), ("not very happy!", "neutral"),
+                       ("not sad but great!", "joy"), ("tidak marah, senang!", "joy"),
+                       ("mantapnya!", "joy"), ("sayang sekali.", "sad"),
+                       ("Unfortunately.", "sad"), ("coba pikir.", "thinking"),
+                       ("Apa?", "thinking"), ("Hello.", "base")]:
+    assert emotion(text) == expected, (text, emotion(text))
+assert emotion("senang", "en") == "base"
+assert emotion("seronok", "ms") == "joy"
+assert emotion("happy", "en") == "joy"
+result = "phrases, suffixes, negation, questions, id/ms/en OK"
+'''
+            lex = json.loads(text_of(await call("run_blender_python", code=lexicon))[0])
+            print("auto_expression cues/ranges:", lex["result"])
+
         # audio: synthetic "speech" (vowels via formant filters, hiss, pauses) -> timeline,
         # lip sync from audio/text, and a draft video that must carry an AAC track
         wav = _synthetic_speech(os.path.join(ROOT, "output", "imports", "audio", "e2e_synth.wav"))
@@ -242,9 +390,20 @@ async def main():
             for timing in ("audio", "text"):
                 la = json.loads(text_of(await call(
                     "lip_sync_audio", character="Vo_rig", audio=wav, timing=timing,
-                    text="aa ee oo ss aa", add_sound=False))[0])
+                    text="Happy! Sorry. Wow! Afraid.", add_sound=False))[0])
                 assert la["mode"] == timing and la["mouth_shapes"] >= 4, la
+                if timing == "audio":
+                    missing = await s.call_tool("auto_expression", {"character": "Vo_rig"})
+                    assert missing.isError and "no word times" in str(text_of(missing)), missing
+                else:
+                    audio_face = json.loads(text_of(await call(
+                        "auto_expression", character="Vo_rig", intensity=0.5,
+                        base="neutral", base_strength=0, language="en"))[0])
+                    assert [e["emotion"] for e in audio_face["sentences"]] == [
+                        "joy", "sad", "surprise", "fear"], audio_face
+                    assert audio_face["sentences"][0]["strength"] == 0.375, audio_face
             print("audio lip sync: audio/text modes OK")
+            print("auto_expression audio: text timing + intensity OK; audio-only needs cues")
             await call("add_audio", path=wav, start_frame=1)
             await call("animate", armature="Vo_rig", clip="idle", cycles=1)
             await call("camera_shot", subject=["Vo_rig"], shot="close_up", start_frame=1,

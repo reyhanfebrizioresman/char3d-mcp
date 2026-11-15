@@ -35,7 +35,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
 - Look: `render_preview`, `render_views`
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
-- Face: `list_expressions`, `set_expression`, `lip_sync`, `auto_blink`
+- Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync`, `auto_blink`
 - Audio & voice: `add_audio`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
@@ -105,6 +105,27 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   each holds the previous face until N - transition_frames, then blends.
 - `lip_sync(character, text, start_frame)`: mouth shapes from text (no audio is
   produced). ~14 chars/s. Combine with a light expression (smile 0.5) for life.
+- `auto_expression(character, frame_start=None, frame_end=None, base="smile",
+  base_strength=0.35, intensity=1.0, language="auto", cues=None)`: sentence emotions
+  from stored word times, after `lip_sync` or `lip_sync_audio` with text/Whisper timing.
+  Local Indonesian/Malay + English lexicon: joy, sad, surprise, anger, fear/worry,
+  thinking; phrases and suffixes, nearby negation ("tidak senang" suppresses joy),
+  `!` boosts and `?` adds a questioning brow. `language`: auto (both), id, ms or en.
+  Emotions arrive ~0.2 s before each sentence, hold, then relax toward the base in
+  pauses; range defaults to the scene. `base_strength` 0..1; `intensity` >=0 scales
+  inferred emotions, leaving the base and explicit cues at their chosen strengths.
+  Replaces only brow/eye/cheek/nose and smile/frown-corner keys in the range; jaw,
+  mouth articulation/visemes, blinks and gaze remain intact. `auto_blink` can run
+  before or after; run `auto_expression` before `talk_motion` for its brow accents.
+  Result `sentences` lists sentence → emotion/expression/strength → speech frames,
+  keyed peak/hold `frames`, and `relax_frame` (None when the gap is too short).
+  Force with `cues=[{"frame": 48, "expression": "sad", "strength": 0.7}]`: replaces
+  the containing sentence, or holds ~0.6 s without words; out-of-range cues are ignored.
+  Cues also preserve articulation/blink/gaze channels (e.g. a `surprised` cue never
+  opens the jaw). Audio-only lip sync has no words: supply cues or use text/Whisper.
+  This is a small lexicon, with local negation only; sarcasm/context are not understood.
+  Example: `lip_sync(rig, "Senang sekali! Sayang sekali. Wah, ternyata hebat!")` →
+  `auto_expression(rig)` → `auto_blink(rig)` → close-up Eevee `render_frames`.
 - `auto_blink(character)`: natural blinks over the scene range — always add it to any
   shot where the face is visible for more than ~2 s.
 - Check faces with `camera_shot(shot="close_up" or "extreme_close_up")` +
