@@ -35,7 +35,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
 - Look: `render_preview`, `render_views`
 - Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
-- Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync`, `auto_blink`
+- Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Dialog: `dialog`, `stage_dialog`
@@ -110,8 +110,24 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   `units={"jawOpen": 0.3, "browInnerUp": 0.5}` (ARKit names from `list_expressions`).
 - Performance over time: call `set_expression(..., frame=N, keyframe=True)` repeatedly;
   each holds the previous face until N - transition_frames, then blends.
-- `lip_sync(character, text, start_frame)`: mouth shapes from text (no audio is
-  produced). ~14 chars/s. Combine with a light expression (smile 0.5) for life.
+- `lip_sync(character, text, start_frame, language="auto", detail="phoneme")`: timed
+  phonemes from text (no audio is produced), ~14 chars/s. Combine with a light smile.
+  `language="id"`/`"ms"` uses Indonesian/Malay spelling (ng, ny, sy, kh, c/j, ai/au/oi,
+  word-final k as a glottal stop; unmarked e uses a schwa/clear-e heuristic, é is clear).
+  `"en"` uses English letter-to-sound rules plus common-word exceptions. Auto/None
+  compares lexicon hit rates for the whole utterance; ties/unknown text use id.
+  For short or mixed-language lines, choose the language explicitly.
+- Phonemes are distributed **inside each word's start/end** using relative durations
+  (longer vowels, shorter stops and final consonants). Smooth mouth targets anticipate
+  o/u/w rounding, fully close m/b/p even in quiet audio, and make f/v lip-teeth contact.
+  ARKit-only characters get approximate jaw/lip controls if Microsoft visemes are absent.
+  `detail="word"` restores the old letter mapping and timing. Results include `language`,
+  `detail`, and `phonemes`: `{word, phoneme, viseme, start, end, frame}` in scene frames;
+  `frame` is the peak, or null when the phoneme is shorter than an available video frame.
+  Example: `lip_sync("Dan_rig", "Mama buka pintu", language="id")`, then inspect the
+  returned m/b/p, o/u and a peaks with `render_frames(camera="scene", engine_name="eevee")`.
+  This is rule-based pronunciation and estimated timing, **not acoustic forced alignment**;
+  irregular English words, Indonesian e and diphthong/hiatus ambiguities remain approximate.
 - `auto_expression(character, frame_start=None, frame_end=None, base="smile",
   base_strength=0.35, intensity=1.0, language="auto", cues=None)`: sentence emotions
   from stored word times, after `lip_sync` or `lip_sync_audio` with text/Whisper timing.
@@ -157,7 +173,11 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   audio is placed on the timeline (render_video then outputs AAC sound). Timing modes:
   `whisper` (local speech recognition, exact word times, any language — default when
   installed), `text` (spread a given transcript over the voiced parts), `audio` (shapes
-  guessed from the sound alone, speaker-adaptive). Result includes `transcript`.
+  guessed from the sound alone, speaker-adaptive). Whisper/text use phonemes automatically
+  with `language="id"`/`"ms"`/`"en"` or auto/None as above; `detail="word"` keeps legacy
+  behavior. Audio-only stays acoustic (`detail="audio"`), without pronunciation guesses.
+  Whisper results include `transcript`; all word times remain available to subtitles and
+  gestures. `transcribe_audio` still supports other Whisper languages independently.
 - Audio paths are relative to `imports/` (e.g. `"audio/line1.wav"`) or absolute;
   wav/mp3/flac/ogg/m4a all work.
 - No recording? `ai_text_to_speech(text, language)` makes one (free Chatterbox Space;
@@ -462,9 +482,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
-- Phoneme-level forced alignment (word-level today)
 - Foot IK on stairs / uneven ground
-- Face rig / lip sync
 
 ## For agents editing this repo
 - `engine/` runs inside Blender's bundled Python (has `bpy`); never import `bpy` in

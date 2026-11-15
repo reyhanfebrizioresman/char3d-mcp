@@ -13,6 +13,7 @@ import bpy
 
 from . import command
 from .util import obj_or_raise
+from ..phonemes import choose_language, timed_phonemes, viseme_frames
 
 ARKIT = [
     "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
@@ -80,7 +81,7 @@ EXPRESSIONS = {
 DIGRAPHS = {"sh": "sh_ch_jh_zh_16", "ch": "sh_ch_jh_zh_16", "sy": "sh_ch_jh_zh_16",
             "th": "th_dh_17", "ng": "k_g_ng_20", "ny": "y_iy_ih_ix_06", "oo": "w_uw_07",
             "ee": "y_iy_ih_ix_06", "ai": "ay_11", "au": "aw_09", "oi": "oy_10", "ou": "w_uw_07"}
-LETTERS = {"a": "aa_02", "e": "ey_eh_uh_04", "i": "y_iy_ih_ix_06", "y": "y_iy_ih_ix_06",
+LETTERS = {"a": "aa_02", "e": "ey_eh_uh_04", "é": "ey_eh_uh_04", "i": "y_iy_ih_ix_06", "y": "y_iy_ih_ix_06",
            "o": "ow_08", "u": "w_uw_07", "w": "w_uw_07", "b": "p_b_m_21", "p": "p_b_m_21",
            "m": "p_b_m_21", "f": "f_v_18", "v": "f_v_18", "t": "d_t_n_19", "d": "d_t_n_19",
            "n": "d_t_n_19", "l": "l_14", "r": "r_13", "s": "s_z_15", "z": "s_z_15",
@@ -123,6 +124,77 @@ def key_viseme(meshes, vis, t0, t1, weight):
     if t1 - t0 > 2:
         _set(meshes, {vis: weight}, int(round(t1)) - 1)
     _set(meshes, {vis: 0.0}, int(round(t1)) + 1)
+
+
+# ARKit-only imports need articulator approximations instead of Microsoft targets.
+MOUTH_UNITS = ("jawOpen", "mouthClose", "mouthFunnel", "mouthPucker", "mouthRollLower",
+               "mouthPressLeft", "mouthPressRight")
+ARKIT_VISEMES = {
+    "aa_02": {"jawOpen": 0.7}, "aa_ah_ax_01": {"jawOpen": 0.3},
+    "ao_03": {"jawOpen": 0.4, "mouthFunnel": 0.55},
+    "ey_eh_uh_04": {"jawOpen": 0.35}, "er_05": {"jawOpen": 0.2, "mouthPucker": 0.2},
+    "y_iy_ih_ix_06": {"jawOpen": 0.18},
+    "w_uw_07": {"jawOpen": 0.15, "mouthPucker": 0.8, "mouthFunnel": 0.3},
+    "ow_08": {"jawOpen": 0.32, "mouthFunnel": 0.7, "mouthPucker": 0.45},
+    "aw_09": {"jawOpen": 0.5, "mouthFunnel": 0.35},
+    "oy_10": {"jawOpen": 0.3, "mouthPucker": 0.4}, "ay_11": {"jawOpen": 0.5},
+    "h_12": {"jawOpen": 0.15}, "r_13": {"jawOpen": 0.18, "mouthPucker": 0.15},
+    "l_14": {"jawOpen": 0.22}, "s_z_15": {"jawOpen": 0.08},
+    "sh_ch_jh_zh_16": {"jawOpen": 0.15, "mouthPucker": 0.25},
+    "th_dh_17": {"jawOpen": 0.18}, "f_v_18": {"jawOpen": 0.04, "mouthRollLower": 0.85},
+    "d_t_n_19": {"jawOpen": 0.15}, "k_g_ng_20": {"jawOpen": 0.2},
+    "p_b_m_21": {"mouthClose": 1.0, "mouthPressLeft": 0.3, "mouthPressRight": 0.3},
+}
+
+
+def _clear_mouth_keys(meshes, start, end, names=VISEMES):
+    """Remove previous mouth animation in the replacement interval, preserving other keys."""
+    from .talk import _fcurves
+    paths = {f'key_blocks["{name}"].value' for name in names}
+    for mesh in meshes:
+        sk = mesh.data.shape_keys
+        action = sk.animation_data.action if sk.animation_data else None
+        for fc in _fcurves(action):
+            if fc.data_path in paths:
+                for key in reversed(list(fc.keyframe_points)):
+                    if start <= key.co.x <= end:
+                        fc.keyframe_points.remove(key, fast=True)
+                fc.update()
+
+
+def key_phonemes(meshes, words, start, end, fps, strength, language, loudness=None):
+    """Replace mouth keys in this range with smooth phoneme targets on all face meshes."""
+    from .talk import _fcurves
+    events = timed_phonemes(words, language)
+    names = VISEMES + list(MOUTH_UNITS)
+    paths = {f'key_blocks["{name}"].value' for name in names}
+    _clear_mouth_keys(meshes, start, end, names)
+    for frame, target in viseme_frames(events, start, end, fps, strength, loudness):
+        for mesh in meshes:
+            keys = mesh.data.shape_keys.key_blocks
+            values = dict.fromkeys(names, 0.0)
+            for vis, weight in target.items():
+                if vis in keys:
+                    values[vis] = weight
+                    # MPFB's bilabial target leaves a small lip seam; close it without
+                    # the large displacement of a full ARKit mouthClose target.
+                    if vis == "p_b_m_21":
+                        values["mouthClose"] += 0.1 * weight
+                    elif vis == "w_uw_07":
+                        values["mouthPucker"] += 0.65 * weight
+                else:
+                    for name, value in ARKIT_VISEMES.get(vis, {}).items():
+                        values[name] = min(1.0, values[name] + weight * value)
+            _set([mesh], values, frame)
+    for mesh in meshes:
+        sk = mesh.data.shape_keys
+        action = sk.animation_data.action if sk.animation_data else None
+        for fc in _fcurves(action):
+            if fc.data_path in paths:
+                for key in fc.keyframe_points:
+                    if start <= key.co.x <= end:
+                        key.interpolation = "LINEAR"
+    return events
 
 
 # ----------------------------------------------------------------------------- targets
@@ -385,14 +457,33 @@ def auto_expression(character, frame_start=None, frame_end=None, base="smile",
 
 @command("lip_sync")
 def lip_sync(character, text, start_frame=1, chars_per_second=14.0, strength=0.9,
-             expression=None):
-    """Keyframe visemes from text (rough letter-to-mouth-shape mapping)."""
+             expression=None, language=None, detail="phoneme"):
+    """Keyframe timed ID/MS/English phonemes; detail=word keeps legacy letter timing."""
+    if detail not in ("phoneme", "word"):
+        raise ValueError("detail must be phoneme or word")
+    if float(chars_per_second) <= 0:
+        raise ValueError("chars_per_second must be positive")
+    language = choose_language(text, language)
     base = _basemesh(character)
     _ensure_face(base)
     meshes = _face_meshes(base)
     fps = bpy.context.scene.render.fps
     step = fps / float(chars_per_second)
     tokens = text_tokens(text)
+    start = int(start_frame)
+    end = int(round(start + 1 + len(tokens) * step)) + 2
+    from .semantic import store_words, text_word_frames
+    word_frames = text_word_frames(text, start, step, text_tokens)
+    if detail == "phoneme":
+        if expression:
+            set_expression(character, expression, frame=start, keyframe=True, transition_frames=0)
+        phones = key_phonemes(meshes, word_frames, start, end, fps, strength, language)
+        store_words(base, word_frames, start, end)
+        bpy.context.scene.frame_end = max(bpy.context.scene.frame_end, end)
+        return {"character": base.name, "frames": [start, end], "next_start_frame": end + 1,
+                "seconds": round((end - start) / fps, 2), "words": len(word_frames),
+                "mouth_shapes": len(phones), "detail": detail, "language": language,
+                "phonemes": phones}
     # merge consecutive duplicates so held sounds don't stutter
     merged = []
     for t in tokens:
@@ -400,7 +491,7 @@ def lip_sync(character, text, start_frame=1, chars_per_second=14.0, strength=0.9
             merged[-1][1] += 1
         else:
             merged.append([t, 1])
-    start = int(start_frame)
+    _clear_mouth_keys(meshes, start, end)
     zero = {v: 0.0 for v in VISEMES}
     _set(meshes, zero, start)
     t = float(start) + 1
@@ -417,11 +508,11 @@ def lip_sync(character, text, start_frame=1, chars_per_second=14.0, strength=0.9
     sc = bpy.context.scene
     sc.frame_end = max(sc.frame_end, end)
     words = len(re.findall(r"\w+", text))
-    from .semantic import store_words, text_word_frames
-    store_words(base, text_word_frames(text, start, step, text_tokens), start, end)
+    store_words(base, word_frames, start, end)
     return {"character": base.name, "frames": [start, end], "next_start_frame": end + 1,
             "seconds": round((end - start) / fps, 2), "words": words,
-            "mouth_shapes": len([m for m in merged if m[0] != "sil_00"])}
+            "mouth_shapes": len([m for m in merged if m[0] != "sil_00"]),
+            "detail": detail, "language": language, "phonemes": []}
 
 
 @command("auto_blink")

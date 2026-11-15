@@ -17,9 +17,10 @@ import numpy as np
 
 from .. import context
 from . import command
-from .face import (VISEMES, VOWEL_VISEMES, _basemesh, _ensure_face, _face_meshes, _set,
-                   key_viseme, text_tokens)
+from .face import (VISEMES, VOWEL_VISEMES, _basemesh, _clear_mouth_keys, _ensure_face,
+                   _face_meshes, _set, key_phonemes, key_viseme, text_tokens)
 from .semantic import load_words, store_words
+from ..phonemes import choose_language
 
 
 def _resolve(path):
@@ -350,8 +351,11 @@ def remove_audio(name=None):
 
 @command("lip_sync_audio")
 def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, strength=0.9,
-                   add_sound=True, expression=None, volume=1.0):
+                   add_sound=True, expression=None, volume=1.0, language=None, detail="phoneme"):
     """Animate visemes from an audio file (optionally with word timings or a transcript)."""
+    if detail not in ("phoneme", "word"):
+        raise ValueError("detail must be phoneme or word")
+    language = choose_language(" ".join(w["word"] for w in words) if words else text or "", language)
     path = _resolve(audio)
     base = _basemesh(character)
     _ensure_face(base)
@@ -364,6 +368,7 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
     feat = analyze(samples, rate, fps)
     start = int(start_frame)
     n = feat["frames"]
+    _clear_mouth_keys(meshes, start, start + n + 1)
     _set(meshes, {v: 0.0 for v in VISEMES}, start)
 
     if words:
@@ -374,8 +379,19 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
     else:
         mode = "audio"
 
-    shapes = 0
-    if mode in ("words", "text"):
+    end = start + n + 1
+    shapes, phones = 0, []
+    if mode in ("words", "text") and detail == "phoneme":
+        if expression:
+            from .face import set_expression
+            set_expression(character, expression, frame=start, keyframe=True, transition_frames=0)
+        word_frames = [(w["word"], start + max(0.0, min(feat["seconds"], float(w["start"]))) * fps,
+                        start + max(0.0, min(feat["seconds"], float(w["end"]))) * fps)
+                       for w in words]
+        phones = key_phonemes(meshes, word_frames, start, end, fps, strength, language,
+                              lambda f: 0.45 + 0.55 * _open_at(feat, f - start))
+        shapes = len(phones)
+    elif mode in ("words", "text"):
         for w in words:
             toks = [t for t in text_tokens(w["word"]) if t != "sil_00"]
             merged = []
@@ -412,13 +428,13 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
                 if vis != prev:
                     shapes += 1
             prev = vis if vis != "sil_00" else None
-    end = start + n + 1
-    _set(meshes, {v: 0.0 for v in VISEMES}, end)
+    if not phones:
+        _set(meshes, {v: 0.0 for v in VISEMES}, end)
     # word times for meaning-driven gestures (talk_gestures); audio-only mode has none
     stored = store_words(base, [(w["word"], start + float(w["start"]) * fps,
                                  start + float(w["end"]) * fps) for w in (words or [])],
                          start, end)
-    if expression:
+    if expression and (detail == "word" or mode == "audio"):
         from .face import set_expression
         set_expression(character, expression, frame=start, keyframe=True, transition_frames=0)
     sound = add_audio(path, start, volume) if add_sound else None
@@ -430,4 +446,7 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
     return {"character": base.name, "mode": mode, "frames": [start, end],
             "next_start_frame": end + 1, "seconds": round(feat["seconds"], 2),
             "voiced_seconds": round(voiced_s, 2), "mouth_shapes": shapes,
-            "words": len(words) if words else 0, "word_times_stored": stored, "sound_strip": sound["strip"] if sound else None}
+            "words": len(words) if words else 0, "word_times_stored": stored,
+            "sound_strip": sound["strip"] if sound else None,
+            "detail": detail if mode != "audio" else "audio",
+            "language": language if mode != "audio" else None, "phonemes": phones}

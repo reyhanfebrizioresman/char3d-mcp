@@ -142,7 +142,7 @@ def load_words(obj, frame_start=None, frame_end=None):
 def text_word_frames(text, start, step, tokenize):
     """Per-word frames for text lip sync (tokens advance `step` frames each from start+1)."""
     out = []
-    for m in re.finditer(r"[\w']+([.,!?;:…]+)?", text):     # keep punctuation for captions
+    for m in re.finditer(r"[\w'’]+([.,!?;:…]+)?", text):    # keep punctuation for captions
         a = len(tokenize(text[:m.start()]))
         b = len(tokenize(text[:m.start() + len(m.group(0)) - len(m.group(1) or "")]))
         out.append((m.group(0), start + 1 + a * step, start + 1 + b * step))
