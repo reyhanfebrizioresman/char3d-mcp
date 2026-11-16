@@ -284,7 +284,8 @@ async def secondary_motion(character: str, parts: list[Literal['hair', 'clothes'
 @mcp.tool()
 async def walk_path(armature: str, points: list[list[float]],
                     clip: Literal["walk", "run"] = "walk", start_frame: int | None = None,
-                    speed: float = 1.0, face_end: list[float] | str | None = None) -> dict:
+                    speed: float = 1.0, face_end: list[float] | str | None = None,
+                    avoid: Literal["auto"] | bool = "auto", ignore: list[str] | None = None) -> dict:
     """Walk/run from the current position through absolute world XY points (meters).
     Curves pass through the points; duplicates are ignored. Body yaw is limited to 100
     degrees/s: tight bends slow down, corners over 100 degrees stop for stepping turns.
@@ -296,22 +297,37 @@ async def walk_path(armature: str, points: list[list[float]],
     Returns frames, next_start_frame, distance_m, duration_seconds and foot_lock contacts.
     Z follows tagged walkable terrain: tread-fitting steps, raised swings and ramp pitch.
     Speed/cadence adapt locally: natural on level ground, slope-scaled on ramps, short
-    walking steps on stairs (clip=run keeps running elsewhere). No obstacle avoidance;
+    walking steps on stairs (clip=run keeps running elsewhere).
+    avoid="auto" (or True) snapshots visible obstacles/other characters at start_frame,
+    inflates their XY footprints by body radius + 0.05 m, and uses 5 cm A* detours only
+    when the original route intersects. Clear routes keep identical animation keys.
+    False preserves the old route. ignore excludes named objects and descendants (use
+    the chair root when approaching sit_on). Walkable tops/held props/ground are excluded;
+    terrain edges over 0.25 m block passage. Blocked targets snap to nearest free cells
+    with warnings. A blocked start or unreachable route raises before baking; the search
+    extends 3..10 m beyond the targets, up to one million cells. Static convex mesh slices
+    are conservative; this is body/root clearance, not a hand/foot or moving collision solver.
+    Reports avoided, detours, path_points, body_radius_m, clearance_m (null without obstacles
+    or with avoid=False), warnings and planning_seconds. For terrain,
     use rises <= 0.20 m and treads long enough for the whole sole. At most 1000 points and
     24000 frames per call. Reports contact heights, penetration and swing clearance."""
     return await run("walk_path", armature=armature, points=points, clip=clip,
-                     start_frame=start_frame, speed=speed, face_end=face_end)
+                     start_frame=start_frame, speed=speed, face_end=face_end, avoid=avoid, ignore=ignore)
 
 
 @mcp.tool()
 async def turn_to(armature: str, target: list[float] | str,
-                  start_frame: int | None = None) -> dict:
+                  start_frame: int | None = None, avoid: Literal["auto"] | bool = "auto",
+                  ignore: list[str] | None = None) -> dict:
     """Turn in place with alternating lifted steps, then stand with planted feet.
     target is a world XY/XYZ point, object name or "camera", sampled at start_frame.
     Takes the shortest yaw turn, at most 100 degrees/s, without horizontal root travel.
     Works on basic, Rigify and MPFB rigs. start_frame=None appends to the rig's action.
-    Returns next_start_frame, distance_m (zero), duration_seconds and foot_lock contacts."""
-    return await run("turn_to", armature=armature, target=target, start_frame=start_frame)
+    avoid="auto"/True checks the same static body envelope as walk_path and raises if
+    blocked; it does not move the root. False skips the check. ignore excludes objects
+    and descendants. Returns navigation clearance plus the usual turn/foot-lock report."""
+    return await run("turn_to", armature=armature, target=target, start_frame=start_frame,
+                     avoid=avoid, ignore=ignore)
 
 
 @mcp.tool()

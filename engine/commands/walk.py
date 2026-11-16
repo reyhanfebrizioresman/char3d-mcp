@@ -10,6 +10,7 @@ from . import command, anim
 from .footlock import _intervals, _legs, _smoothstep, _sole_points, foot_lock
 from .util import obj_or_raise
 from .terrain import GroundQuery, smooth_heights, sole_footprint
+from .navigation import Planner, validate_options
 
 TURN_RATE = math.radians(100)       # maximum body yaw per second, independent of speed
 SHARP_TURN = math.radians(100)      # stop and step around corners sharper than this
@@ -87,7 +88,7 @@ def _target_yaw(target, origin, frame, fallback):
     return _yaw(direction) if direction.length > 1e-6 else fallback
 
 
-def _curves(points):
+def _curves(points, safe=None):
     """Piecewise cubic Hermite curves through every point; split at pivot corners.
 
     Shared bounded tangents round ordinary corners without a Catmull-Rom loop at
@@ -120,7 +121,13 @@ def _curves(points):
                 v = ((6*u**2 - 6*u)*a + (3*u**2 - 4*u + 1)*ta
                      + (-6*u**2 + 6*u)*b + (3*u**2 - 2*u)*tb)
                 samples.append((p, _yaw(v)))
-        out.append(samples)
+        if safe is not None and not safe([p for p, _ in samples]):
+            # A shortcut is safe as a line, but Hermite tangents can cut its
+            # inside corner. Keep the existing stepping-turn machinery there.
+            for a, b in zip(pts, pts[1:]):
+                out.extend(_curves([a, b]))
+        else:
+            out.append(samples)
     return out
 
 
@@ -144,10 +151,10 @@ def _turn(keys, yaw, terrain=False):
         keys.append((t + duration*u, pos.copy(), old + delta*progress))
 
 
-def _route(pos, yaw, points, velocity, ground=None, fps=24, speed=1.0):
+def _route(pos, yaw, points, velocity, ground=None, fps=24, speed=1.0, safe=None):
     keys = [(0.0, pos.copy(), yaw)]
     distance = 0.0
-    for curve in _curves(points) if len(points) > 1 else []:
+    for curve in _curves(points, safe) if len(points) > 1 else []:
         _turn(keys, curve[0][1], terrain=ground is not None)
         lengths = [0.0]
         for (a, _ya), (b, _yb) in zip(curve, curve[1:]):
@@ -560,8 +567,15 @@ def _speed(value):
 
 
 @command("walk_path")
-def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_end=None):
-    """Walk/run through absolute floor XY targets, then stand (optionally face a target)."""
+def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_end=None,
+              avoid="auto", ignore=None):
+    """Walk/run through XY targets; static obstacle detours by default.
+
+    avoid=False preserves the old route. auto/True plan only on intersection;
+    blocked targets snap to free cells with warnings, unreachable paths raise.
+    ignore names exclude objects and descendants, e.g. a sit_on approach chair.
+    """
+    ignored = validate_options(avoid, ignore)
     if clip not in ("walk", "run"):
         raise ValueError('clip must be "walk" or "run"')
     speed = _speed(speed)
@@ -586,7 +600,19 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
         length = sum((b - a).length for a, b in zip(route, route[1:]))
         if length / velocity * fps > MAX_FRAMES:
             raise ValueError(f"route exceeds {MAX_FRAMES} frames; split it into shorter paths")
-        keys, distance = _route(pos, yaw, route, velocity, ground, fps, speed)
+        planner = None
+        avoided = False
+        planning_seconds = 0.0
+        if avoid is not False:
+            began = time.perf_counter()
+            bpy.context.scene.frame_set(start)
+            planner = Planner(rig, route, query, ignored, start)
+            planned = planner.plan(route, _curves)
+            avoided = planner.detours > 0
+            route = planned
+            planning_seconds = time.perf_counter()-began
+        keys, distance = _route(pos, yaw, route, velocity, ground, fps, speed,
+                                planner.curve_free if avoided else None)
         if face_end is not None:
             target = _target_yaw(face_end, route[-1], start + math.ceil(keys[-1][0]*fps), keys[-1][2])
             _turn(keys, target, terrain=ground is not None)
@@ -596,30 +622,49 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
             samples, active, phases, runs = _terrain_samples(keys, fps, clip, speed, ground)
         else:
             samples, active = _samples(keys, fps, half)
+        navigation = (planner.report(route, samples, avoided) if planner else
+                      {"avoided": False, "detours": 0, "path_points": [list(p)[:2] for p in route],
+                       "clearance_m": None, "warnings": []})
+        navigation["planning_seconds"] = round(planning_seconds, 6)
         result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
                        phases=phases, runs=runs)
         return {**result, "clip": clip, "distance_m": round(distance, 4),
-                "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2]}
+                "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2],
+                **navigation}
     finally:
         bpy.context.scene.frame_set(saved_frame)
 
 
 @command("turn_to")
-def turn_to(armature, target, start_frame=None):
-    """Turn in place toward a point, object or scene camera with alternating steps."""
+def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None):
+    """Turn in place; reject a blocked body envelope unless avoid=False or ignored."""
+    ignored = validate_options(avoid, ignore)
     rig = anim._target(armature)
     saved_frame = bpy.context.scene.frame_current
     try:
         query = GroundQuery()
         ground = query if query.objects else None
         start, pos, yaw, feet = _start(rig, start_frame, ground)
+        planner = None
+        planning_seconds = 0.0
+        if avoid is not False:
+            began = time.perf_counter()
+            bpy.context.scene.frame_set(start)
+            planner = Planner(rig, [pos], query, ignored, start)
+            planner.plan([pos], _curves)
+            planning_seconds = time.perf_counter()-began
         heading = _target_yaw(target, pos, start, yaw)
         keys = [(0.0, pos, yaw)]
         _turn(keys, heading)
         fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
         half = _half_step("walk", fps, 1.0)
         samples, active = _samples(keys, fps, half)
+        navigation = (planner.report([pos], samples, False) if planner else
+                      {"avoided": False, "detours": 0, "path_points": [list(pos)[:2]],
+                       "clearance_m": None, "warnings": []})
+        navigation["planning_seconds"] = round(planning_seconds, 6)
         result = _bake(rig, start, samples, active, feet, "walk", 1.0, ground=ground)
-        return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3)}
+        return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3),
+                **navigation}
     finally:
         bpy.context.scene.frame_set(saved_frame)

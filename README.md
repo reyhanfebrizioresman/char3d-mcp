@@ -38,11 +38,11 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `validate_rig`, `list_bones`, `set_pose` | Cek kualitas rig, daftar tulang, pose dan keyframe |
 | `list_animations`, `apply_pose` | 12 pose siap pakai (wave, cheer, sit, crouch, fight stance, dll.) |
 | `animate` | Klip prosedural: idle, walk, run, wave, cheer, jump, nod, head_shake; disambung dengan crossfade otomatis (transisi halus, kaki tetap menapak) |
-| `walk_path`, `turn_to` | Jalan/lari melewati target XY dengan lintasan halus, belok maksimal 100°/detik, langkah berputar di sudut tajam, kaki terkunci, lalu berhenti; bisa menghadap titik, objek, atau kamera (`face_end`); mendukung basic/Rigify/MPFB |
+| `walk_path`, `turn_to` | Jalan/lari melewati target XY dengan lintasan halus, belok maksimal 100°/detik, langkah berputar di sudut tajam, kaki terkunci, lalu berhenti; bisa menghadap titik, objek, atau kamera (`face_end`); mendukung basic/Rigify/MPFB; `avoid="auto"` menghindari perabot dan karakter lain, `ignore` untuk pendekatan kursi |
 | `import_mocap`, `retarget_animation` | Mocap .bvh/.fbx/.glb (CMU, Mixamo, dll.) ke rig apa pun, diselaraskan otomatis |
 | `lock_feet` | Foot IK: kaki yang menapak dikunci di lantai (tidak selip, tidak tenggelam), tumit → jari berguling alami; otomatis di walk/run/jump dan mocap |
 | `secondary_motion` | Ayunan rambut baked: ponytail/braid satu rantai, long/bob beberapa rantai deform yang ikut ekspor glTF/FBX; jalankan setelah animasi tubuh/bicara, atur stiffness/damping/gravity/angin; rantai dipakai ulang, `clear` per rentang. Collider kapsul kepala/leher/bahu/punggung berupa pendekatan; short/afro dan pakaian dilewati, belum ada simulasi kain atau tabrakan per vertex |
-| `add_terrain`, `clear_terrain` | Buat/hapus tangga, ramp, platform, dan satu anak tangga; mesh bertanda walkable. `walk_path` mengikuti tinggi permukaan, menempatkan telapak utuh pada pijakan, dan mengangkat kaki melewati tepi; `lock_feet(terrain=True)` mengikuti tinggi serta kemiringan lokal. Kecepatan dan irama berubah mulus di sepanjang rute: normal di lantai/platform datar, sedikit melambat sesuai kemiringan ramp, langkah jalan pendek dengan irama lebih cepat hanya di tangga. Permintaan lari tetap berlari di bagian datar/ramp dan beralih ke jalan di sekitar tangga (`terrain.gait`: `walk`, `run`, `run/walk`); putaran/langkah penutup memakai irama tersendiri. Tinggi anak tangga disarankan ≤0,20 m, tanpa penghindaran rintangan |
+| `add_terrain`, `clear_terrain` | Buat/hapus tangga, ramp, platform, dan satu anak tangga; mesh bertanda walkable. `walk_path` mengikuti tinggi permukaan, menempatkan telapak utuh pada pijakan, dan mengangkat kaki melewati tepi; `lock_feet(terrain=True)` mengikuti tinggi serta kemiringan lokal. Kecepatan dan irama berubah mulus di sepanjang rute: normal di lantai/platform datar, sedikit melambat sesuai kemiringan ramp, langkah jalan pendek dengan irama lebih cepat hanya di tangga. Permintaan lari tetap berlari di bagian datar/ramp dan beralih ke jalan di sekitar tangga (`terrain.gait`: `walk`, `run`, `run/walk`); putaran/langkah penutup memakai irama tersendiri. Tinggi anak tangga disarankan ≤0,20 m, tepi dengan lonjakan >0,25 m dihindari |
 | `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
@@ -69,6 +69,28 @@ ulangi jika geraknya berubah. `follow="auto"` mengikuti perpindahan horizontal d
 `False` mempertahankan lampu statis. Lampu SUN tetap statis. Hasil menyertakan `follow`,
 `travel_m`, dan `keys` (jumlah sampel posisi).
 
+`walk_path(..., avoid="auto", ignore=None)` memotret mesh terlihat pada frame awal:
+perabot, properti, dan karakter lain menjadi rintangan statis. A* delapan arah memakai
+sel 5 cm dan radius tubuh dari bahu/pinggul ditambah jarak aman 5 cm. Jalur kosong
+mempertahankan key animasi persis; `avoid=False` memakai perilaku lama, `True` juga
+mengaktifkan pemeriksaan. `turn_to` menerima opsi yang sama dan menolak putaran
+jika radius tubuh awal terhalang, tanpa memindahkan karakter.
+
+Tanah, permukaan walkable, bagian karakter sendiri, properti yang sedang dipegang,
+dan geometri di luar irisan tinggi lokal 0,05–1,7 m dikecualikan. Tepi terrain dengan
+beda tinggi >0,25 m menghalangi jalur. `ignore=[root_kursi]` mengabaikan objek beserta
+turunannya untuk mendekat sebelum `sit_on`; gunakan nama root hasil `add_prop`.
+Target di dalam rintangan dipindah ke sel kosong terdekat dengan `warnings`.
+Posisi awal terhalang atau target tak terjangkau menghasilkan error sebelum baking.
+Pencarian dibatasi 3–10 m di luar rute dan satu juta sel; pecah rute yang sangat luas.
+
+Hasil menambah `avoided`, `detours`, `path_points` (termasuk awal), `body_radius_m`,
+`clearance_m`, `planning_seconds`, dan `warnings`. Clearance mengukur jarak minimum
+root yang disampel ke footprint mentah/tepi terrain; null jika tidak ada rintangan
+atau `avoid=False`. Footprint convex tiap mesh bersifat konservatif. Rintangan tidak
+bergerak selama perencanaan; tidak ada collision solver khusus tangan/kaki/anggota
+tubuh atau prediksi gerakan karakter lain.
+
 ## Dari naskah menjadi adegan
 
 ```python
@@ -92,7 +114,7 @@ Teks menghasilkan gerak mulut tanpa suara; rekaman audio memakai Whisper lokal j
 tersedia dan ikut masuk ke video. MPFB tidak tersedia → manekin ber-rig dengan waktu
 kata, subtitle dan gestur, tanpa animasi wajah. Tanpa waktu kata, subtitle dimatikan
 dengan warning. Karakter yang diam tetap didukung. Aksi tubuh selesai sebelum baris
-berikutnya; cahaya dan gerak rambut dihitung setelah animasi. Tidak ada penghindaran tabrakan otomatis.
+berikutnya; cahaya dan gerak rambut dihitung setelah animasi.
 Nama karakter dibuat unik; objek lama dipertahankan, set terkelola mengikuti perilaku
 `set_environment`. Tidak menyimpan atau merender otomatis. Periksa beberapa shot dengan
 `render_frames(camera="scene", engine_name="eevee", size=512)`, lalu simpan dan render
