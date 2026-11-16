@@ -387,7 +387,7 @@ def _build_set(b, preset, variant):
         b.prop("plant", (side*2.8, 1.0, 0))
     elif preset == "stage":
         # Platform top is at the existing foot plane: the character is never moved.
-        b.box("raised_platform", (0, 0.25, -0.08), (6.2, 3.9, 0.16), "metal")
+        b.box("raised_platform", (0, 0.25, -0.08), (6.2, 3.9, 0.16), "metal")["char3d_walkable"] = True
         b.box("platform_edge", (0, -1.71, -0.075), (6.2, 0.02, 0.025), "glow")
         for sx in (-1, 1):
             for i in range(9):

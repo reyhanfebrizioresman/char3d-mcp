@@ -1,6 +1,7 @@
 """Floor navigation: smooth root routes, rate-limited turns and planted footsteps."""
 import bisect
 import math
+import time
 
 import bpy
 from mathutils import Quaternion, Vector
@@ -8,6 +9,7 @@ from mathutils import Quaternion, Vector
 from . import command, anim
 from .footlock import _intervals, _legs, _smoothstep, _sole_points, foot_lock
 from .util import obj_or_raise
+from .terrain import GroundQuery, smooth_heights, sole_footprint
 
 TURN_RATE = math.radians(100)       # maximum body yaw per second, independent of speed
 SHARP_TURN = math.radians(100)      # stop and step around corners sharper than this
@@ -23,6 +25,14 @@ def _yaw(direction):
     return math.atan2(direction.x, -direction.y)
 
 
+def _terrain_forward(rig, smap):
+    """Exact world heading, including arbitrary object yaw (retarget facing snaps axes)."""
+    mw = rig.matrix_world
+    left = (mw @ rig.data.bones[smap["thigh.L"]].head_local -
+            mw @ rig.data.bones[smap["thigh.R"]].head_local)
+    return Vector((left.y, -left.x, 0)).normalized()
+
+
 def _point(value, size=2):
     if not isinstance(value, (list, tuple)) or len(value) != size:
         raise ValueError(f"expected a {size}D point in meters")
@@ -32,7 +42,7 @@ def _point(value, size=2):
     return Vector((*value, 0.0)) if size == 2 else Vector(value)
 
 
-def _start(rig, frame):
+def _start(rig, frame, ground=None):
     sc = bpy.context.scene
     act = rig.animation_data.action if rig.animation_data else None
     start = int(frame) if frame is not None else (
@@ -46,7 +56,8 @@ def _start(rig, frame):
     mw = rig.matrix_world
     hips = mw @ rig.pose.bones[smap["hips"]].matrix
     rest = mw @ rig.data.bones[smap["hips"]].matrix_local
-    base_forward = anim._facing(rig, smap).inverted() @ Vector((0, -1, 0))
+    base_forward = (_terrain_forward(rig, smap) if ground else
+                    anim._facing(rig, smap).inverted() @ Vector((0, -1, 0)))
     forward = hips.to_quaternion() @ rest.to_quaternion().inverted() @ base_forward
     pos = hips.translation.copy()
     pos.z = 0.0
@@ -172,12 +183,13 @@ def _half_step(clip, fps, speed):
     return max(2, int(round(anim.CLIPS[clip][1]*fps/(48*speed))))
 
 
-def _footsteps(rig, samples, initial, half, start, run=False):
+def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
     """Alternate planted supports and lifted swings; contacts freeze position AND yaw."""
     smap = anim.semantic_map(rig)
     mw = rig.matrix_world
     root = (mw @ rig.data.bones[smap["hips"]].matrix_local).translation
-    rest_yaw = _yaw(anim._facing(rig, smap).inverted() @ Vector((0, -1, 0)))
+    rest_yaw = _yaw(_terrain_forward(rig, smap) if ground else
+                    anim._facing(rig, smap).inverted() @ Vector((0, -1, 0)))
     n = len(samples)
     # Stop stepping only on a full gait boundary, after the feet have gathered.
     sc = bpy.context.scene
@@ -190,6 +202,8 @@ def _footsteps(rig, samples, initial, half, start, run=False):
     targets, contacts = {}, {}
     for side in "LR":
         rest = mw @ rig.data.bones[smap[f"foot.{side}"]].matrix_local
+        sole = _sole_points(rig, legs[side], mw.translation.z)
+        sweep_sole = sole_footprint(sole, rest.to_quaternion()) if ground is not None else sole
         offset = rest.translation - root
         offset.z = 0.0
 
@@ -198,9 +212,29 @@ def _footsteps(rig, samples, initial, half, start, run=False):
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
             ankle = p + q @ offset
             ankle.z = rest.translation.z - mw.translation.z
-            return ankle, q @ rest.to_quaternion()
+            rotation = q @ rest.to_quaternion()
+            if ground is None:
+                return ankle, rotation
+            # Search along the heading for a whole-sole landing, never across a nosing.
+            # A millimeter grid resolves even a foot nearly as long as the tread.
+            forward = Vector((math.sin(yaw), -math.cos(yaw), 0))
+            for j in range(351):
+                for sign in ((1,) if j == 0 else (1, -1)):
+                    candidate = ankle + forward * (j * 0.001 * sign)
+                    fitted, qr, error, _height = ground.fit(candidate, rotation, sole)
+                    if error < 0.002:
+                        return fitted, qr
+            raise ValueError("no whole-sole landing within 0.35 m; widen treads or adjust route")
 
         anchor = (initial[side].translation.copy(), initial[side].to_quaternion())
+        if ground is not None:
+            up = Vector((0, 0, 1))
+            normal = anchor[1] @ (rest.to_quaternion().inverted() @ up)
+            flat = normal.rotation_difference(up) @ anchor[1]
+            p, q, error, _height = ground.fit(anchor[0], flat, sole)
+            if error > 0.015:
+                raise ValueError("initial foot straddles a terrain edge; move the character onto a flat tread")
+            anchor = p, q
         # Initial supports start where the preceding animation actually left them.
         first_land = 2*half if side == support else half
         track, mask = [None]*n, [True]*n
@@ -210,6 +244,7 @@ def _footsteps(rig, samples, initial, half, start, run=False):
             for i in range(cursor, lift + 1):
                 track[i] = anchor
             goal = landing(land)
+            swing = []
             for i in range(lift, land + 1):
                 u = (i - lift) / (land - lift)
                 w = _smoothstep(u)
@@ -217,17 +252,38 @@ def _footsteps(rig, samples, initial, half, start, run=False):
                 p.z += (0.12 if run else 0.075) * math.sin(math.pi*u)**2
                 track[i] = (p, anchor[1].slerp(goal[1], w))
                 mask[i] = i in (lift, land)
+                swing.append(i)
+            if ground is not None:
+                # Sample the entire swept sole, including between video frames. A smooth
+                # envelope reaches >=3 cm over every edge, and zero at planted endpoints.
+                needed = 0.0
+                for k in range((land-lift)*4 + 1):
+                    u = k / ((land-lift)*4)
+                    w = _smoothstep(u)
+                    p = anchor[0].lerp(goal[0], w)
+                    p.z += 0.075 * math.sin(math.pi*u)**2
+                    q = anchor[1].slerp(goal[1], w)
+                    pts = [p + q @ v for v in sweep_sole]
+                    gap = max(ground.sample(v.x, v.y)[0] - v.z for v in pts)
+                    envelope = math.sin(math.pi*u)**0.5
+                    if envelope > 1e-5:
+                        clearance = 0.032 * min(1.0, min(u, 1-u)/0.12)
+                        needed = max(needed, (gap + clearance)/envelope)
+                for i in swing:
+                    u = (i-lift)/(land-lift)
+                    track[i][0].z += max(0, needed) * math.sin(math.pi*u)**0.5
             anchor, cursor = goal, land + 1
         for i in range(cursor, n):
             track[i] = anchor
         # An incoming locomotion clip can leave the first swinging foot airborne.
-        mask[0] = abs(initial_height[side]) < 0.02
+        mask[0] = True if ground is not None else abs(initial_height[side]) < 0.02
         targets[side] = track
         contacts[side] = [[start+a, start+b] for a, b in _intervals(mask, fill=0, min_len=1)]
     return targets, contacts
 
 
-def _bake(rig, start, samples, active, initial_feet, clip, speed):
+def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None):
+    began = time.perf_counter()
     sc = bpy.context.scene
     fps = sc.render.fps / sc.render.fps_base
     half = _half_step(clip, fps, speed)
@@ -235,12 +291,20 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed):
     prev = anim._sample_pose(rig, start)
     hips_name = anim.semantic_map(rig)["hips"]
     root_rest = (rig.matrix_world @ rig.data.bones[hips_name].matrix_local).translation
+    root_heights = []
+    if ground is None:
+        query = GroundQuery()
+        ground = query if query.objects else None
+    if ground is not None:
+        heights = smooth_heights([ground.sample(p.x, p.y)[0] for p, _yaw in samples], half//2)
+        samples = [(Vector((p.x, p.y, z)), yaw) for (p, yaw), z in zip(samples, heights)]
 
     def author(basic, lm, direct, carry):
         d, rest_deg = anim._dims(lm), anim._arm_rest_deg(lm)
         mw = basic.matrix_world
-        rest_yaw = _yaw(anim._facing(basic, {b: b for b in anim.BASIC_BONES}).inverted()
-                        @ Vector((0, -1, 0)))
+        basic_map = {b: b for b in anim.BASIC_BONES}
+        rest_yaw = _yaw(_terrain_forward(basic, basic_map) if ground else
+                        anim._facing(basic, basic_map).inverted() @ Vector((0, -1, 0)))
         previous = {}
         for i, (pos, yaw) in enumerate(samples):
             f = start + i
@@ -251,10 +315,18 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed):
             rots = {b: [relaxed.get(b, (0, 0, 0))[k]*(1-w) + v[k]*w for k in range(3)]
                     for b, v in rots.items()}
             rots["hips"] = (0, 0, 0)
+            if ground is not None:
+                a, b = max(0, i-half), min(len(samples)-1, i+half)
+                delta = samples[b][0] - samples[a][0]
+                slope = math.atan2(delta.z, max(math.hypot(delta.x, delta.y), 0.01))
+                rots["spine"] = (max(-3.0, min(7.0, math.degrees(slope)*0.2)), 0, 0)
+                rots["toe.L"] = rots["toe.R"] = (0, 0, 0)
+                up = pos.z - rig.matrix_world.translation.z + up*0.2*w - 0.035*_smoothstep(i/half)
+                root_heights.append(root_rest.z + up)
             # _drive retargets offsets from the proxy rest onto the target rest.
             # Rigify's torso control need not share the proxy pelvis' rest head.
             anim._key_basic(basic, f, rots,
-                            (pos.x - root_rest.x, up*w, root_rest.y - pos.y))
+                            (pos.x - root_rest.x, up if ground else up*w, root_rest.y - pos.y))
             bpy.context.view_layer.update()
             hp = basic.pose.bones["hips"]
             world = mw @ hp.matrix
@@ -266,6 +338,7 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed):
     fade = anim._crossfade(rig, prev, start, end)
     if fade:
         info["crossfade"] = fade
+    if fade or ground is not None:
         # The route already starts at the preceding pose's heading and limits yaw
         # over time. Blending that moving heading from a frozen pose delays the turn,
         # then speeds it up to catch the route. Keep the planned world yaw while
@@ -273,21 +346,38 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed):
         smap = anim.semantic_map(rig)
         mw = rig.matrix_world
         rest = (mw @ rig.data.bones[hips_name].matrix_local).to_quaternion()
-        forward = anim._facing(rig, smap).inverted() @ Vector((0, -1, 0))
+        forward = (_terrain_forward(rig, smap) if ground else
+                   anim._facing(rig, smap).inverted() @ Vector((0, -1, 0)))
         previous = {}
-        for f in range(fade["frames"][0], fade["frames"][1] + 1):
+        fix_frames = (start, end) if ground is not None else fade["frames"]
+        for f in range(fix_frames[0], fix_frames[1] + 1):
             sc.frame_set(f)
             hp = rig.pose.bones[hips_name]
             q = (mw @ hp.matrix).to_quaternion()
             heading = _yaw(q @ rest.inverted() @ forward)
             correction = Quaternion((0, 0, 1), _angle(heading, samples[f - start][1]))
-            anim._set_world_rot(rig, hp, correction @ q)
+            loc = None
+            if ground is not None:
+                # Cached mannequin landmarks can precede an object transform. Retarget
+                # still supplies the body pose; restore absolute world route coordinates
+                # and heading on the final rig, independent of proxy rest orientation.
+                pos = samples[f-start][0]
+                loc = Vector((pos.x, pos.y, root_heights[f-start]))
+            anim._set_world_rot(rig, hp, correction @ q, loc)
             anim._key_rot(hp, f, previous)
+            if ground is not None:
+                hp.keyframe_insert("location", frame=f, group=hips_name)
         bpy.context.view_layer.update()
-    targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run")
-    lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets)
+    targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run", ground=ground)
+    lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
+                     ground=ground)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],
                          "hips_lowered_max_m": lock["hips_lowered_max_m"]}
+    if ground is not None:
+        info["foot_lock"].update({k: lock[k] for k in
+            ("ground_heights", "max_penetration_m", "min_swing_clearance_m")})
+        info["terrain"] = {"objects": [o.name for o in ground.objects], "gait": "walk",
+                           "bake_seconds": round(time.perf_counter()-began, 3)}
     anim._extend_range(end)
     sc.frame_set(end)
     return {"armature": rig.name, "frames": [start, end], "next_start_frame": end + 1,
@@ -313,16 +403,23 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
     rig = anim._target(armature)
     saved_frame = bpy.context.scene.frame_current
     try:
-        start, pos, yaw, feet = _start(rig, start_frame)
+        query = GroundQuery()
+        ground = query if query.objects else None
+        start, pos, yaw, feet = _start(rig, start_frame, ground)
         route = [pos]
         for p in destinations:
             if (p - route[-1]).length > 1e-5:
                 route.append(p)
         lm = anim._rig_landmarks(rig, anim.semantic_map(rig))
         d = anim._dims(lm)
+        requested_clip = clip
+        if ground is not None:
+            clip, speed = "walk", min(speed, 0.9)
         stride = 2*d["leg"]*math.sin(math.radians(38 if clip == "run" else 24))*anim.STRIDE_SCALE[clip]
         velocity = 2*stride*24/anim.CLIPS[clip][1]*speed
         fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
+        if ground is not None:
+            velocity = min(velocity, ground.min_tread * fps / _half_step(clip, fps, speed) * 0.85)
         length = sum((b - a).length for a, b in zip(route, route[1:]))
         if length / velocity * fps > MAX_FRAMES:
             raise ValueError(f"route exceeds {MAX_FRAMES} frames; split it into shorter paths")
@@ -332,8 +429,8 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
             _turn(keys, target)
         half = _half_step(clip, fps, speed)
         samples, active = _samples(keys, fps, half)
-        result = _bake(rig, start, samples, active, feet, clip, speed)
-        return {**result, "clip": clip, "distance_m": round(distance, 4),
+        result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground)
+        return {**result, "clip": requested_clip, "distance_m": round(distance, 4),
                 "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2]}
     finally:
         bpy.context.scene.frame_set(saved_frame)
@@ -345,14 +442,16 @@ def turn_to(armature, target, start_frame=None):
     rig = anim._target(armature)
     saved_frame = bpy.context.scene.frame_current
     try:
-        start, pos, yaw, feet = _start(rig, start_frame)
+        query = GroundQuery()
+        ground = query if query.objects else None
+        start, pos, yaw, feet = _start(rig, start_frame, ground)
         heading = _target_yaw(target, pos, start, yaw)
         keys = [(0.0, pos, yaw)]
         _turn(keys, heading)
         fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
         half = _half_step("walk", fps, 1.0)
         samples, active = _samples(keys, fps, half)
-        result = _bake(rig, start, samples, active, feet, "walk", 1.0)
+        result = _bake(rig, start, samples, active, feet, "walk", 1.0, ground=ground)
         return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3)}
     finally:
         bpy.context.scene.frame_set(saved_frame)

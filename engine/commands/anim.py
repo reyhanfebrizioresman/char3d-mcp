@@ -721,7 +721,8 @@ def _lock(rig, f0, f1, contacts=None):
     from .footlock import foot_lock
     r = foot_lock(rig, f0, f1, contacts=contacts)
     return {"contacts": {s: v["contacts"] for s, v in r["feet"].items()},
-            "hips_lowered_max_m": r["hips_lowered_max_m"]}
+            "hips_lowered_max_m": r["hips_lowered_max_m"],
+            **{k: r[k] for k in ("ground_heights", "max_penetration_m", "min_swing_clearance_m") if k in r}}
 
 
 @command("animate")
