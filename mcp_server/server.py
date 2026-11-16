@@ -461,7 +461,8 @@ async def set_lighting(preset: Light = "studio", subject: list[str] | None = Non
 
 Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk"]
 Prop = Literal["chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
-               "bookshelf", "sofa", "whiteboard"]
+               "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
+               "handheld_microphone"]
 
 
 @mcp.tool()
@@ -480,23 +481,71 @@ async def set_environment(preset: Environment, subject: list[str] | None = None,
     across screens/whiteboards (stretched to fit). All objects are in char3d_env; returns
     object names and a transformable root. Set lighting and camera_shot separately with
     the character as subject. Replaces add_prop objects too; preserves characters/cameras
-    and set_lighting lights. Static set: no automatic seating or collision avoidance."""
+    and set_lighting lights. Use sit_on for seating; no general collision avoidance."""
     return await run("set_environment", preset=preset, subject=subject, scale=scale,
                      variant=variant, color_theme=color_theme, screen_image=screen_image)
 
 
 @mcp.tool()
-async def add_prop(kind: Prop, location: list[float] = [0, 0, 0], rotation_z: float = 0,
+async def add_prop(kind: Prop, location: list[float] | None = None, rotation_z: float = 0,
                    scale: float = 1.0, screen_image: str | None = None) -> dict:
     """Add procedural furniture in char3d_env without replacing existing sets/props.
     location is the floor/base center in world meters; rotation_z is degrees about Z
     (0 faces -Y); scale is a positive uniform multiplier, independent of character height.
     Desk is standing height (1.02 m), table is a coffee table (0.43 m), microphone/laptop
     bases sit at location.z (use a desktop height). Lamp includes a practical light.
+    Cup/phone/book/handheld_microphone have grip-point origins; omit location to spawn
+    at the latest visible humanoid's right palm (or origin without a character).
     screen_image: optional local image for screen/laptop/whiteboard, relative to imports/.
     Returns all part names and a root; move/rotate/scale that root to move the whole prop."""
     return await run("add_prop", kind=kind, location=location, rotation_z=rotation_z,
                      scale=scale, screen_image=screen_image)
+
+
+@mcp.tool()
+async def sit_on(character: str, seat: str, start_frame: int | None = None,
+                 transition_frames: int = 20, seat_index: int = 0,
+                 hands: Literal["thighs", "lap", "armrests", "none"] = "thighs") -> dict:
+    """Sit a humanoid on a chair/sofa/bench/stool root or part, or a mesh's top surface.
+    Metadata follows moved/rotated/scaled furniture; sofa and bench have two positions.
+    Aligns the character to the seat front, measures buttock contact and solves flat feet.
+    start_frame=None appends after the rig action; ease into sitting and hold to scene end.
+    hands: thighs, lap, armrests (seat must have them), none. Layer talk_motion,
+    talk_gestures or set_hand_pose afterwards. Static level seats and flat floors only;
+    no obstacle avoidance or hand/desk collision solving. Returns contact/IK errors/timing."""
+    return await run("sit_on", character=character, seat=seat, start_frame=start_frame,
+                     transition_frames=transition_frames, seat_index=seat_index, hands=hands)
+
+
+@mcp.tool()
+async def stand_up(character: str, start_frame: int | None = None,
+                   transition_frames: int = 20) -> dict:
+    """Stand in front of the saved seat, with a smooth transition and flat feet.
+    Call sit_on first. None appends after the rig's action; holds until scene end."""
+    return await run("stand_up", character=character, start_frame=start_frame,
+                     transition_frames=transition_frames)
+
+
+@mcp.tool()
+async def hold_prop(character: str, prop: str, hand: Literal["right", "left"] = "right",
+                    start_frame: int | None = None, end_frame: int | None = None,
+                    grip: Literal["auto", "fist", "cup", "relaxed", "open"] = "auto") -> dict:
+    """Attach a prop root/part to the palm; auto grip follows the prop kind.
+    add_prop cup/phone/book/handheld_microphone use real sizes and grip origins; location
+    may be omitted. None start uses current frame, None end keeps holding. The live
+    attachment follows later arm keys. end_frame releases on the following frame.
+    glTF export samples world transforms (including release) and includes props when
+    exporting their character. Mannequins attach but have no fingers. No physics."""
+    return await run("hold_prop", character=character, prop=prop, hand=hand,
+                     start_frame=start_frame, end_frame=end_frame, grip=grip)
+
+
+@mcp.tool()
+async def release_prop(character: str, prop: str, frame: int,
+                       place_at: list[float] | None = None) -> dict:
+    """Release at frame: keep the prop's world transform, or put its grip at place_at.
+    The prop remains static afterwards; no falling simulation. place_at is world XYZ."""
+    return await run("release_prop", character=character, prop=prop, frame=frame, place_at=place_at)
 
 
 @mcp.tool()

@@ -58,6 +58,11 @@ def _select_only(names):
         obj.select_set(True)
         for child in obj.children_recursive:
             child.select_set(True)
+    for obj in bpy.context.scene.objects:
+        if obj.get("c3d_hold_character") in names:
+            obj.select_set(True)
+            for child in obj.children_recursive:
+                child.select_set(True)
 
 
 @contextmanager
@@ -117,8 +122,10 @@ def export_asset(path, objects=None, max_influences=None):
             _select_only(objects)
         exported = [o for o in bpy.context.scene.objects
                     if (not objects or o.select_get()) and o.visible_get()]
+        from .holding import export_attachments
         with _limited_weights(exported, max_influences) as limited:
-            _export(path, objects, max_influences)
+            with export_attachments(exported):
+                _export(path, objects, max_influences)
         return {"path": path, "bytes": os.path.getsize(path),
                 "max_influences": max_influences, "vertices_limited": limited}
     finally:

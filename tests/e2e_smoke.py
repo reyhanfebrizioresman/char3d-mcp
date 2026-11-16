@@ -253,6 +253,207 @@ async def isolate_mpfb(session):
     assert not res.isError, text_of(res)
 
 
+async def _sitting_checks(call):
+    """Seat contacts, facing, planted holds, layered gestures and exported palm attachments."""
+    import struct
+    import math
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[-1])
+    measure = '''
+import math
+from mathutils import Vector
+from engine.commands.anim import semantic_map
+r = bpy.data.objects['SeatTester_rig']
+s = semantic_map(r)
+mw = r.matrix_world
+front = Vector(FRONT)
+center = Vector(CENTER)
+floor = FLOOR
+rest_left = mw @ r.data.bones[s['thigh.L']].head_local - mw @ r.data.bones[s['thigh.R']].head_local
+rest_front = Vector((rest_left.y, -rest_left.x, 0)).normalized()
+root_rest = mw @ r.data.bones[s['hips']].matrix_local
+soles = {}
+for side in 'LR':
+    foot = r.data.bones[s['foot.'+side]]
+    toe = r.data.bones[s['toe.'+side]]
+    inv = (mw @ foot.matrix_local).inverted()
+    points = [mw @ foot.head_local, mw @ toe.head_local, mw @ toe.tail_local]
+    soles[side] = [inv @ Vector((p.x, p.y, mw.translation.z)) for p in points]
+result = []
+for f in FRAMES:
+    bpy.context.scene.frame_set(f)
+    bpy.context.view_layer.update()
+    hip = mw @ r.pose.bones[s['hips']].matrix
+    direction = hip.to_quaternion() @ root_rest.to_quaternion().inverted() @ rest_front
+    direction.z = 0
+    feet = {side: mw @ r.pose.bones[s['foot.'+side]].matrix for side in 'LR'}
+    # Independent evaluated-surface probe behind the hip, excluding forward knees.
+    import numpy as np
+    lows=[]
+    left=Vector((-front.y,front.x,0))
+    pelvis=sum(((mw@r.pose.bones[s['thigh.'+side]].matrix).translation for side in 'LR'),Vector())/2
+    for obj in r.children_recursive:
+        if obj.type!='MESH' or obj.hide_render or obj.get('c3d_role')=='environment':
+            continue
+        ev=obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh=ev.to_mesh()
+        co=np.empty(len(mesh.vertices)*3)
+        mesh.vertices.foreach_get('co',co)
+        mat=np.asarray(ev.matrix_world)
+        pts=co.reshape(-1,3)@mat[:3,:3].T+mat[:3,3]
+        d=pts-np.asarray(pelvis)
+        use=(abs(d@np.asarray(left))<0.22)&(d@np.asarray(front)<0.045)&(d@np.asarray(front)>-0.18)&(d[:,2]>-0.23)&(d[:,2]<0.10)
+        if use.any(): lows.append(float(pts[use,2].min()))
+        ev.to_mesh_clear()
+    slopes=[]
+    for side in 'LR':
+        v=(mw@r.pose.bones[s['shin.'+side]].matrix).translation-(mw@r.pose.bones[s['thigh.'+side]].matrix).translation
+        slopes.append(abs(math.degrees(math.atan2(v.z,math.hypot(v.x,v.y)))))
+    result.append(dict(hip=list(hip.translation), angle=math.degrees(direction.angle(front)),
+        thigh_slope=max(slopes), standing_rest_z=root_rest.translation.z+floor-mw.translation.z,
+        feet={side:list(m.translation) for side,m in feet.items()}, buttock=min(lows),
+        sole=[(feet[side] @ p).z-floor for side in 'LR' for p in soles[side]]))
+'''
+    max_contact = max_sole = max_drift = max_angle = max_palm = max_thigh = 0.0
+    timings = []
+    for kind in ('basic', 'rigify', 'game_engine', 'mpfb_rigify'):
+        await call('new_scene', frame_end=65)
+        if kind in ('basic', 'rigify'):
+            await call('create_human', name='SeatTester', location=[-0.4, 0.2, 0])
+            await call('auto_rig_humanoid', mesh='SeatTester', rig_type=kind)
+        else:
+            await call('create_realistic_human', name='SeatTester', rig='rigify' if kind=='mpfb_rigify' else kind,
+                       face=False, hair='short01', clothes=['male_casualsuit01'])
+        await call('transform_object', name='SeatTester_rig', location=[-0.4, 0.2, 0], rotation_deg=[0, 0, 23])
+        await call('apply_pose', armature='SeatTester_rig', pose='relaxed')
+        for seat_kind, index, rotation in (('chair', 0, 30), ('sofa', 1, -47)):
+            await call('clear_animation', armature='SeatTester_rig')
+            await call('set_timeline', frame_end=65)
+            prop = await data('add_prop', kind=seat_kind, location=[0.4, 0.5, 0], rotation_z=rotation)
+            # Resolve by a non-seat furniture part as well as by root.
+            name = prop['objects'][-1] if seat_kind=='chair' else prop['root']
+            sit = await data('sit_on', character='SeatTester_rig', seat=name, seat_index=index, start_frame=1)
+            assert abs(sit['contact_error_m']) < 0.02, sit
+            timings.append(sit['bake_seconds'])
+            max_contact = max(max_contact, abs(sit['contact_error_m']))
+            angle = math.radians(rotation)
+            front = [math.sin(angle), -math.cos(angle), 0]
+            center = [0.4, 0.5, sit['seat_surface_z']]
+            code = measure.replace('FRONT', repr(front)).replace('CENTER', repr(center)).replace('FLOOR', repr(sit['floor'])).replace('FRAMES', '[21, 35, 55]')
+            samples = (await data('run_blender_python', code=code))['result']
+            for row in samples:
+                assert abs(row['buttock']-sit['seat_surface_z']) < 0.02, (kind,seat_kind,row)
+                max_thigh=max(max_thigh,row['thigh_slope'])
+                assert row['thigh_slope'] < 45, (kind,seat_kind,row)
+                max_angle = max(max_angle, row['angle'])
+                assert row['angle'] < 10, (kind, seat_kind, row)
+                max_sole = max(max_sole, max(abs(z) for z in row['sole']))
+                assert max(abs(z) for z in row['sole']) < 0.015, (kind, seat_kind, row)
+                for side in 'LR':
+                    drift = math.dist(row['feet'][side], samples[0]['feet'][side])
+                    max_drift = max(max_drift, drift)
+                    assert drift < 0.001, row
+            await call('talk_gestures', character='SeatTester_rig', frame_start=25, frame_end=55,
+                       cues=[{'frame':40, 'gesture':'good'}])
+            after = (await data('run_blender_python', code=code))['result']
+            assert all(math.dist(a['hip'], b['hip']) < 1e-5 for a,b in zip(samples,after)), after
+            if seat_kind=='sofa':
+                cup = await data('add_prop', kind='cup')
+                await call('hold_prop', character='SeatTester_rig', prop=cup['objects'][-1], start_frame=25)
+                # Animate AFTER attachment, to prove it is live rather than an early bake.
+                await call('talk_gestures', character='SeatTester_rig', frame_start=25, frame_end=55,
+                           hands='right', fingers=False, cues=[{'frame':40, 'gesture':'up'}])
+                held_code = f'''
+from mathutils import Vector
+from engine.commands.anim import semantic_map
+r = bpy.data.objects['SeatTester_rig']
+o = bpy.data.objects[{cup['root']!r}]
+b = semantic_map(r)['hand.R']
+from engine.commands.fingers import HandRig
+finger_names=[n for chain in HandRig(r).fingers.get('R',{{}}).values() for n in chain]
+import json
+p = Vector(json.loads(o['c3d_hold_palm']))
+result = []
+for f in range(25, 46):
+    bpy.context.scene.frame_set(f)
+    bpy.context.view_layer.update()
+    result.append(dict(distance=(o.matrix_world.translation-(r.matrix_world@r.pose.bones[b].matrix@p)).length,
+                       position=list(o.matrix_world.translation),
+                       fingers=[round(x,5) for n in finger_names for row in r.pose.bones[n].matrix_basis for x in row]))
+'''
+                held = (await data('run_blender_python', code=held_code))['result']
+                max_palm = max(max_palm, max(x['distance'] for x in held))
+                assert max(x['distance'] for x in held) < 0.03, held
+                assert all(x['fingers']==held[0]['fingers'] for x in held), held
+                assert max(math.dist(x['position'],held[0]['position']) for x in held) > 0.01, held
+                await call('release_prop', character='SeatTester_rig', prop=cup['root'], frame=56)
+                released = (await data('run_blender_python', code=held_code.replace('range(25, 46)', 'range(56, 66)')))['result']
+                assert max(math.dist(x['position'],released[0]['position']) for x in released) < 1e-5, released
+                if kind == 'game_engine':
+                    exported = await data('export_asset', path='e2e_held_cup.glb', objects=['SeatTester_rig'])
+                    with open(exported['path'],'rb') as f:
+                        raw=f.read()
+                    length=struct.unpack_from('<I',raw,12)[0]
+                    gltf=json.loads(raw[20:20+length])
+                    node=next(i for i,n in enumerate(gltf['nodes']) if n.get('name')==cup['root'])
+                    channels=[c for a in gltf['animations'] for c in a['channels'] if c['target']['node']==node]
+                    assert any(c['target']['path']=='translation' for c in channels), channels
+                    binary_offset=20+length+8
+                    def accessor(index):
+                        a=gltf['accessors'][index]
+                        view=gltf['bufferViews'][a['bufferView']]
+                        width={'SCALAR':1,'VEC3':3,'VEC4':4}[a['type']]
+                        assert a['componentType']==5126
+                        offset=binary_offset+view.get('byteOffset',0)+a.get('byteOffset',0)
+                        stride=view.get('byteStride',width*4)
+                        return [struct.unpack_from('<'+'f'*width,raw,offset+i*stride) for i in range(a['count'])]
+                    for animation in gltf['animations']:
+                        for channel in animation['channels']:
+                            if channel['target']=={'node':node,'path':'translation'}:
+                                sampler=animation['samplers'][channel['sampler']]
+                                times=accessor(sampler['input'])
+                                values=accessor(sampler['output'])
+                                tail=[v for t,v in zip(times,values) if t[0]>=56/24]
+                                assert len(tail)>1 and max(math.dist(v,tail[0]) for v in tail)<1e-5, tail
+                                assert max(math.dist(v,values[0]) for v in values)>0.01
+            stand = await data('stand_up', character='SeatTester_rig')
+            assert stand['frames'][0] == 66, stand
+            standing_code=code.replace('[21, 35, 55]', '[86]')
+            standing = (await data('run_blender_python', code=standing_code))['result'][0]
+            assert abs(standing['hip'][2]-standing['standing_rest_z']) < 0.02, standing
+            assert max(abs(z) for z in standing['sole']) < 0.015, standing
+            # Restore scene length for the next independent seat case.
+            await call('set_timeline', frame_end=65)
+        if kind=='basic':
+            mesh=await data('add_primitive',kind='cube',name='SeatMesh',location=[0,0,0.23],size=1)
+            await call('transform_object',name='SeatMesh',scale=[0.6,0.5,0.46])
+            bench=await data('add_prop',kind='bench',location=[2,0,0])
+            stool=await data('add_prop',kind='stool',location=[-2,0,0])
+            for seat_name,index,hands in (('SeatMesh',0,'lap'),(bench['root'],1,'none'),(stool['root'],0,'thighs'),(prop['root'],1,'armrests')):
+                await call('clear_animation',armature='SeatTester_rig')
+                await call('set_timeline',frame_end=12)
+                extra=await data('sit_on',character='SeatTester_rig',seat=seat_name,seat_index=index,hands=hands,start_frame=1,transition_frames=3)
+                assert abs(extra['contact_error_m'])<0.02,extra
+        print('sitting rig:', kind, 'chair + sofa[1], stand, layered gestures, live cup/release OK')
+    # Other handheld kinds, bounded hold and explicit placement.
+    for kind in ('phone', 'book', 'handheld_microphone', 'bench', 'stool'):
+        prop = await data('add_prop', kind=kind)
+        assert prop['objects'], prop
+    phone = await data('add_prop', kind='phone')
+    await call('hold_prop', character='SeatTester_rig', prop=phone['root'], hand='left', start_frame=25, end_frame=40)
+    placed = await data('release_prop', character='SeatTester_rig', prop=phone['root'], frame=41, place_at=[1, 2, 0.8])
+    assert placed['location']==[1, 2, 0.8], placed
+    for args in ({'seat_index':99}, {'hands':'armrests'}, {'transition_frames':0}):
+        try:
+            await call('sit_on', character='SeatTester_rig', seat=prop['root'], **args)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(('invalid sit accepted',args))
+    print(f'sitting/holding: contact={max_contact:.5f}m sole={max_sole:.5f}m drift={max_drift:.6f}m '
+          f'facing={max_angle:.3f}deg thigh={max_thigh:.2f}deg palm={max_palm:.6f}m bake={min(timings):.3f}..{max(timings):.3f}s; glb OK')
+
+
 async def _graphics_checks(call):
     """Decode real draft movies to check graphics timing, mixing and exact frame counts."""
     import av
@@ -732,6 +933,7 @@ async def main():
         after = json.loads(text_of(await call("scene_info"))[0])
         assert {o["name"] for o in after["objects"]} == keep
         print("environments: 6 presets, 11 props, collection/replace/clear/validation OK")
+        await _sitting_checks(call)
         await _graphics_checks(call)
         # Floor routes: rounded bend, sharp reversal, final facing and chained stepping turn.
         for kind in ("basic", "rigify"):
