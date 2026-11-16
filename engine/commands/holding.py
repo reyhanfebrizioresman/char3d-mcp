@@ -1,13 +1,14 @@
 """Live palm attachments in Blender; temporary sampled world transforms for glTF."""
 from contextlib import contextmanager
 import json
+import math
 import time
 
 import bpy
 from mathutils import Matrix, Vector
 
 from . import command, anim
-from .fingers import HandRig, set_hand_pose
+from .fingers import HandRig
 from .talk import _rig_of, _fcurves
 from .util import obj_or_raise, vec
 
@@ -62,13 +63,110 @@ def _constraint(obj):
     return next((c for c in obj.constraints if c.name.startswith("char3d_hold")), None)
 
 
+def _influence(con, start, release=None):
+    """A stepped constraint layer; never change interpolation on the body's action."""
+    for frame, value in ((start-1, 0), (start, 1)):
+        con.influence = value
+        con.keyframe_insert("influence", frame=frame)
+    if release is not None:
+        con.influence = 1
+        con.keyframe_insert("influence", frame=release-1)
+        con.influence = 0
+        con.keyframe_insert("influence", frame=release)
+    action = con.id_data.animation_data.action
+    for fc in _fcurves(action):
+        if fc.data_path == con.path_from_id("influence"):
+            for key in fc.keyframe_points:
+                key.interpolation = "CONSTANT"
+
+
+def _grip_layer(rig, obj, bone, palm, hands, side, shape, strength, start, upright):
+    """Keep a grip over later gestures, correcting the wrist rather than moving the cup.
+
+    Conjugate a world XYZ rotation limit into the palm frame: hand * palm,
+    level its X/Y, then undo palm. This preserves the animated grip's yaw,
+    regardless of the animated forearm, while the palm center stays on the hand.
+    This uses native constraints, so it also survives saves, scrubbing and exports.
+    """
+    name = f"char3d_grip:{obj.name}"
+    obj["c3d_hold_layer"] = name
+    if upright:
+        pb = rig.pose.bones[bone]
+        rotation = palm.to_quaternion().to_matrix()
+
+        def offset(suffix, matrix):
+            target = bpy.data.objects.new(f"{obj.name}_{suffix}", None)
+            bpy.context.scene.collection.objects.link(target)
+            target.rotation_euler = matrix.to_euler("XYZ")
+            target["c3d_hold_helper"] = True
+            if obj.get("c3d_role") == "environment":
+                target["c3d_role"] = "environment"
+            target.hide_set(True)
+            con = pb.constraints.new("COPY_ROTATION")
+            con.name = name+":"+suffix
+            con.target = target
+            con.owner_space = con.target_space = "WORLD"
+            con.mix_mode = "AFTER"
+            _influence(con, start)
+
+        offset("palm_axes", rotation)
+        con = pb.constraints.new("LIMIT_ROTATION")
+        con.name = name
+        con.owner_space = "WORLD"
+        con.euler_order = "XYZ"
+        con.use_limit_x = con.use_limit_y = True
+        _influence(con, start)
+        inverse = rotation.transposed()
+        if obj.get("c3d_prop_kind") == "handheld_microphone":
+            # Lean the head back toward the palm/mouth, in the yaw-following frame.
+            inverse = Matrix.Rotation(math.radians(-12), 3, "Y") @ inverse
+        offset("hand_axes", inverse)
+    # Constraints are an owned layer over the finger keys, including gestures added
+    # after pickup. Releasing restores those underlying keys without deleting them.
+    for name_bone, q in hands.rotations(side, shape, strength).items():
+        con = rig.pose.bones[name_bone].constraints.new("LIMIT_ROTATION")
+        con.name = name
+        con.owner_space = "LOCAL"
+        con.euler_order = "XYZ"
+        euler = q.to_euler("XYZ")
+        for axis in "xyz":
+            setattr(con, f"use_limit_{axis}", True)
+            setattr(con, f"min_{axis}", getattr(euler, axis))
+            setattr(con, f"max_{axis}", getattr(euler, axis))
+        _influence(con, start)
+
+
+def clear_grip(obj):
+    """Remove a deleted environment prop's owned wrist/finger layer and its keys."""
+    layer = obj.get("c3d_hold_layer")
+    rig = bpy.data.objects.get(obj.get("c3d_hold_character", ""))
+    if not layer or rig is None:
+        return
+    action = rig.animation_data.action if rig.animation_data else None
+    curves = ([bag.fcurves for layer in action.layers for strip in layer.strips
+               for bag in strip.channelbags] if action and hasattr(action, "layers") else
+              [action.fcurves] if action else [])
+    for pb in rig.pose.bones:
+        for con in list(pb.constraints):
+            if con.name == layer or con.name.startswith(layer+":"):
+                path = con.path_from_id("influence")
+                for collection in curves:
+                    for fc in list(collection):
+                        if fc.data_path == path:
+                            collection.remove(fc)
+                pb.constraints.remove(con)
+
+
 @command("hold_prop")
-def hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, grip="auto"):
+def hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, grip="auto",
+              upright=None):
     started = time.perf_counter()
     if hand not in ("left", "right"):
         raise ValueError("hand must be left or right")
     if grip not in ("auto", "fist", "cup", "relaxed", "open"):
         raise ValueError("grip must be auto, fist, cup, relaxed or open")
+    if upright is not None and not isinstance(upright, bool):
+        raise ValueError("upright must be a bool or None")
     rig, obj = _rig_of(character), _prop(prop)
     if obj == rig or rig in obj.children_recursive or obj in rig.children_recursive:
         raise ValueError("prop must be separate from the character hierarchy")
@@ -113,25 +211,13 @@ def hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, g
     obj["c3d_hold_start"] = start
     obj["c3d_hold_palm"] = json.dumps(list(palm.translation))
     kind = obj.get("c3d_prop_kind", "")
+    upright = kind in ("cup", "handheld_microphone") if upright is None else upright
+    obj["c3d_hold_upright"] = upright
     cupped = grip == "cup" or (grip == "auto" and kind == "cup")
     shape = ("beat" if kind in ("phone", "book") else "fist") if grip == "auto" else (
         "fist" if grip == "cup" else grip)
     strength = 0.78 if cupped else 1.0
-    if hands.fingers.get(side):
-        finish = end if end is not None else max(start, sc.frame_end)
-        finger_names = [n for chain in hands.fingers[side].values() for n in chain]
-        paths = {f'pose.bones["{n}"].{p}' for n in finger_names
-                 for p in ("rotation_euler", "rotation_quaternion", "rotation_axis_angle")}
-        action = rig.animation_data.action if rig.animation_data else None
-        for fc in _fcurves(action):
-            if fc.data_path in paths:
-                for k in reversed(list(fc.keyframe_points)):
-                    if start <= k.co.x <= finish:
-                        fc.keyframe_points.remove(k, fast=True)
-                fc.update()
-        set_hand_pose(rig.name, shape=shape, strength=strength, side=hand, frame=start, keyframe=True)
-        if finish > start:
-            set_hand_pose(rig.name, shape=shape, strength=strength, side=hand, frame=finish, keyframe=True)
+    _grip_layer(rig, obj, bone, palm, hands, side, shape, strength, start, upright)
     if end is not None:
         con.influence = 1
         con.keyframe_insert("influence", frame=end)
@@ -141,6 +227,7 @@ def hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, g
     bpy.context.view_layer.update()
     return {"character": rig.name, "prop": obj.name, "hand": hand, "bone": bone,
             "frames": [start, end], "grip": shape, "grip_strength": strength,
+            "upright": upright, "wrist": "world upright constraint" if upright else "animated",
             "finger_bones": sum(map(len, hands.fingers.get(side, {}).values())),
             "palm_local": vec(palm.translation), "attachment": "live palm constraint",
             "gltf": "world transforms sampled at export, including release; include prop or character",
@@ -175,6 +262,11 @@ def release_prop(character, prop, frame, place_at=None):
     obj.matrix_world = world
     _key_object(obj, f)
     obj["c3d_hold_release"] = f
+    layer = obj.get("c3d_hold_layer")
+    for pb in rig.pose.bones:
+        for constraint in pb.constraints:
+            if constraint.name == layer or (layer and constraint.name.startswith(layer+":")):
+                _influence(constraint, int(obj["c3d_hold_start"]), release=f)
     _constant(obj)
     sc.frame_set(f)
     bpy.context.view_layer.update()

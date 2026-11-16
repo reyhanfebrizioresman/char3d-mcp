@@ -456,10 +456,17 @@ highest surface and index 0. Set roots enumerate their seat positions too.
 - `add_prop("cup"/"phone"/"book"/"handheld_microphone")` makes original low-poly props
   in real-world sizes, with their origin at the grip. Omit location to spawn at the most
   recently created visible rig's right palm (origin if there is no rig).
-  `hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, grip="auto")`
+  `hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, grip="auto", upright=None)`
   places the grip in the palm and poses fingers. Left/right work; mannequins have no
   fingers. None start uses the current frame; None end keeps the attachment live, including
   arm animation added later; an end frame releases on the following frame.
+- `upright=None` automatically levels cups against world +Z and gives handheld microphones
+  a 12° lean toward the palm/mouth. Phone/book and other kinds keep the rigid grip;
+  `True` opts in, `False` opts out. A live wrist constraint layer levels the palm frame
+  while keeping its yaw, instead of moving the grip away from the hand. Finger constraints
+  keep the chosen grip over later `talk_gestures`/`set_hand_pose`; release restores the
+  underlying wrist/finger animation. Body keys stay intact. Cup handles leave space for
+  curled fingers and the wrist; check front and side close-ups.
 - `release_prop(character, prop, frame, place_at=None)` keeps the release world transform,
   or places the grip at world XYZ. It remains static, without gravity. Blender keeps a
   keyed live constraint; export temporarily samples world transforms each frame, including
@@ -468,8 +475,10 @@ highest surface and index 0. Set roots enumerate their seat positions too.
 - Limits: static level seats and one flat floor; mesh fallback uses the highest vertices
   (not arbitrary concave seats). No obstacle, clothing, armrest/desk collision or automatic
   seat occupancy solving. Very high/low seats can exceed limb reach. Each prop supports
-  one pickup/release interval; use separate props for additional intervals. Later finger
-  gestures may replace a grip shape; keep the holding hand out of `talk_gestures`.
+  one pickup/release interval; use separate props for additional intervals. Use one held
+  prop per hand at a time. Upright holds own wrist roll/flex; extreme arm poses can require
+  a pronounced wrist bend or still intersect the body/prop. There is no arm/prop collision
+  solver or automatic elbow lift; choose a suitable arm pose for drinking/raised microphones.
 
 **Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane by default and
