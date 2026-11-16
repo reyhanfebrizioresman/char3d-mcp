@@ -370,6 +370,168 @@ async def _graphics_checks(call):
     print("graphics: 48/48 frames | fade in/out black | crossfade 12 handles | lower third + captions | crop + color dips + title-only OK")
 
 
+async def _secondary_motion_checks(call):
+    """Measure evaluated skin/bones, untouched body curves, and exported animation."""
+    import struct
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def inspect(code):
+        return (await data('run_blender_python', code=code))['result']
+
+    await call('new_scene', frame_end=100)
+    await call('create_realistic_human', name='Spring', gender=0.0, hair='ponytail01',
+               clothes=['female_sportsuit01'], location=[1.2, .3, 0], face=False)
+    await call('transform_object', name='Spring_rig', rotation_deg=[0, 0, 32])
+    snapshot = '''
+import hashlib, json
+from engine.commands.talk import _fcurves
+r = bpy.data.objects['Spring_rig']
+def curves(hair):
+    act = r.animation_data.action if r.animation_data else None
+    return [(fc.data_path, fc.array_index, [(list(k.co), k.interpolation) for k in fc.keyframe_points])
+            for fc in _fcurves(act) if ('hair_' in fc.data_path) == hair]
+def digest(hair):
+    return hashlib.sha256(json.dumps(curves(hair)).encode()).hexdigest()
+'''
+    await inspect(snapshot + '''
+o = bpy.data.objects['Spring.ponytail01']
+dg = bpy.context.evaluated_depsgraph_get()
+bpy.app.driver_namespace['secondary_rest'] = [v.co.copy() for v in o.evaluated_get(dg).data.vertices]
+result = len(o.data.vertices)
+''')
+    rest = await data('secondary_motion', character='Spring', gravity=0, frame_end=1)
+    assert rest['chains'] == 1 and len(rest['bones']) == 4, rest
+    error = await inspect('''
+o = bpy.data.objects['Spring.ponytail01']
+after = o.evaluated_get(bpy.context.evaluated_depsgraph_get())
+result = max((v.co-p).length for v,p in zip(after.data.vertices, bpy.app.driver_namespace['secondary_rest']))
+''')
+    assert error < .001, error
+    await call('render_frames', frames=[1], objects=['Spring_rig'], view='right', size=512)
+    await call('animate', armature='Spring_rig', clip='run', cycles=3)
+    body = await inspect(snapshot + 'result = digest(False)')
+    baked = await data('secondary_motion', character='Spring_rig')
+    measured = await inspect(snapshot + '''
+from engine.commands.secondary import _closest
+st = json.loads(r['char3d_secondary'])
+saved = bpy.context.scene.frame_current
+offsets, clearance = [], 1.0
+for f in range(1,101):
+    bpy.context.scene.frame_set(f)
+    ch = st['chains'][0]
+    transform = r.matrix_world @ r.pose.bones[ch['parent']].matrix @ r.data.bones[ch['parent']].matrix_local.inverted()
+    tail = r.matrix_world @ r.pose.bones[ch['bones'][-1]].tail
+    offsets.append((tail - transform @ Vector(ch['points'][-1])).length)
+    for name in ch['bones']:
+        a = r.matrix_world @ r.pose.bones[name].head
+        b = r.matrix_world @ r.pose.bones[name].tail
+        for c in st['colliders']:
+            mat = r.matrix_world @ r.pose.bones[c['bone']].matrix @ r.data.bones[c['bone']].matrix_local.inverted()
+            ca, cb = mat @ Vector(c['a']), mat @ Vector(c['b'])
+            for u in (.25,.5,.75,1):
+                p = a.lerp(b,u)
+                clearance = min(clearance, (p - _closest(p,ca,cb)).length - c['radius'] - ch['radius'])
+bpy.context.scene.frame_set(saved)
+result = dict(peak=max(offsets), running=max(offsets[6:48]), settled=offsets[77],
+              clearance=clearance, hair=digest(True), body=digest(False),
+              bones=len(r.data.bones), groups=len(bpy.data.objects['Spring.ponytail01'].vertex_groups))
+''')
+    assert measured['running'] > .03, measured
+    assert measured['settled'] < .015 and measured['clearance'] > -.001, measured
+    assert measured['body'] == body, measured
+    # Target, not a flaky wall-clock assertion on a shared CPU: report measured timing.
+    await call('secondary_motion', character='Spring_rig')
+    again = await inspect(snapshot + "result = dict(hair=digest(True), body=digest(False), bones=len(r.data.bones), groups=len(bpy.data.objects['Spring.ponytail01'].vertex_groups))")
+    assert all(again[k] == measured[k] for k in again), (measured, again)
+    exported = await data('export_asset', path='hair.glb', objects=['Spring_rig'], max_influences=4)
+    raw = open(exported['path'], 'rb').read()
+    gltf = json.loads(raw[20:20 + struct.unpack_from('<I', raw, 12)[0]])
+    joints = {gltf['nodes'][i]['name'] for skin in gltf['skins'] for i in skin['joints']}
+    animated = {gltf['nodes'][c['target']['node']]['name'] for a in gltf['animations']
+                for c in a['channels'] if c['target']['path'] == 'rotation'}
+    assert set(baked['bones']) <= joints & animated, (joints, animated)
+    _check_glb_weights(exported['path'], 4)
+    await call('render_frames', frames=[2, 8, 25, 78], objects=['Spring_rig'], view='right', size=512)
+    await call('save_project', path='e2e_secondary.blend')
+    # Inclusive partial replacement leaves every key outside its range untouched.
+    outside_code = snapshot + "result = [(p,i,[k for k in ks if not 30 <= k[0][0] <= 40]) for p,i,ks in curves(True)]"
+    outside = await inspect(outside_code)
+    await call('secondary_motion', character='Spring_rig', frame_start=30, frame_end=40, wind=[2, 0, 0])
+    assert await inspect(outside_code) == outside
+    await call('secondary_motion', character='Spring_rig', frame_start=30, frame_end=40, clear=True)
+    assert await inspect(outside_code) == outside
+    neutral = await inspect(snapshot + '''
+bpy.context.scene.frame_set(35)
+result = max(r.pose.bones[n].rotation_quaternion.rotation_difference(Quaternion()).angle
+             for ch in json.loads(r['char3d_secondary'])['chains'] for n in ch['bones'])
+'''.replace('Quaternion()', '__import__("mathutils").Quaternion()'))
+    assert neutral < .0001, neutral
+    await call('secondary_motion', character='Spring_rig', clear=True)
+    assert await inspect(snapshot + 'result = sum(len(k) for p,i,k in curves(True))') == 0
+    assert await inspect(snapshot + 'result = digest(False)') == body
+    print(f"secondary ponytail: rest {error * 1000:.6f} mm | running lag {measured['running']:.6f} m | "
+          f"settled +1s {measured['settled']:.6f} m | clearance {measured['clearance']:.6f} m | "
+          f"100f {baked['bake_seconds']:.4f}s | deterministic/range/clear/body/glb OK")
+
+    # MPFB Rigify: actual deform head attachment, hidden collection, talking/nodding.
+    await call('new_scene', frame_end=80)
+    await call('create_realistic_human', name='LongSpring', gender=0.0, rig='rigify', hair='long01')
+    await call('animate', armature='LongSpring_rig', clip='nod', cycles=2)
+    await call('lip_sync', character='LongSpring_rig', text='Mari kita berbicara bersama', language='id')
+    await call('camera_shot', subject=['LongSpring_rig'], shot='medium', end_frame=80)
+    await call('auto_blink', character='LongSpring_rig')
+    await call('talk_motion', character='LongSpring_rig')
+    long = await data('secondary_motion', character='LongSpring_rig')
+    assert 3 <= long['chains'] <= 6 and long['max_tip_offset_m'] > .01, long
+    assert await inspect('''
+r = bpy.data.objects['LongSpring_rig']
+import json
+st = json.loads(r['char3d_secondary'])
+result = (not r.data.collections['Secondary motion'].is_visible and
+          all(r.data.bones[c['parent']].use_deform for c in st['chains']) and
+          all([bc.name for bc in r.data.bones[n].collections] == ['Secondary motion']
+              for c in st['chains'] for n in c['bones']))
+''')
+    await call('render_frames', frames=[12, 45], objects=['LongSpring_rig'], view='right', size=512)
+    await call('export_asset', path='hair_rigify.glb', objects=['LongSpring_rig'], max_influences=4)
+    await call('create_realistic_human', name='ShortSpring', hair='short02', face=False)
+    short = await data('secondary_motion', character='ShortSpring_rig', parts=['hair', 'clothes'])
+    assert not short['bones'] and len(short['skipped']) == 2, short
+    print(f"secondary long/Rigify: {long['chains']} chains | tip {long['max_tip_offset_m']:.6f} m | "
+          f"80f {long['bake_seconds']:.4f}s | hidden deform chains + export | short02/clothes skipped")
+
+    # Name-hinted user hair on both mannequin rigs, with moved/rotated armatures.
+    for kind in ('basic', 'rigify'):
+        await call('new_scene', frame_end=40)
+        await call('create_human', name='HairUser', style='realistic')
+        await call('auto_rig_humanoid', mesh='HairUser', rig_type=kind)
+        await call('transform_object', name='HairUser_rig', location=[1, -2, 0], rotation_deg=[0, 0, 47])
+        await inspect('''
+from engine.commands.anim import semantic_map
+from engine.commands.secondary import _deform_head
+r = bpy.data.objects['HairUser_rig']
+parent = _deform_head(r, semantic_map(r))
+p = r.data.bones[parent].head_local
+verts = [(p.x+x, p.y+.13, p.z+.02-i*.07) for i in range(6) for x in (-.025, 0, .025)]
+faces = [(i*3+j,i*3+j+1,(i+1)*3+j+1,(i+1)*3+j) for i in range(5) for j in range(2)]
+mesh = bpy.data.meshes.new('UserHair')
+mesh.from_pydata(verts, [], faces)
+o = bpy.data.objects.new('UserHair', mesh)
+bpy.context.scene.collection.objects.link(o)
+o.parent = r
+o.vertex_groups.new(name=parent).add(list(range(len(verts))), 1., 'REPLACE')
+o.modifiers.new('Skin', 'ARMATURE').object = r
+result = o.name
+''')
+        await call('animate', armature='HairUser_rig', clip='nod', cycles=1)
+        custom = await data('secondary_motion', character='HairUser_rig')
+        assert custom['bones'] and custom['max_tip_offset_m'] > .005, custom
+        assert custom['meshes'] == ['UserHair'], custom
+        print(f"secondary user hair ({kind}): {custom['chains']} chains | moved/rotated rig OK")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -656,6 +818,7 @@ async def main():
         if mp.isError:
             print("mpfb: unavailable, skipped:", text_of(mp))
         else:
+            await _secondary_motion_checks(call)
             await call("new_scene")
             h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
                                               age=30, hair="ponytail01", location=[1.25, 0.35, 0],

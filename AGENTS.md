@@ -44,7 +44,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
   four, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`, `turn_to`, `import_mocap`,
-  `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
+  `retarget_animation`, `lock_feet`, `secondary_motion`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
@@ -339,6 +339,40 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
 - Known limits: in_place walks keep their treadmill sliding by design; stairs/uneven
   ground are not supported (one flat floor height); a crossfade holds the previous
   clip's last pose (it does not keep playing the old clip underneath).
+
+## Secondary hair motion
+`secondary_motion(character, parts=["hair"], frame_start=None, frame_end=None,
+stiffness=0.5, damping=0.5, gravity=1.0, wind=None, clear=False)` bakes spring motion
+onto extra deform bones. Run it **last**, after body clips, routes, mocap and talk_motion;
+rerun after changing those animations. Range defaults to the scene (inclusive); include
+~1 s after the body stops for settling. Existing body/face keys are preserved.
+- Ponytail/braid: one four-bone chain; long/bob: up to five geometry-derived chains.
+  Hair vertices below the attachment blend from head to chain bones; scalp and other
+  meshes keep their weights. MPFB game_engine/Rigify and basic/Rigify mannequin rigs
+  with a skinned mesh named/grouped with a hair hint are supported. Short/afro and
+  missing/insufficiently long hair are reported in `skipped`.
+- Bones `hair_XX_YY` are reused, deform enabled, in the hidden `Secondary motion` bone
+  collection. Normal glTF/FBX export includes their baked rotations:
+  `export_asset("hair.glb", objects=["Maya_rig"], max_influences=4)`.
+- `stiffness` / `damping` are 0..1; higher values return to the groom faster / reduce
+  oscillation. `gravity` >= 0 is an elastic style control (reduced effective gravity
+  preserves the authored groom). `wind=[x,y,z]` is constant world-space acceleration.
+  Results include `bake_seconds`, tip offsets and sampled collider clearance in meters.
+- Reruns replace only owned keys in the requested range. `clear=True` removes them
+  (partial clears hold identity inside the range); reusable bones/weights remain.
+  Geometry/topology should be finalized before the first bake.
+- Limits: hair only; `parts=["clothes"]` reports unsupported (no cloth/hem simulation).
+  Head/neck/shoulder/back capsules are conservative proxies fitted inside the rest
+  groom. Collisions constrain strand centers with thickness at sampled segment points,
+  not every surface vertex; no exact body-mesh, arm, prop or self-collision. Extreme
+  poses, existing mesh intersections and very wide hair cards can still clip. Bakes
+  start at rest at the range start, so a partial bake can change continuity there.
+  Uniform rig scale, translation and rotation are supported; nonuniform scaling/shear
+  is not modeled as physical hair. At most 24000 frames per call.
+- Check the rest shape and moving side view with `render_frames(..., view="right")`;
+  save the project after baking. Example: `animate("Maya_rig", "run", cycles=3)` →
+  `secondary_motion("Maya_rig", frame_end=100)` → `render_frames([2, 8, 25, 78],
+  objects=["Maya_rig"], view="right", size=512)`.
 
 ## Film: cameras, lighting, video
 **Sets & props** — `set_environment(preset, subject=["Maya_rig"])` replaces the current
