@@ -351,7 +351,10 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
             world = mw @ hb.matrix
             world.translation = world.translation - Vector((0, 0, drop[i]))
             hb.matrix = mw.inverted() @ world
-        bpy.context.view_layer.update()
+            bpy.context.view_layer.update()
+        # Solve each hierarchy level for both legs before evaluating. Updating after
+        # each individual bone also evaluates every skinned mesh (and Rigify driver).
+        # The two leg chains are independent, so they share those expensive updates.
         for s, leg in legs.items():
             pt, ps, pf = P[leg["thigh"]], P[leg["shin"]], P[leg["foot"]]
             l1, l2 = leg_len[s]
@@ -365,13 +368,21 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
                 pole = fwd_axis
             K2 = _ik_knee(H, T, l1, l2, pole)
             _rotate_bone(rig, pt, K - H, K2 - H)
-            bpy.context.view_layer.update()
+        bpy.context.view_layer.update()
+        for s, leg in legs.items():
+            ps, pf = P[leg["shin"]], P[leg["foot"]]
+            T = S[s]["A"][i] + corr[s][i]
             K_now = (mw @ ps.matrix).translation
             A_now = (mw @ pf.matrix).translation
             _rotate_bone(rig, ps, A_now - K_now, T - K_now)
-            bpy.context.view_layer.update()
+        bpy.context.view_layer.update()
+        for s, leg in legs.items():
+            pf = P[leg["foot"]]
             _set_world_rot(rig, pf, S[s]["R"][i].to_quaternion())
-            bpy.context.view_layer.update()
+        bpy.context.view_layer.update()
+        for s, leg in legs.items():
+            pf = P[leg["foot"]]
+            T = S[s]["A"][i] + corr[s][i]
             worst = max(worst, ((mw @ pf.matrix).translation - T).length)
             if ground is not None:
                 fw = mw @ pf.matrix

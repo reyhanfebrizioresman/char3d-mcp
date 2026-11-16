@@ -124,7 +124,7 @@ class GroundQuery:
         self.objects = [o for o in bpy.context.scene.objects
                         if enabled and o.type == "MESH" and o.get("char3d_walkable")
                         and not o.hide_render]
-        verts, faces = [], []
+        verts, faces, treads = [], [], []
         deps = bpy.context.evaluated_depsgraph_get()
         for obj in self.objects:
             evaluated = obj.evaluated_get(deps)
@@ -133,22 +133,45 @@ class GroundQuery:
                 base = len(verts)
                 verts.extend(evaluated.matrix_world @ v.co for v in mesh.vertices)
                 faces.extend(tuple(base+i for i in p.vertices) for p in mesh.polygons)
+                treads.extend([float(obj.get("char3d_tread", 0))] * len(mesh.polygons))
             finally:
                 evaluated.to_mesh_clear()
         self.bvh = BVHTree.FromPolygons(verts, faces, all_triangles=False) if faces else None
         self.top = max([self.floor] + [v.z for v in verts]) + 1.0
         self.cache = {}
-        self.min_tread = min([float(o["char3d_tread"]) for o in self.objects
-                              if o.get("char3d_tread", 0) > 0] or [0.28])
+        self.treads = treads
+        self.tread_cache = {}
 
     def sample(self, x, y):
         key = (round(x, 6), round(y, 6))
         if key not in self.cache:
             hit = self.bvh.ray_cast(Vector((x, y, self.top)), Vector((0, 0, -1))) if self.bvh else (None,)*4
             p, normal = hit[:2]
-            self.cache[key] = ((p.z, normal) if p is not None and p.z > self.floor and normal.z > 0.1
+            walkable = p is not None and p.z > self.floor and normal.z > 0.1
+            self.cache[key] = ((p.z, normal) if walkable
                                else (self.floor, Vector((0, 0, 1))))
+            self.tread_cache[key] = self.treads[hit[2]] if walkable else 0.0
         return self.cache[key]
+
+    def gait(self, point, heading):
+        """Local tread and slope, including the sole's approach to a stair edge."""
+        forward = Vector((math.sin(heading), -math.cos(heading), 0))
+        tread, slope = 0.0, 0.0
+        probes = []
+        for offset in (-0.18, 0.0, 0.18):
+            p = point + forward * offset
+            height, normal = self.sample(p.x, p.y)
+            probes.append((height, normal))
+            local = self.tread_cache[(round(p.x, 6), round(p.y, 6))]
+            if local:
+                tread = min(tread or local, local)
+            slope = max(slope, abs(normal.dot(forward)) / max(normal.z, 0.1))
+        # User-tagged meshes need no procedural metadata: a height discontinuity
+        # between horizontal surfaces is a step, while a continuous ramp is not.
+        for (a, na), (b, nb) in zip(probes, probes[1:]):
+            if na.z > 0.995 and nb.z > 0.995 and abs(a-b) > 0.025:
+                tread = tread or 0.28
+        return tread, slope
 
     def fit(self, ankle, rotation, sole):
         """Pitch a sole onto the local plane. Return pose and its footprint height error."""

@@ -237,7 +237,8 @@ async def check_terrain(call, kind="basic"):
 
     if mpfb:
         await call("create_realistic_human", name="Climber", face=False,
-                   rig="rigify" if rotated else "game_engine", location=origin)
+                   rig="rigify" if rotated else "game_engine", location=origin,
+                   hair="ponytail01")
         if rotated:
             await call("transform_object", name="Climber_rig", rotation_deg=[0, 0, angle])
     else:
@@ -251,14 +252,25 @@ async def check_terrain(call, kind="basic"):
         await call("add_terrain", kind=terrain, name=name, location=point(0, y)+[0],
                    rotation_z=rotation+angle, length=length, height=height,
                    **({"steps": 5} if terrain == "stairs" else {}))
+    visibility_code = '''
+result = dict(visibility={o.name: o.hide_viewport for o in bpy.context.scene.objects},
+              constraints=[(o.name, p.name, c.name, c.mute) for o in bpy.context.scene.objects
+                           if o.type == 'ARMATURE' for p in o.pose.bones for c in p.constraints],
+              drivers=[(o.name, fc.data_path, fc.array_index, fc.mute)
+                       for o in bpy.context.scene.objects if o.type == 'ARMATURE' and o.animation_data
+                       for fc in o.animation_data.drivers])
+'''
+    visibility = json.loads(text_of(await call("run_blender_python", code=visibility_code))[0])["result"]
     nav = json.loads(text_of(await call("walk_path", armature="Climber_rig",
-                                        points=[point(0, -5.6)], face_end=point(2, -5.6)))[0])
+                                        points=[point(0, -5.6), point(1.05, -6.3)],
+                                        face_end=point(0, -6.3)))[0])
+    restored = json.loads(text_of(await call("run_blender_python", code=visibility_code))[0])["result"]
+    assert restored == visibility, "terrain bake must restore visibility, constraints and drivers"
     code = textwrap.dedent(f'''\
         import math
         from engine.commands.anim import semantic_map, _facing
         from engine.commands.footlock import _legs, _sole_points
         from engine.commands.terrain import GroundQuery
-        nav = {nav!r}
         rig = bpy.data.objects['Climber_rig']
         sc = bpy.context.scene
         mw = rig.matrix_world
@@ -315,14 +327,29 @@ async def check_terrain(call, kind="basic"):
                     clearance = min(clearance,min(gaps))
         turn_rate = max(abs((b-a+math.pi)%(2*math.pi)-math.pi) for a,b in zip(yaws,yaws[1:]))
         turn_rate *= sc.render.fps/sc.render.fps_base*180/math.pi
-        facing_error = abs((yaws[-1]-math.atan2(c,-s)+math.pi)%(2*math.pi)-math.pi)
+        facing_error = abs((yaws[-1]-math.atan2(-c,s)+math.pi)%(2*math.pi)-math.pi)
+        fps = sc.render.fps/sc.render.fps_base
+        local = [(c*(p.x-origin[0])+s*(p.y-origin[1]),
+                  -s*(p.x-origin[0])+c*(p.y-origin[1])) for p in roots]
+        def speed_between(near, far):
+            indices = [i for i, (x,y) in enumerate(local) if far <= y <= near]
+            a, b = indices[0], indices[-1]
+            return sum(math.hypot(roots[i+1].x-roots[i].x,roots[i+1].y-roots[i].y)
+                       for i in range(a,b))*fps/(b-a)
+        arrived = next(i for i,p in enumerate(roots)
+                       if math.hypot(p.x-{point(1.05,-6.3)[0]!r},
+                                     p.y-{point(1.05,-6.3)[1]!r}) < .005)
         result = dict(drift=drift, rotation_drift=rotation_drift, contact_error=contact_error,
                       penetration=penetration, clearance=clearance, ray_error=ray_error,
                       hips_jump=max(abs(a.z-b.z) for a,b in zip(roots,roots[1:])),
                       hips_rise=max(p.z for p in roots)-min(p.z for p in roots),
-                      turn_rate=turn_rate, facing_error=facing_error)
+                      turn_rate=turn_rate, facing_error=facing_error,
+                      stair_speed=speed_between(-.9,-1.8),
+                      flat_speed=speed_between(-5.1,-5.5),
+                      stationary_end=(len(roots)-1-arrived)/fps)
     ''')
-    measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    measured = json.loads(text_of(await call("run_blender_python",
+                                             code=f"nav = {nav!r}\n"+code))[0])["result"]
     assert measured["ray_error"] < 1e-5, measured
     assert measured["contact_error"] < .015, measured
     assert measured["drift"] < .02 and measured["rotation_drift"] < .02, measured
@@ -330,6 +357,10 @@ async def check_terrain(call, kind="basic"):
     assert measured["hips_jump"] < .04 and measured["hips_rise"] > .7, measured
     assert measured["turn_rate"] < 100.1, measured
     assert measured["facing_error"] < .02, measured
+    assert measured["flat_speed"] >= 1.0, measured
+    assert .35 <= measured["stair_speed"] <= .9, measured
+    assert measured["stationary_end"] <= 2.5, measured
+    assert nav["frames"][1]-nav["frames"][0]+1 <= 300, nav
     assert nav["foot_lock"]["max_penetration_m"] < .01, nav
     assert nav["foot_lock"]["min_swing_clearance_m"] >= .02, nav
     assert all(nav["foot_lock"]["ground_heights"].values()), nav
@@ -346,13 +377,17 @@ result = hashlib.sha256(json.dumps(curves).encode()).hexdigest()
         first = json.loads(text_of(await call("run_blender_python", code=fingerprint))[0])["result"]
         await call("clear_animation", armature="Climber_rig")
         nav = json.loads(text_of(await call("walk_path", armature="Climber_rig",
-                                            points=[point(0, -5.6)], face_end=point(2, -5.6)))[0])
+                                            points=[point(0, -5.6), point(1.05, -6.3)],
+                                            face_end=point(0, -6.3)))[0])
         second = json.loads(text_of(await call("run_blender_python", code=fingerprint))[0])["result"]
         assert first == second, "terrain keys must be deterministic"
     print(f"terrain ({kind}): contact {measured['contact_error']:.6f} m | "
           f"drift {measured['drift']:.6f} m | penetration {measured['penetration']:.6f} m | "
           f"clearance {measured['clearance']:.4f} m | hips/frame {measured['hips_jump']:.4f} m | "
-          f"yaw {measured['turn_rate']:.3f} deg/s | bake {nav['terrain']['bake_seconds']:.3f} s")
+          f"yaw {measured['turn_rate']:.3f} deg/s | "
+          f"flat {measured['flat_speed']:.3f} m/s | stairs {measured['stair_speed']:.3f} m/s | "
+          f"frames {nav['frames'][1]-nav['frames'][0]+1} | end {measured['stationary_end']:.3f} s | "
+          f"bake {nav['terrain']['bake_seconds']:.3f} s")
     if kind in ("basic", "mpfb"):
         import shutil
         # Keep the stairs and full character in frame from the entrance side.
@@ -372,6 +407,22 @@ result = hashlib.sha256(json.dumps(curves).encode()).hexdigest()
     lk = json.loads(text_of(await call("lock_feet", armature="Climber_rig", terrain=True,
                                        contacts=nav["foot_lock"]["contacts"]))[0])
     assert lk["max_penetration_m"] < .01 and lk["max_ik_error_m"] < .02, lk
+    if kind == "basic":
+        await call("clear_animation", armature="Climber_rig")
+        run = json.loads(text_of(await call("walk_path", armature="Climber_rig", clip="run",
+                                            points=[point(0, -5.6), point(1.05, -6.3)],
+                                            face_end=point(0, -6.3)))[0])
+        running = json.loads(text_of(await call("run_blender_python",
+                                               code=f"nav = {run!r}\n"+code))[0])["result"]
+        assert run["terrain"]["gait"] == "run/walk", run
+        assert running["flat_speed"] > measured["flat_speed"]*1.25, running
+        assert .35 <= running["stair_speed"] <= .9, running
+        assert running["contact_error"] < .015 and running["penetration"] < .01, running
+        assert running["clearance"] >= .02 and running["hips_jump"] < .04, running
+        assert running["turn_rate"] < 100.1, running
+        print(f"terrain run: flat {running['flat_speed']:.3f} m/s | "
+              f"stairs {running['stair_speed']:.3f} m/s | gait {run['terrain']['gait']} | "
+              f"bake {run['terrain']['bake_seconds']:.3f} s")
     removed = json.loads(text_of(await call("clear_terrain"))[0])["removed"]
     assert sorted(removed) == ["Landing", "Ramp", "Stairs"], removed
     assert not json.loads(text_of(await call("clear_terrain"))[0])["removed"]
@@ -426,7 +477,7 @@ result = [q.sample(10,9.86)[0], q.sample(0,0)[0]]
     await call("add_terrain", kind="platform", location=[0,-2.5,0], length=1, height=.3)
     stop = json.loads(text_of(await call("walk_path", armature="SlopeWalker_rig",
                                          points=[[0,-3]], clip="run"))[0])
-    assert stop["clip"] == "run" and stop["terrain"]["gait"] == "walk", stop
+    assert stop["clip"] == "run" and stop["terrain"]["gait"].startswith("run"), stop
     code = f'''
 r = bpy.data.objects['SlopeWalker_rig']; heights = []
 for f in range({stop['frames'][1]}-5, {stop['frames'][1]}+1):
@@ -439,7 +490,7 @@ result = [min(heights)-rest, max(heights)-min(heights)]
     assert height > .25 and motion < .001, (height, motion)
     await call("clear_terrain")
     print(f"terrain lock: automatic contacts, terrain=False, ramp pitch {measured['angle']:.6f} rad | "
-          f"sole error {measured['error']:.6f} m | single step + elevated stop + run fallback OK")
+          f"sole error {measured['error']:.6f} m | single step + elevated stop + ramp running OK")
 
 
 async def isolate_mpfb(session):

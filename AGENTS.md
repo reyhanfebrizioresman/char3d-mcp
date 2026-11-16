@@ -389,9 +389,12 @@ and unused owned data, preserving characters, scenery and the environment stage.
   floor count; bridges use the highest surface. Moving/deforming terrain is not supported.
 - `walk_path` derives Z from XY: smoothed root elevation, a small uphill lean, whole-sole
   tread placements, ramp pitch and swing arcs raised above the swept terrain by >=3 cm.
-  Terrain uses shorter, slower walking steps, including when `clip="run"` is requested;
-  the result reports the effective terrain gait and bake time. Flat scenes without
-  walkable meshes retain the existing gait and keys.
+  Speed and cadence adapt locally: level ground/platforms keep natural travel speed,
+  ramps slow with slope, and only stairs use tread-limited, quicker short walking steps.
+  `clip="run"` runs on level ground/ramps and blends to walking around stairs. Speed
+  transitions are smooth; finishing turns/gathering use their own cadence. The result
+  reports `terrain.gait` (`walk`, `run` or `run/walk`) and bake seconds. Flat scenes
+  without walkable meshes retain the existing gait and keys.
 - `lock_feet(rig, terrain=True)` (default) detects contacts relative to local ground and
   pitches/locks the sole on slopes. `terrain=False` uses only `floor`. Automatic foot lock
   in `animate`/mocap also queries terrain, but does not plan root elevation or safe treads:

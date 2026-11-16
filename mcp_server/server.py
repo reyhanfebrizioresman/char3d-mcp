@@ -295,7 +295,8 @@ async def walk_path(armature: str, points: list[list[float]],
     and MPFB rigs. start_frame=None appends after the rig's action, or uses the scene start.
     Returns frames, next_start_frame, distance_m, duration_seconds and foot_lock contacts.
     Z follows tagged walkable terrain: tread-fitting steps, raised swings and ramp pitch.
-    Terrain routes use a slower walking cadence (including clip=run). No obstacle avoidance;
+    Speed/cadence adapt locally: natural on level ground, slope-scaled on ramps, short
+    walking steps on stairs (clip=run keeps running elsewhere). No obstacle avoidance;
     use rises <= 0.20 m and treads long enough for the whole sole. At most 1000 points and
     24000 frames per call. Reports contact heights, penetration and swing clearance."""
     return await run("walk_path", armature=armature, points=points, clip=clip,

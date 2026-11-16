@@ -124,33 +124,55 @@ def _curves(points):
     return out
 
 
-def _turn(keys, yaw):
+def _turn(keys, yaw, terrain=False):
     t, pos, old = keys[-1]
     delta = _angle(old, yaw)
     if abs(delta) < 1e-6:
         return
-    duration = max(0.25, 1.5 * abs(delta) / TURN_RATE)
+    duration = (max(0.3, abs(delta) / TURN_RATE + 0.15) if terrain else
+                max(0.25, 1.5 * abs(delta) / TURN_RATE))
     count = max(2, int(math.ceil(duration * 48)))
     for i in range(1, count + 1):
         u = i / count
-        keys.append((t + duration*u, pos.copy(), old + delta*_smoothstep(u)))
+        if terrain:
+            ramp = 0.15 / duration
+            progress = (u*u/(2*ramp) if u < ramp else
+                        1-ramp - (1-u)**2/(2*ramp) if u > 1-ramp else u-ramp/2)
+            progress /= 1-ramp
+        else:
+            progress = _smoothstep(u)
+        keys.append((t + duration*u, pos.copy(), old + delta*progress))
 
 
-def _route(pos, yaw, points, velocity):
+def _route(pos, yaw, points, velocity, ground=None, fps=24, speed=1.0):
     keys = [(0.0, pos.copy(), yaw)]
     distance = 0.0
     for curve in _curves(points) if len(points) > 1 else []:
-        _turn(keys, curve[0][1])
+        _turn(keys, curve[0][1], terrain=ground is not None)
         lengths = [0.0]
         for (a, _ya), (b, _yb) in zip(curve, curve[1:]):
             lengths.append(lengths[-1] + (b - a).length)
+        limits = [velocity] * len(curve)
+        if ground is not None:
+            for i, (p, heading) in enumerate(curve):
+                tread, slope = ground.gait(p, heading)
+                # Bound vertical travel too: a fast downhill run must leave room
+                # for the IK hips adjustment within the 4 cm/frame height budget.
+                limits[i] = (min(velocity, tread * fps / max(2, round(0.4*fps/speed)) * 0.9)
+                             if tread else min(velocity / (1 + 0.6*slope),
+                                               0.65 / max(slope, 1e-6)))
+            # Spatial acceleration bounds anticipate stairs and ease out onto landings.
+            for indices in (range(1, len(curve)), range(len(curve)-2, -1, -1)):
+                for i in indices:
+                    j = i-1 if indices.step > 0 else i+1
+                    limits[i] = min(limits[i], math.sqrt(limits[j]**2 + 3*abs(lengths[i]-lengths[j])))
         for i, (p, heading) in enumerate(curve[1:], 1):
             ds = lengths[i] - lengths[i - 1]
             mid = (lengths[i] + lengths[i - 1]) / 2
-            # Accelerate/decelerate over roughly one step. Cadence stays regular;
-            # shorter foot placements supply the lower speed at tight corners.
+            # Accelerate/decelerate over roughly one step; shorter foot placements
+            # supply the lower speed at tight corners.
             accel = velocity * 0.7
-            v = min(velocity, math.sqrt(2*accel*max(mid, 0.001)),
+            v = min(limits[i], limits[i-1], math.sqrt(2*accel*max(mid, 0.001)),
                     math.sqrt(2*accel*max(lengths[-1] - mid, 0.001)))
             t, _p, old = keys[-1]
             delta = _angle(old, heading)
@@ -183,7 +205,46 @@ def _half_step(clip, fps, speed):
     return max(2, int(round(anim.CLIPS[clip][1]*fps/(48*speed))))
 
 
-def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
+def _terrain_samples(keys, fps, clip, speed, ground):
+    """Continuous half-step phase lets cadence change without restarting a foot swing."""
+    active = int(math.ceil(keys[-1][0] * fps))
+    times = [k[0] for k in keys]
+    samples, phases, runs = [], [0.0], []
+    half = _half_step(clip, fps, speed)
+    walk_mix = 0.0
+    finish = None
+    for i in range(MAX_FRAMES + 1):
+        t = min(i/fps, times[-1])
+        j = max(0, bisect.bisect_right(times, t)-1)
+        a, b = keys[j], keys[min(j+1, len(keys)-1)]
+        u = (t-a[0])/(b[0]-a[0]) if b[0] > a[0] else 0.0
+        p, yaw = a[1].lerp(b[1], u), a[2]+(b[2]-a[2])*u
+        samples.append((p, yaw))
+        tread, slope = ground.gait(p, yaw)
+        moving = (b[1]-a[1]).length > 1e-7 and i < active
+        desired = (max(2, round(0.4*fps/speed)) if tread else
+                   max(2, round(_half_step(clip, fps, speed)/(1+0.9*slope))))
+        if not moving:
+            desired = max(2, round((0.2 if i >= active else 0.27)*fps/speed))
+        half += max(-0.8, min(0.8, desired-half))
+        walk_mix += max(-0.15, min(0.15, float(bool(tread) or not moving)-walk_mix))
+        runs.append(1-walk_mix if clip == "run" else 0.0)
+        if i:
+            phases.append(phases[-1]+1/half)
+        if i == active:
+            finish = math.ceil(phases[-1])+2
+        if finish is not None and phases[-1] >= finish:
+            hold = max(4, round(fps/6))
+            if i + hold > MAX_FRAMES:
+                break
+            samples.extend([(p.copy(), yaw) for _ in range(hold)])
+            phases.extend([phases[-1]]*hold)
+            runs.extend([0.0]*hold)
+            return samples, active, phases, runs
+    raise ValueError(f"route exceeds {MAX_FRAMES} frames; split it into shorter paths")
+
+
+def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None):
     """Alternate planted supports and lifted swings; contacts freeze position AND yaw."""
     smap = anim.semantic_map(rig)
     mw = rig.matrix_world
@@ -193,7 +254,10 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
     n = len(samples)
     # Stop stepping only on a full gait boundary, after the feet have gathered.
     sc = bpy.context.scene
-    stop = n - 1 - max(4, round(sc.render.fps / sc.render.fps_base / 4))
+    fps = sc.render.fps / sc.render.fps_base
+    stop = n - 1 - max(4, round(fps / (6 if phases is not None else 4)))
+    boundaries = ([0] + [i for i in range(1, stop+1) if int(phases[i]) > int(phases[i-1])]
+                  if phases is not None else list(range(0, stop+1, half)))
     flight = max(1, round(0.2*half)) if run else 0
     legs, _smap = _legs(rig)
     initial_height = {s: min((initial[s] @ p).z for p in _sole_points(rig, legs[s], 0.0))
@@ -207,8 +271,8 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
         offset = rest.translation - root
         offset.z = 0.0
 
-        def landing(frame):
-            p, yaw = samples[min(frame + (half-flight)//2, n - 1)]
+        def landing(frame, duration):
+            p, yaw = samples[min(frame + (duration-flight)//2, n - 1)]
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
             ankle = p + q @ offset
             ankle.z = rest.translation.z - mw.translation.z
@@ -236,20 +300,24 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
                 raise ValueError("initial foot straddles a terrain edge; move the character onto a flat tread")
             anchor = p, q
         # Initial supports start where the preceding animation actually left them.
-        first_land = 2*half if side == support else half
+        first_land = 2 if side == support else 1
         track, mask = [None]*n, [True]*n
         cursor = 0
-        for land in range(first_land, stop + 1, 2*half):
-            lift = max(0, land - half - flight)
+        for step in range(first_land, len(boundaries), 2):
+            land = boundaries[step]
+            duration = land - boundaries[step-1]
+            local_run = runs[land] if runs is not None else float(run)
+            flight = max(1, round(0.2*duration)) if local_run > 0.5 else 0
+            lift = max(0, boundaries[step-1] - flight)
             for i in range(cursor, lift + 1):
                 track[i] = anchor
-            goal = landing(land)
+            goal = landing(land, duration)
             swing = []
             for i in range(lift, land + 1):
                 u = (i - lift) / (land - lift)
                 w = _smoothstep(u)
                 p = anchor[0].lerp(goal[0], w)
-                p.z += (0.12 if run else 0.075) * math.sin(math.pi*u)**2
+                p.z += (0.075 + 0.045*local_run) * math.sin(math.pi*u)**2
                 track[i] = (p, anchor[1].slerp(goal[1], w))
                 mask[i] = i in (lift, land)
                 swing.append(i)
@@ -261,7 +329,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
                     u = k / ((land-lift)*4)
                     w = _smoothstep(u)
                     p = anchor[0].lerp(goal[0], w)
-                    p.z += 0.075 * math.sin(math.pi*u)**2
+                    p.z += (0.075 + 0.045*local_run) * math.sin(math.pi*u)**2
                     q = anchor[1].slerp(goal[1], w)
                     pts = [p + q @ v for v in sweep_sole]
                     gap = max(ground.sample(v.x, v.y)[0] - v.z for v in pts)
@@ -282,7 +350,8 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None):
     return targets, contacts
 
 
-def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None):
+def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=None,
+                 phases=None, runs=None):
     began = time.perf_counter()
     sc = bpy.context.scene
     fps = sc.render.fps / sc.render.fps_base
@@ -292,6 +361,8 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None):
     hips_name = anim.semantic_map(rig)["hips"]
     root_rest = (rig.matrix_world @ rig.data.bones[hips_name].matrix_local).translation
     root_heights = []
+    settle = (max(1, len(samples)-1-active-max(4, round(fps/6)))
+              if phases is not None else 2*half)
     if ground is None:
         query = GroundQuery()
         ground = query if query.objects else None
@@ -309,8 +380,14 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None):
         for i, (pos, yaw) in enumerate(samples):
             f = start + i
             sc.frame_set(f)
-            rots, (_x, up, _fwd) = anim.CLIPS[clip][0](i, 2*half, d, rest_deg, 1.0)
-            w = _smoothstep(i / half) * (1 - _smoothstep((i - active) / (2*half)))
+            phase = phases[i]*half if phases is not None else i
+            rots, (_x, up, _fwd) = anim.CLIPS[clip][0](phase, 2*half, d, rest_deg, 1.0)
+            if clip == "run" and runs is not None:
+                walk, (_x, walk_up, _fwd) = anim.CLIPS["walk"][0](phase, 2*half, d, rest_deg, 1.0)
+                rots = {b: [walk.get(b, (0, 0, 0))[k]*(1-runs[i])+v[k]*runs[i] for k in range(3)]
+                        for b, v in rots.items()}
+                up = walk_up*(1-runs[i]) + up*runs[i]
+            w = _smoothstep(i / half) * (1 - _smoothstep((i - active) / settle))
             relaxed = anim._resolve(anim.RELAXED, rest_deg)
             rots = {b: [relaxed.get(b, (0, 0, 0))[k]*(1-w) + v[k]*w for k in range(3)]
                     for b, v in rots.items()}
@@ -368,7 +445,8 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None):
             if ground is not None:
                 hp.keyframe_insert("location", frame=f, group=hips_name)
         bpy.context.view_layer.update()
-    targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run", ground=ground)
+    targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run",
+                                   ground=ground, phases=phases, runs=runs)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
                      ground=ground)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],
@@ -376,13 +454,103 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None):
     if ground is not None:
         info["foot_lock"].update({k: lock[k] for k in
             ("ground_heights", "max_penetration_m", "min_swing_clearance_m")})
-        info["terrain"] = {"objects": [o.name for o in ground.objects], "gait": "walk",
+        info["terrain"] = {"objects": [o.name for o in ground.objects],
+                           "gait": "run/walk" if clip == "run" and any(
+                               ground.gait(p, yaw)[0] for p, yaw in samples) else clip,
                            "bake_seconds": round(time.perf_counter()-began, 3)}
     anim._extend_range(end)
     sc.frame_set(end)
     return {"armature": rig.name, "frames": [start, end], "next_start_frame": end + 1,
             "duration_seconds": round((end-start)/fps, 3),
             "max_turn_rate_deg_s": math.degrees(TURN_RATE), **info}
+
+
+def _fk_dependencies(rig):
+    """Bones needed to evaluate the generated Rigify FK controls, transitively."""
+    pending = list(anim.semantic_map(rig).values())
+    drivers = list(rig.animation_data.drivers) if rig.animation_data else []
+    paths = [(pb.path_from_id(), pb.name) for pb in rig.pose.bones]
+
+    def inputs(fc):
+        names = []
+        for v in fc.driver.variables:
+            for t in v.targets:
+                if t.id != rig:
+                    continue
+                if getattr(t, "bone_target", ""):
+                    names.append(t.bone_target)
+                else:
+                    names.extend(name for path, name in paths if t.data_path.startswith(path))
+        return names
+
+    for fc in drivers:
+        if not fc.data_path.startswith("pose.bones["):
+            pending.extend(inputs(fc))
+    needed = set()
+    while pending:
+        name = pending.pop()
+        if name in needed or name not in rig.pose.bones:
+            continue
+        needed.add(name)
+        pb = rig.pose.bones[name]
+        if pb.parent:
+            pending.append(pb.parent.name)
+        for fc in drivers:
+            if fc.data_path.startswith(pb.path_from_id()):
+                pending.extend(inputs(fc))
+        for c in pb.constraints:
+            for target, subtarget in (("target", "subtarget"), ("pole_target", "pole_subtarget")):
+                if getattr(c, target, None) == rig:
+                    pending.append(getattr(c, subtarget, ""))
+            if c.type == "ARMATURE":
+                pending.extend(t.subtarget for t in c.targets if t.target == rig)
+    return needed
+
+
+def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
+          phases=None, runs=None):
+    """Generated FK rigs need bone evaluation, not repeated skin deformation."""
+    began = time.perf_counter()
+    hidden, muted, drivers = [], [], []
+    kind = rig.get("c3d_rig_type", "")
+    if ground is not None and kind == "rigify":
+        # Hundreds of face/deform constraints do not feed the FK body controls.
+        # Keep their dependency closure live and defer the rest until keys are baked.
+        needed = _fk_dependencies(rig)
+        prefixes = tuple(rig.pose.bones[b].path_from_id() for b in needed)
+        if rig.animation_data:
+            for fc in rig.animation_data.drivers:
+                if (fc.data_path.startswith("pose.bones[") and
+                        not fc.data_path.startswith(prefixes) and not fc.mute):
+                    drivers.append(fc)
+                    fc.mute = True
+        for pb in rig.pose.bones:
+            if pb.name not in needed:
+                for c in pb.constraints:
+                    if not c.mute:
+                        muted.append(c)
+                        c.mute = True
+    if ground is not None and (kind in ("basic", "rigify") or kind.startswith("mpfb_")):
+        for obj in bpy.context.scene.objects:
+            if obj.type == "MESH" and not obj.hide_viewport and any(
+                    m.type == "ARMATURE" and m.object == rig for m in obj.modifiers):
+                hidden.append(obj)
+                obj.hide_viewport = True
+    try:
+        result = _bake_motion(rig, start, samples, active, initial_feet, clip, speed,
+                              ground, phases, runs)
+    finally:
+        for fc in drivers:
+            fc.mute = False
+        for c in muted:
+            c.mute = False
+        for obj in hidden:
+            obj.hide_viewport = False
+        if hidden or muted or drivers:
+            bpy.context.view_layer.update()
+    if ground is not None:
+        result["terrain"]["bake_seconds"] = round(time.perf_counter()-began, 3)
+    return result
 
 
 def _speed(value):
@@ -412,25 +580,25 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
                 route.append(p)
         lm = anim._rig_landmarks(rig, anim.semantic_map(rig))
         d = anim._dims(lm)
-        requested_clip = clip
-        if ground is not None:
-            clip, speed = "walk", min(speed, 0.9)
         stride = 2*d["leg"]*math.sin(math.radians(38 if clip == "run" else 24))*anim.STRIDE_SCALE[clip]
         velocity = 2*stride*24/anim.CLIPS[clip][1]*speed
         fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
-        if ground is not None:
-            velocity = min(velocity, ground.min_tread * fps / _half_step(clip, fps, speed) * 0.85)
         length = sum((b - a).length for a, b in zip(route, route[1:]))
         if length / velocity * fps > MAX_FRAMES:
             raise ValueError(f"route exceeds {MAX_FRAMES} frames; split it into shorter paths")
-        keys, distance = _route(pos, yaw, route, velocity)
+        keys, distance = _route(pos, yaw, route, velocity, ground, fps, speed)
         if face_end is not None:
             target = _target_yaw(face_end, route[-1], start + math.ceil(keys[-1][0]*fps), keys[-1][2])
-            _turn(keys, target)
+            _turn(keys, target, terrain=ground is not None)
         half = _half_step(clip, fps, speed)
-        samples, active = _samples(keys, fps, half)
-        result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground)
-        return {**result, "clip": requested_clip, "distance_m": round(distance, 4),
+        phases = runs = None
+        if ground is not None:
+            samples, active, phases, runs = _terrain_samples(keys, fps, clip, speed, ground)
+        else:
+            samples, active = _samples(keys, fps, half)
+        result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
+                       phases=phases, runs=runs)
+        return {**result, "clip": clip, "distance_m": round(distance, 4),
                 "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2]}
     finally:
         bpy.context.scene.frame_set(saved_frame)
