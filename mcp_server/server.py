@@ -306,7 +306,8 @@ async def walk_path(armature: str, points: list[list[float]],
     False preserves the old route. ignore excludes named objects and descendants (use
     the chair root when approaching sit_on). Walkable tops/held props/ground are excluded;
     terrain edges over 0.25 m block passage. Blocked targets snap to nearest free cells
-    with warnings. A blocked start or unreachable route raises before baking; the search
+    with warnings. A start inside the clearance margin first steps out (<= 0.6 m, warning);
+    a deeper blocked start or unreachable route raises before baking; the search
     extends 3..10 m beyond the targets, up to one million cells. Static convex mesh slices
     are conservative; this is body/root clearance, not a hand/foot or moving collision solver.
     Reports avoided, detours, path_points, body_radius_m, clearance_m (null without obstacles

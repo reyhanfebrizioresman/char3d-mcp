@@ -422,7 +422,9 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   - `ignore=["Env_chair"]` excludes the named object and descendants, for example when
     approaching a chair before `sit_on`. Use the actual root returned by `add_prop`.
     XY targets remain numeric; there is no automatic seat-object target resolution.
-  - Blocked targets move to the nearest free cell with `warnings`. Blocked starts or
+  - Blocked targets move to the nearest free cell with `warnings`. A start inside the
+    clearance margin (e.g. staged behind a desk) first steps straight out to the nearest
+    free cell (<= 0.6 m, with a warning). Starts deeper inside obstacles or
     unreachable targets raise before baking (including in `"auto"` mode). The search
     extends 3..10 m beyond the route and is limited to one million cells; split very
     large routes. Existing animation is preserved on planning errors.

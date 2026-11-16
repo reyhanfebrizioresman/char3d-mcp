@@ -10,6 +10,7 @@ from mathutils.geometry import convex_hull_2d
 from . import anim
 from .util import is_helper, obj_or_raise
 
+ESCAPE_DISTANCE = 0.6  # m a start inside the clearance margin may step out
 CELL = 0.05
 CLEARANCE = 0.05
 
@@ -252,7 +253,15 @@ class Planner:
                     heapq.heappush(opened, (g+h, h, g, q))
         raise ValueError("no obstacle-free path to target within the navigation grid; change targets/ignore or use avoid=False")
 
-    def plan(self, route, curves):
+    def _nearest_free(self, target):
+        y, x = np.nonzero(~self.blocked)
+        if not len(x):
+            raise ValueError("no obstacle-free cells in navigation grid")
+        delta = np.stack((x, y), axis=-1)*CELL+self.origin-np.array(target[:2])
+        i = int(np.argmin(np.sum(delta*delta, axis=-1)))
+        return (int(x[i]), int(y[i]))
+
+    def plan(self, route, curves, escape=True):
         # Test the existing curved route too: a rounded free polyline can bow into
         # furniture. Do not replace any points on a clear route.
         if self.empty:
@@ -260,20 +269,25 @@ class Planner:
         straight_free = all(self.line_free(a, b) for a, b in zip(route, route[1:]))
         curved_free = straight_free and (len(route) == 1 or all(
             self.curve_free([p for p, _ in c]) for c in curves(route)))
+        out = [route[0]]
         if not self.free(self.cell(route[0])):
-            raise ValueError("walking character starts inside an inflated obstacle; move it or ignore the object")
+            # Characters often stand within the clearance margin of a desk or chair
+            # (e.g. staged behind a desk). Step straight out to the nearest free cell
+            # first, but only over a short distance; a deeply buried start is an error.
+            exit_point = self.point(self._nearest_free(route[0]))
+            if not escape or len(route) < 2 or (exit_point - route[0]).length > ESCAPE_DISTANCE:
+                raise ValueError("walking character starts inside an inflated obstacle; move it or ignore the object")
+            self.warnings.append(f"start {list(route[0])[:2]} is within the clearance margin; "
+                                 f"stepping out to {[round(v, 3) for v in list(exit_point)[:2]]} first")
+            out.append(exit_point)
+            self.detours += 1
+            curved_free = False
         if curved_free:
             return route
-        out = [route[0]]
         for target in route[1:]:
             goal = self.cell(target)
             if not self.free(goal):
-                y, x = np.nonzero(~self.blocked)
-                if not len(x):
-                    raise ValueError("no obstacle-free cells in navigation grid")
-                delta = np.stack((x, y), axis=-1)*CELL+self.origin-np.array(target[:2])
-                i = int(np.argmin(np.sum(delta*delta, axis=-1)))
-                goal = (int(x[i]), int(y[i]))
+                goal = self._nearest_free(target)
                 replacement = self.point(goal)
                 self.warnings.append(f"target {list(target)[:2]} is blocked; moved to {list(replacement)[:2]}")
                 target = replacement
