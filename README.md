@@ -81,7 +81,9 @@ dan geometri di luar irisan tinggi lokal 0,05–1,7 m dikecualikan. Tepi terrain
 beda tinggi >0,25 m menghalangi jalur. `ignore=[root_kursi]` mengabaikan objek beserta
 turunannya untuk mendekat sebelum `sit_on`; gunakan nama root hasil `add_prop`.
 Target di dalam rintangan dipindah ke sel kosong terdekat dengan `warnings`.
-Posisi awal terhalang atau target tak terjangkau menghasilkan error sebelum baking.
+Posisi awal yang hanya masuk margin jarak aman (misalnya berdiri di belakang meja) melangkah
+keluar dulu ke sel kosong terdekat (≤0,6 m, dengan warning); posisi awal yang lebih dalam
+atau target tak terjangkau menghasilkan error sebelum baking.
 Pencarian dibatasi 3–10 m di luar rute dan satu juta sel; pecah rute yang sangat luas.
 
 Hasil menambah `avoided`, `detours`, `path_points` (termasuk awal), `body_radius_m`,
