@@ -221,6 +221,200 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
     return measured
 
 
+async def check_obstacle_avoidance(call, kind="basic"):
+    """Exercise the public MCP route and measure every frame on the final rig."""
+    import math
+    import shutil
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    await call("new_scene")
+    await call("scene_info")
+    if kind == "mpfb":
+        await call("create_realistic_human", name="Avoider", rig="game_engine", face=False)
+    else:
+        await call("create_human", name="Avoider")
+        await call("auto_rig_humanoid", mesh="Avoider")
+    await call("apply_pose", armature="Avoider_rig", pose="relaxed")
+    # A clear curved route with nearby scenery must retain every original key bit.
+    await call("add_prop", kind="plant", location=[3, -1, 0])
+    snapshot = '''
+import hashlib, json
+from engine.commands.talk import _fcurves
+rig = bpy.data.objects['Avoider_rig']
+result = hashlib.sha256(json.dumps([(fc.data_path, fc.array_index,
+    [(list(k.co), list(k.handle_left), list(k.handle_right), k.interpolation)
+     for k in fc.keyframe_points]) for fc in _fcurves(rig.animation_data.action)]).encode()).hexdigest()
+'''
+    kwargs = dict(armature="Avoider_rig", points=[[0, -1], [.5, -2]], start_frame=1)
+    await call("walk_path", **kwargs, avoid=False)
+    old = (await data("run_blender_python", code=snapshot))["result"]
+    await call("clear_animation", armature="Avoider_rig")
+    await call("apply_pose", armature="Avoider_rig", pose="relaxed")
+    free = await data("walk_path", **kwargs)
+    assert (await data("run_blender_python", code=snapshot))["result"] == old, "clear auto route changed keys"
+    assert not free["avoided"] and free["detours"] == 0, free
+    await call("clear_animation", armature="Avoider_rig")
+    await call("clear_environment")
+    await call("apply_pose", armature="Avoider_rig", pose="relaxed")
+    roots = []
+    for prop, location in (("desk", [0, -1.6, 0]), ("chair", [0, -3, 0]),
+                           ("plant", [.2, -4, 0])):
+        roots.append((await data("add_prop", kind=prop, location=location))["root"])
+    await call("create_human", name="Bystander", location=[0, -4.9, 0])
+    await call("auto_rig_humanoid", mesh="Bystander")
+    await call("apply_pose", armature="Bystander_rig", pose="relaxed")
+    cup = await data("add_prop", kind="cup")
+    await call("hold_prop", character="Avoider_rig", prop=cup["root"], start_frame=1)
+    await call("add_primitive", kind="cube", name="Overhead", location=[0, -0.5, 3], size=1)
+    await call("add_primitive", kind="cube", name="BelowAnkle", location=[0, -0.5, -1], size=1)
+    capture = '''
+from engine.commands.navigation import footprints
+from engine.commands.terrain import GroundQuery
+bpy.context.scene.frame_set(1)
+result = [(n, p.tolist()) for n, p in footprints(bpy.data.objects['Avoider_rig'], set(), GroundQuery(), 1)]
+'''
+    raw = (await data("run_blender_python", code=capture))["result"]
+    assert not any(n.startswith(cup["root"]) or n in ('Overhead', 'BelowAnkle') for n, p in raw), raw
+    assert any(n == 'Bystander' for n, p in raw), raw
+    await call("delete_objects", names=["Overhead", "BelowAnkle"])
+    nav = await data("walk_path", armature="Avoider_rig", points=[[0, -6]], start_frame=1,
+                     face_end=[1, -6])
+    assert nav["avoided"] and nav["detours"] >= 1, nav
+    assert nav["planning_seconds"] < 1, nav
+    measure = textwrap.dedent(f'''
+        import math
+        from engine.commands.anim import semantic_map
+        raw = {raw!r}
+        nav = {nav!r}
+        rig = bpy.data.objects['Avoider_rig']
+        smap = semantic_map(rig)
+        def distance(p, poly):
+            inside = len(poly) > 2
+            best = float('inf')
+            for a, b in zip(poly, poly[1:]+poly[:1]):
+                dx, dy = b[0]-a[0], b[1]-a[1]
+                px, py = p.x-a[0], p.y-a[1]
+                inside = inside and dx*py-dy*px >= -1e-8
+                t = max(0, min(1, (px*dx+py*dy)/max(dx*dx+dy*dy, 1e-20)))
+                best = min(best, math.hypot(px-t*dx, py-t*dy))
+            return 0.0 if inside else best
+        root_min, limbs_min = float('inf'), float('inf')
+        path = []
+        for f in range(nav['frames'][0], nav['frames'][1]+1):
+            bpy.context.scene.frame_set(f)
+            p = (rig.matrix_world @ rig.pose.bones[smap['hips']].matrix).translation
+            path.append((p.x, p.y, .025, 1))
+            root_min = min(root_min, *(distance(p, poly) for name, poly in raw))
+            for bone in ('foot.L','foot.R','hand.L','hand.R'):
+                p = rig.matrix_world @ rig.pose.bones[smap[bone]].head
+                limbs_min = min(limbs_min, *(distance(p, poly) for name, poly in raw))
+        curve = bpy.data.curves.new('AvoidanceTrail', 'CURVE')
+        curve.dimensions, curve.bevel_depth = '3D', .015
+        spline = curve.splines.new('POLY')
+        spline.points.add(len(path)-1)
+        for p, co in zip(spline.points, path):
+            p.co = co
+        bpy.context.scene.collection.objects.link(bpy.data.objects.new('AvoidanceTrail', curve))
+        result = dict(clearance=root_min, limbs_clearance=limbs_min, end=list(path[-1])[:2])
+    ''')
+    measured = (await data("run_blender_python", code=measure))["result"]
+    assert measured["clearance"] >= nav["body_radius_m"], (nav, measured)
+    assert measured["limbs_clearance"] > .015, measured
+    assert abs(measured["clearance"]-nav["clearance_m"]) < .005, (nav, measured)
+    assert math.dist(measured["end"], [0, -6]) < .05, measured
+    await check_navigation(call, nav, [[0, -6]], face=[1, -6, 0])
+    frames = [nav["frames"][0], (sum(nav["frames"])//2), nav["frames"][1]]
+    # Stable names survive later smoke renders which reuse frame-based filenames.
+    for view in ("top", "three_quarter"):
+        images = await call("render_frames", frames=frames, view=view, size=512)
+        for f, item in zip(frames, text_of(images)):
+            shutil.copyfile(json.loads(item)["path"], os.path.join(
+                ROOT, "output", "renders", f"avoid_{kind}_{view}_f{f:04d}.png"))
+    await call("save_project", path=f"e2e_avoid_{kind}.blend")
+    turn = await data("turn_to", armature="Avoider_rig", target=[0, -7])
+    assert turn["clearance_m"] >= nav["body_radius_m"], turn
+    await check_navigation(call, turn, stationary=True)
+    print(f"obstacles ({kind}): root {measured['clearance']:.4f} m >= radius {nav['body_radius_m']:.4f} m | "
+          f"feet/hands {measured['limbs_clearance']:.4f} m | goal {math.dist(measured['end'], [0,-6]):.6f} m | "
+          f"detours {nav['detours']} | planning {nav['planning_seconds']:.3f} s | clear keys identical", flush=True)
+    if kind != "basic":
+        return
+    # Closed room: target is free but unreachable. No animation may be added.
+    await call("new_scene")
+    await call("create_human", name="Avoider")
+    await call("auto_rig_humanoid", mesh="Avoider")
+    for name, loc, scale in (("North", [0,-3,1], [3,.1,2]), ("South", [0,-1,1], [3,.1,2]),
+                             ("West", [-1.5,-2,1], [.1,2,2]), ("East", [1.5,-2,1], [.1,2,2])):
+        await call("add_primitive", kind="cube", name=name, location=loc, size=1)
+        await call("transform_object", name=name, scale=scale)
+    try:
+        await call("walk_path", armature="Avoider_rig", points=[[0,-2]])
+    except RuntimeError as e:
+        assert "no obstacle-free path" in str(e), e
+    else:
+        raise AssertionError("enclosed goal must raise")
+    assert (await data("run_blender_python", code="result = bpy.data.objects['Avoider_rig'].animation_data is None"))["result"]
+    await call("delete_objects", names=["North", "South", "West", "East"])
+    chair = await data("add_prop", kind="chair", location=[0,-1.5,0])
+    snapped = await data("walk_path", armature="Avoider_rig", points=[[0,-1.5]], start_frame=1)
+    assert snapped["warnings"] and math.dist(snapped["destination"], [0,-1.5]) > .1, snapped
+    await call("clear_animation", armature="Avoider_rig")
+    ignored = await data("walk_path", armature="Avoider_rig", points=[[0,-1.5]], start_frame=1,
+                         ignore=[chair["root"]])
+    assert not ignored["avoided"] and math.dist(ignored["destination"], [0,-1.5]) < .001, ignored
+    await call("sit_on", character="Avoider_rig", seat=chair["root"])
+    try:
+        await call("turn_to", armature="Avoider_rig", target=[2,0])
+    except RuntimeError as e:
+        assert "starts inside" in str(e), e
+    else:
+        raise AssertionError("turn in a chair must reject a blocked body envelope")
+    await call("turn_to", armature="Avoider_rig", target=[2,0], ignore=[chair["root"]])
+    # Walkable tops stay free; only height jumps above 25 cm block a route.
+    await call("new_scene")
+    await call("create_human", name="Avoider")
+    await call("auto_rig_humanoid", mesh="Avoider")
+    terrain_check = '''
+from engine.commands.navigation import Planner
+from engine.commands.terrain import GroundQuery
+from engine.commands.walk import _curves
+route = [Vector((0,0,0)), Vector((0,-3,0))]
+p = Planner(bpy.data.objects['Avoider_rig'], route, GroundQuery(), set(), 1)
+path = p.plan(route, _curves)
+result = dict(detours=p.detours, points=[list(v)[:2] for v in path], edges=len(p.edges))
+'''
+    for height in (.17, .6):
+        await call("add_terrain", kind="platform", location=[0,-1,0], width=1.8,
+                   length=1, height=height)
+        planned = (await data("run_blender_python", code=terrain_check))["result"]
+        assert bool(planned["detours"]) == (height > .25), planned
+        assert bool(planned["edges"]) == (height > .25), planned
+        await call("clear_terrain")
+    # Real 10 x 10 m / 20 prop planning benchmark (no baking in the timing).
+    await call("new_scene")
+    await call("create_human", name="Avoider")
+    await call("auto_rig_humanoid", mesh="Avoider")
+    for i in range(20):
+        await call("add_prop", kind=("desk", "chair", "plant")[i % 3],
+                   location=[(i % 5)*2-4, -(i//5)*2-1, 0])
+    perf = (await data("run_blender_python", code='''
+import time
+from engine.commands.navigation import Planner
+from engine.commands.terrain import GroundQuery
+from engine.commands.walk import _curves
+began = time.perf_counter()
+route = [Vector((0,1,0)), Vector((0,-8,0))]
+p = Planner(bpy.data.objects['Avoider_rig'], route, GroundQuery(), set(), 1)
+path = p.plan(route, _curves)
+result = dict(seconds=time.perf_counter()-began, detours=p.detours, points=len(path))
+'''))["result"]
+    assert perf["seconds"] < 1 and perf["detours"], perf
+    print(f"obstacles edge cases: unreachable raises, target snaps, ignore/sit/turn OK | "
+          f"20 props / 10 m room planning {perf['seconds']:.3f} s", flush=True)
+
+
 async def check_terrain(call, kind="basic"):
     """Check the visible rig on a full course, using an independent analytic surface."""
     import math
@@ -1468,6 +1662,7 @@ async def main():
                 assert (await s.call_tool("walk_path", {"armature": "Navigator_rig", **bad})).isError
             assert (await s.call_tool("turn_to", {"armature": "Navigator_rig", "target": "camera"})).isError
 
+        await check_obstacle_avoidance(call, "basic")
         await check_terrain(call, "basic")
         await check_terrain_contact_detection(call)
         await check_terrain(call, "rigify")
@@ -1477,6 +1672,7 @@ async def main():
         if mp.isError:
             print("mpfb: unavailable, skipped:", text_of(mp))
         else:
+            await check_obstacle_avoidance(call, "mpfb")
             await _secondary_motion_checks(call)
             await check_terrain(call, "mpfb")
             await check_terrain(call, "mpfb_rigify")

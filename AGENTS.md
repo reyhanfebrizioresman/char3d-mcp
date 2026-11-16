@@ -43,7 +43,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
   four, ok)
-- Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`, `turn_to`, `import_mocap`,
+- Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
   `retarget_animation`, `lock_feet`, `secondary_motion`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
@@ -291,7 +291,7 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   cheer (30 f), jump (40 f, one-shot), nod, head_shake (30 f). 24 fps.
   **Chain** clips with `start_frame = previous["next_start_frame"]`.
 - **Floor routes and turns** — `walk_path(armature, points, clip="walk", start_frame=None,
-  speed=1.0, face_end=None)` walks/runs from the current position through absolute world
+  speed=1.0, face_end=None, avoid="auto", ignore=None)` walks/runs from the current position through absolute world
   XY targets in meters, e.g. `walk_path("Maya_rig", [[0, -2], [2, -2], [2, 0]],
   face_end="camera")`. Ordinary corners use a smooth curve through the targets; duplicate
   consecutive points are ignored. Body yaw is limited to 100°/s, tight bends shorten steps
@@ -308,8 +308,32 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`, and
   `foot_lock.contacts`. Check `render_frames(..., view="top")` with waypoint markers
   for the route and `view="three_quarter"` for steps. Z follows walkable terrain (see below);
-  no obstacle avoidance; feet use flat contacts rather than heel/toe rolls.
+  static obstacle avoidance is described below; feet use flat contacts rather than heel/toe rolls.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
+- **Static obstacle avoidance** — `walk_path(..., avoid="auto", ignore=None)` snapshots
+  evaluated visible mesh footprints at the start frame, including furniture and other
+  characters. A 5 cm, eight-connected A* grid inflates obstacles by evaluated
+  shoulder/hip radius plus 5 cm clearance; line-of-sight shortcuts feed the existing
+  route/terrain/footstep code. Unsafe curve corners use stepping turns. `"auto"`/`True`
+  only change intersecting routes; a clear route retains exactly the old keys.
+  `avoid=False` preserves the old route. `turn_to` accepts the same options and checks
+  the stationary body envelope without moving the root.
+  - Ground, invisible/helper geometry, the walking rig/its descendants and actively
+    held props are excluded. Only the local ankle-to-head slice (0.05..1.7 m) counts.
+    Walkable tops stay free; adjacent terrain height jumps over 0.25 m form obstacles.
+  - `ignore=["Env_chair"]` excludes the named object and descendants, for example when
+    approaching a chair before `sit_on`. Use the actual root returned by `add_prop`.
+    XY targets remain numeric; there is no automatic seat-object target resolution.
+  - Blocked targets move to the nearest free cell with `warnings`. Blocked starts or
+    unreachable targets raise before baking (including in `"auto"` mode). The search
+    extends 3..10 m beyond the route and is limited to one million cells; split very
+    large routes. Existing animation is preserved on planning errors.
+  - Results add `avoided`, `detours` (rerouted user segments), `path_points` (including
+    start), `body_radius_m`, `clearance_m` (minimum sampled root distance to raw mesh
+    footprints/terrain edges), `planning_seconds`, and `warnings`. Clearance is null
+    without obstacles or with avoidance disabled. Curved-only corrections count as a
+    detour too. Obstacles are conservative convex slices per evaluated mesh, static at
+    start; this does not solve moving-character, hand, foot, or arbitrary limb collisions.
 - `import_mocap(path, armature)` — .bvh/.fbx/.glb motion (CMU, Mixamo "without skin",
   Rokoko...). Matches names, T/A rest pose, facing and body size automatically;
   the imported source skeleton is deleted afterwards. If `mapped` is missing bones,
@@ -404,7 +428,7 @@ and unused owned data, preserving characters, scenery and the environment stage.
   clearance excludes the two frames adjacent to liftoff/touchdown (clearance approaches
   zero there); penetration includes every frame. These are skeletal sole measurements,
   not collision checks on every deformed shoe vertex.
-- Limits: no obstacle avoidance or jumping between levels. Use rises <=0.20 m for
+- Limits: no jumping between levels; obstacle planning blocks height jumps over 0.25 m. Use rises <=0.20 m for
   adult human rigs and treads long enough for the full sole (normally >=0.28 m). Keep
   routes away from side edges; no whole-sole landing within 0.35 m raises an error.
   Very steep ramps, large drops, oversized feet and terrain turns in confined treads
