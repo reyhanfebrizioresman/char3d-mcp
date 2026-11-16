@@ -4,6 +4,8 @@
 
 Set CHAR3D_ENV_VISUALS=1 to render every environment in Eevee. By default the
 office and screen-image cases provide a cheaper rendering smoke check.
+Set CHAR3D_MPFB_PACK_VISUALS=1 for front/three-quarter Eevee sheets of four outfits;
+pack weight/deformation and texture-path assertions always run.
 """
 import asyncio
 import json
@@ -523,6 +525,224 @@ async def isolate_mpfb(session):
     ''')
     res = await session.call_tool("run_blender_python", {"code": code})
     assert not res.isError, text_of(res)
+
+
+async def _mpfb_pack_checks(call):
+    """Optional CC0 catalogs, deterministic outfits, fitting/weights on three rigs."""
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[-1])
+
+    catalog = await data("mpfb_assets")
+    expected = ("shirts01", "pants01", "skirts01", "dress01", "suits01", "hats01",
+                "glasses01", "bodyparts05", "hair01", "shoes01", "skins01", "skins02")
+    missing = []
+    for pack in expected:
+        members = catalog["packs"].get(pack)
+        if not members:
+            missing.append(pack)
+            continue
+        assert sum(map(len, members.values())) > 0, pack
+        expected_kind = "hair" if pack == "hair01" else "skins" if pack.startswith("skins") else "clothes"
+        assert len(members.get(expected_kind, [])) > 0, (pack, members)
+        for kind, names in members.items():
+            assert set(names) <= set(catalog["assets"][kind]), (pack, kind, names)
+    metadata = catalog["clothing_metadata"]
+    assert set(metadata) == set(catalog["assets"]["clothes"])
+    assert sum(map(len, catalog["clothing_categories"].values())) == len(metadata)
+    # Numeric checks across every preset, sex and seed, including reduced catalogs
+    # and facial hair installed in a separate directory (no optional packs required).
+    checks = await data("run_blender_python", code=textwrap.dedent('''\
+        import os, tempfile
+        from unittest.mock import patch
+        from engine.commands.mpfb import (_catalog, _outfit_clothes, _outfit_warnings,
+                                          _clothing_metadata, _auto_skin, mpfb_assets)
+        metadata = mpfb_assets()['clothing_metadata']
+        checked = 0
+        for outfit in ('casual', 'formal', 'sport', 'summer', 'winter'):
+            for gender in (0, 1):
+                for seed in (0, 17, 41):
+                    a, warnings = _outfit_clothes(metadata, outfit, gender, seed)
+                    b, again = _outfit_clothes(dict(reversed(list(metadata.items()))), outfit, gender, seed)
+                    assert a == b and warnings == again
+                    assert not _outfit_warnings(a, metadata), a
+                    sex = 'female' if gender == 0 else 'male'
+                    assert all(metadata[n]['gender'] in ('unisex', sex) for n in a)
+                    checked += 1
+        empty, warnings = _outfit_clothes({}, 'winter', 1, 0)
+        assert empty == [] and len(warnings) == 4
+        for gender in (0, 1):
+            sex = 'female' if gender == 0 else 'male'
+            skin = _auto_skin({'young_asian_' + sex: '', 'custom_skin': ''}, gender, 25, {'asian': 1})
+            assert skin == 'young_asian_' + sex
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, 'beards', 'fixture'))
+            path = os.path.join(root, 'beards', 'fixture', 'fixture.mhclo')
+            with open(path, 'w') as stream:
+                stream.write('name Fixture\\ntag Beard\\nz_depth 50\\nverts 0\\n')
+            with patch('engine.commands.mpfb._data_dir', return_value=root):
+                cat = _catalog()
+                assert 'fixture' in cat['beards'] and 'fixture' in cat['clothes']
+        result = {'deterministic_checks': checked}
+    '''))
+    assert checks["result"]["deterministic_checks"] == 30, checks
+
+    # Two samples from each clothing pack over all three rig types. Fall back to
+    # system assets or omit individual optional members on partially installed hosts.
+    def installed(kind, *names):
+        return next((n for n in names if n in catalog["assets"][kind]), None)
+
+    rigs = ("game_engine", "mixamo", "rigify")
+    count = 0
+    max_unweighted = 0
+    hidden_by_clothes = 0
+    repaired_vertices = 0
+    renders = []
+    for rig_index, rig in enumerate(rigs):
+        alternate = rig_index % 2
+        scenarios = [
+            (0, ["toigo_halter_dress_midi" if alternate else "toigo_shift_dress", "toigo_flats"],
+             "toigo_inverted_bob", None, "toigo_light_skin_female_freckles"),
+            (1, ["toigo_basic_tucked_t-shirt" if alternate else "namuhekam_male_polo_shirt",
+                 "toigo_wool_pants" if alternate else "cortu_cargo_pants", "toigo_ankle_boots_male",
+                 "joepal_xmas_cap" if alternate else "jujube_newsboy_cap",
+                 "spamrakuen_tbm_glasses_frames_01" if alternate else "spamrakuen_sagerfrogs_glasses_01"],
+             "faydaen_hair_1" if rig == "mixamo" else "short02",
+             "rehmanpolanski_beard_viking" if alternate else "wdg_scruffy_beard",
+             "toigo_light_skin_male_ginger"),
+            (0, ["toigo_camisole_top", "toigo_tiered_skirt" if alternate else "toigo_tiered_mini_skirt",
+                 "toigo_ballet_flats_with_bows"], "toigo_curled_under_bob", None,
+             "toigo_light_skin_female_bronze"),
+            (0, ["toigo_female_double-breasted_suit" if alternate else "toigo_female_suit",
+                 "toigo_ankle_boots_female"], "toigo_inverted_bob", None,
+             "toigo_light_skin_female_freckles"),
+        ]
+        for index, (gender, clothes, hair, beard, skin) in enumerate(scenarios):
+            selected = [n for n in clothes if n in metadata]
+            if not selected:
+                continue
+            await call("new_scene")
+            h = await data("create_realistic_human", name="PackTester", rig=rig, gender=gender,
+                           clothes=selected, hair=installed("hair", hair, "short02"),
+                           beard=installed("beards", beard) if beard else None,
+                           skin=installed("skins", skin) or "auto", face=False,
+                           eyebrows=installed("eyebrows", "eyebrow012", "eyebrow001"),
+                           eyelashes=installed("eyelashes", "eyelashes04", "eyelashes01"))
+            assert not h["warnings"], h
+            repaired_vertices += sum(h["weights_repaired"].values())
+            assert 1.3 < h["height_m"] < 2.3 and len(h["parts"]) >= len(selected), h
+            names = {o["name"] for o in (await data("scene_info"))["objects"]}
+            assert {h["name"], h["armature"], *h["parts"]} <= names
+            for n in [h["name"], *h["parts"]]:
+                report = await data("validate_rig", mesh=n)
+                assert report["armature"] == h["armature"] and report["unweighted_vertices"] == 0, report
+                max_unweighted = max(max_unweighted, report["unweighted_vertices"])
+                if n == h["name"]:
+                    # MPFB's helper mask alone hides 5800+ vertices; clothing delete
+                    # masks must hide additional body vertices when authored to do so.
+                    assert report["masked_vertices_ignored"] > 0, report
+            if rig == "mixamo" and index == 1 and h["hair"]:
+                repair_check = await data("run_blender_python", code=textwrap.dedent(f'''\
+                    from engine.commands.mpfb import _repair_part_weights
+                    obj = bpy.data.objects[{'PackTester.' + h['hair']!r}]
+                    rig = bpy.data.objects['PackTester_rig']
+                    deform = {{b.name for b in rig.data.bones if b.use_deform}}
+                    bone_groups = {{g.index for g in obj.vertex_groups if g.name in deform}}
+                    before = [[(g.group, g.weight) for g in v.groups] for v in obj.data.vertices]
+                    victim = next(v for v in obj.data.vertices if any(g.group in bone_groups for g in v.groups))
+                    for group in obj.vertex_groups:
+                        if group.index in bone_groups:
+                            group.remove([victim.index])
+                    repaired = _repair_part_weights([obj], bpy.data.objects['PackTester'], rig)
+                    assert repaired == {{obj.name: 1}}, repaired
+                    for v in obj.data.vertices:
+                        if v.index != victim.index:
+                            assert [(g.group, g.weight) for g in v.groups] == before[v.index]
+                    total = sum(g.weight for g in victim.groups if g.group in bone_groups)
+                    assert abs(total - 1) < 1e-6, total
+                    assert _repair_part_weights([obj], bpy.data.objects['PackTester'], rig) == {{}}
+                    result = {{'repaired': 1, 'preserved': len(before)-1}}
+                '''))
+                assert repair_check["result"]["repaired"] == 1 and repair_check["result"]["preserved"] > 0
+            state = await data("run_blender_python", code=textwrap.dedent('''\
+                import os
+                basemesh = bpy.data.objects['PackTester']
+                masks = [m for m in basemesh.modifiers if m.type == 'MASK' and m.name.startswith('Delete.')]
+                assert all(m.show_render and m.invert_vertex_group and
+                           basemesh.vertex_groups.get(m.vertex_group) is not None for m in masks)
+                delete_groups = {basemesh.vertex_groups[m.vertex_group].index for m in masks}
+                deleted = sum(any(g.group in delete_groups and g.weight > 0 for g in v.groups)
+                              for v in basemesh.data.vertices)
+                assert deleted > 0 or not masks
+                original = {}
+                for obj in bpy.context.scene.objects:
+                    if obj.type != 'MESH' or not obj.name.startswith('PackTester.'):
+                        continue
+                    assert any(m.type == 'ARMATURE' and m.object.name == 'PackTester_rig' for m in obj.modifiers)
+                    for material in obj.data.materials:
+                        if material and material.use_nodes:
+                            for node in material.node_tree.nodes:
+                                if node.type == 'TEX_IMAGE' and node.image:
+                                    assert node.image.packed_file or os.path.isfile(bpy.path.abspath(node.image.filepath)), node.image.filepath
+                    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+                    original[obj.name] = [list(v.co) for v in evaluated.data.vertices]
+                bpy.context.scene['pack_original'] = __import__('json').dumps(original)
+                result = {'masks': len(masks), 'parts': len(original), 'deleted': deleted}
+            '''))
+            assert state["result"]["parts"] >= len(selected), state
+            hidden_by_clothes += state["result"]["deleted"]
+            # Eevee material sheets of four distinct outfits. The standard smoke
+            # remains useful without optional packs and only renders available sets.
+            if rig_index == 0 and os.environ.get("CHAR3D_MPFB_PACK_VISUALS") == "1":
+                await call("apply_pose", armature=h["armature"], pose="relaxed")
+                sheet = await call("render_views", views=["front", "three_quarter"], size=256,
+                                   objects=[h["armature"]], engine_name="eevee")
+                for entry in text_of(sheet):
+                    renders.append(json.loads(entry)["path"])
+                await call("save_project", path=f"mpfb_packs_outfit_{index}.blend")
+            await call("apply_pose", armature=h["armature"], pose="cheer")
+            await call("render_views", views=["front"], objects=[h["armature"]], size=192)
+            await call("apply_pose", armature=h["armature"], pose="fight_stance")
+            movement = await data("run_blender_python", code=textwrap.dedent('''\
+                import json
+                from mathutils import Vector
+                original = json.loads(bpy.context.scene['pack_original'])
+                motion = {}
+                for name, coords in original.items():
+                    obj = bpy.data.objects[name].evaluated_get(bpy.context.evaluated_depsgraph_get())
+                    assert len(coords) == len(obj.data.vertices)
+                    motion[name] = max((v.co - Vector(p)).length for v, p in zip(obj.data.vertices, coords))
+                result = motion
+            '''))
+            assert min(movement["result"].values()) > 0.001, movement
+            await call("render_views", views=["three_quarter"], objects=[h["armature"]], size=192)
+            if index == 1:
+                exported = await data("export_asset", path=f"mpfb_packs_{rig}_4.glb",
+                                      objects=[h["armature"]], max_influences=4)
+                assert _check_glb_weights(exported["path"], 4) >= len(selected) + 1, exported
+            count += 1
+
+    # Exercise the public preset API as well as the helper, and prove [] overrides.
+    choices = []
+    for _ in range(2):
+        await call("new_scene")
+        h = await data("create_realistic_human", name="Preset", gender=1, outfit="winter", seed=17, face=False)
+        choices.append(h["clothes"])
+    assert choices[0] == choices[1], choices
+    await call("new_scene")
+    overridden = await data("create_realistic_human", name="Override", clothes=[], outfit="winter", face=False)
+    assert overridden["clothes"] == [] and not overridden["warnings"], overridden
+    tops = catalog["clothing_categories"].get("top", [])[:2]
+    shoes = catalog["clothing_categories"].get("shoes", [])[:2]
+    suits = catalog["clothing_categories"].get("suit", [])[:1]
+    conflict = tops + shoes + suits
+    if len(tops) == 2 or len(shoes) == 2:
+        await call("new_scene")
+        h = await data("create_realistic_human", name="Conflict", clothes=conflict, face=False)
+        assert len(h["warnings"]) >= (len(tops) == 2) + (len(shoes) == 2), h
+    print(f"mpfb packs: {len(expected)-len(missing)}/12 installed, skipped={missing}; "
+          f"{count} outfits across 3 rigs, unweighted={max_unweighted}, "
+          f"hidden={hidden_by_clothes}, repaired={repaired_vertices}, "
+          f"30 deterministic checks + explicit overrides/conflicts + 4-weight GLBs OK; renders={renders}")
 
 
 async def _sitting_checks(call):
@@ -1477,6 +1697,7 @@ async def main():
         if mp.isError:
             print("mpfb: unavailable, skipped:", text_of(mp))
         else:
+            await _mpfb_pack_checks(call)
             await _secondary_motion_checks(call)
             await check_terrain(call, "mpfb")
             await check_terrain(call, "mpfb_rigify")

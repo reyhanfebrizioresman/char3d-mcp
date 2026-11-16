@@ -20,9 +20,9 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
 | `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; Rigify hanya tulang deform; `max_influences=4` membatasi bobot untuk game tanpa mengubah adegan (hasil: `vertices_limited`) |
 | `save_project`, `open_project` | File .blend |
-| `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI |
+| `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI; `engine_name="eevee"` untuk tekstur |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
-| `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, mata, alis, gigi, rambut, baju; rig `game_engine` atau `rigify` (lengkap dengan kontrol wajah) |
+| `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, rambut, baju, sepatu, janggut, aksesori; kategori pakaian + preset `outfit` dengan `seed`; rig `game_engine`, `mixamo`, `rigify` |
 | `set_expression`, `list_expressions` | 24 ekspresi wajah (senyum, tawa, sedih, marah, kaget, kedip, dll.) + 52 unit ARKit |
 | `auto_expression` | Ekspresi otomatis per kalimat dari makna teks lip sync (id/ms/en): senang, sedih, kaget, marah, takut, berpikir; negasi dan tanda baca, antisipasi, kembali ke ekspresi dasar saat jeda, serta `cues` manual; artikulasi mulut dan kedipan tetap berjalan |
 | `lip_sync`, `auto_blink` | Gerak mulut dari teks dan kedipan otomatis |
@@ -88,6 +88,9 @@ chmod +x run_mcp.sh
 ```bash
 .venv/bin/python tests/e2e_smoke.py
 ```
+Tambahkan `CHAR3D_MPFB_PACK_VISUALS=1` untuk lembar Eevee front/¾ dari empat outfit
+paket tambahan. Cek katalog, bobot, deformasi dan jalur tekstur selalu berjalan;
+paket opsional yang belum terpasang dilewati dengan pesan.
 Tambahkan `CHAR3D_ENV_VISUALS=1` untuk merender keenam set dengan karakter MPFB di Eevee;
 tes standar merender kantor dan contoh gambar layar agar lebih cepat.
 
@@ -123,6 +126,47 @@ scripts/install_mpfb.sh
 Isinya: 23 kulit, 10 rambut, 12 alis, 4 bulu mata, 2 mata, gigi, lidah, 20 baju/sepatu/topi,
 plus paket wajah `faceunits01` (52 blendshape ARKit) dan `visemes01` (22 bentuk mulut),
 semuanya CC0.
+
+Paket CC0 tambahan (opsional, sesudah instalasi dasar):
+```bash
+scripts/install_mpfb_packs.sh                  # semua 12 paket
+scripts/install_mpfb_packs.sh shirts01 pants01 # atau pilih paket
+```
+Default: `shirts01 pants01 skirts01 dress01 suits01 hats01 glasses01 bodyparts05
+hair01 shoes01 skins01 skins02`. Ukuran unduhan terkompresi: pakaian sekitar 176 MB,
+`hair01` 217 MB, `shoes01` 79 MB, kulit (`skins01` + `skins02`) 172 MB, janggut 6 MB.
+Skrip mencetak ukuran sebelum mengunduh, memakai cache `~/.local/opt/dl/mpfb/`
+(`MPFB_DOWNLOAD_DIR` untuk menggantinya), mengecek SHA256 tercatat (peringatan bila
+berubah), memvalidasi ZIP dengan MPFB, mengekstrak dan memperbarui daftar aset.
+`CHAR3D_BLENDER` memilih executable; `MPFB_USER_DATA` dapat memilih direktori data
+MPFB terpisah. Restart engine sesudah memasang paket.
+
+`mpfb_assets()` menampilkan seluruh nama di `assets`, anggota paket di `packs`, serta
+`clothing_categories` dan `clothing_metadata` (kategori, gender, nama, tags, z_depth).
+Ada top/bottom/dress/suit/shoes/hat/glasses/beard/moustache; topi dan kacamata masuk
+parameter `clothes`. `hair`, `skin`, `eyebrows`, `eyelashes` menerima semua nama yang
+terpasang. `skin="auto"` tetap memilih kulit sesuai umur/gender/etnis.
+Contoh:
+```python
+create_realistic_human("Rina", gender=0, hair="toigo_inverted_bob",
+                      outfit="summer", seed=7)
+create_realistic_human("Dani", gender=1, beard="wdg_scruffy_beard",
+                      clothes=["namuhekam_male_polo_shirt", "cortu_cargo_pants",
+                               "toigo_ankle_boots_male", "jujube_newsboy_cap",
+                               "spamrakuen_sagerfrogs_glasses_01"])
+```
+Preset: `casual`, `formal`, `sport`, `summer`, `winter` (dengan topi). Pilihan diambil
+dari aset terpasang dan menghindari gender yang berlawanan bila namanya/tags menyatakan
+male/female; aset tanpa penanda dianggap unisex. Catalog/gender/seed yang sama memberi
+pakaian yang sama. `clothes` eksplisit, termasuk `[]`, menggantikan preset; janggut
+tetap ditambahkan. Hasil `warnings` memberitahu kategori yang tidak tersedia atau
+pakaian bertumpuk (misalnya dua atasan atau setelan + atasan), tanpa menggagalkan
+kombinasi eksplisit. Fitting, bobot tulang dan body hiding memakai mekanisme MPFB;
+vertex pakaian/rambut yang tidak mendapat bobot diisi dari tetangga berbobot terdekat
+tanpa mengubah bobot lain (`weights_repaired` melaporkan jumlah per mesh).
+Tidak ada simulasi kain. Topi/rambut dan rok/pose ekstrem masih bisa berpotongan:
+periksa `render_views(..., engine_name="eevee")` sebelum ekspor.
+
 Lisensi: kode MPFB GPL-3.0 (tidak disalin ke repo ini, hanya dipanggil saat runtime);
 aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersial.
 
