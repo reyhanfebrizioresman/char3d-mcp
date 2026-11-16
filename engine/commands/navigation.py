@@ -261,7 +261,7 @@ class Planner:
         i = int(np.argmin(np.sum(delta*delta, axis=-1)))
         return (int(x[i]), int(y[i]))
 
-    def plan(self, route, curves):
+    def plan(self, route, curves, escape=True):
         # Test the existing curved route too: a rounded free polyline can bow into
         # furniture. Do not replace any points on a clear route.
         if self.empty:
@@ -274,12 +274,12 @@ class Planner:
             # Characters often stand within the clearance margin of a desk or chair
             # (e.g. staged behind a desk). Step straight out to the nearest free cell
             # first, but only over a short distance; a deeply buried start is an error.
-            escape = self.point(self._nearest_free(route[0]))
-            if (escape - route[0]).length > ESCAPE_DISTANCE:
+            exit_point = self.point(self._nearest_free(route[0]))
+            if not escape or len(route) < 2 or (exit_point - route[0]).length > ESCAPE_DISTANCE:
                 raise ValueError("walking character starts inside an inflated obstacle; move it or ignore the object")
             self.warnings.append(f"start {list(route[0])[:2]} is within the clearance margin; "
-                                 f"stepping out to {[round(v, 3) for v in list(escape)[:2]]} first")
-            out.append(escape)
+                                 f"stepping out to {[round(v, 3) for v in list(exit_point)[:2]]} first")
+            out.append(exit_point)
             self.detours += 1
             curved_free = False
         if curved_free:

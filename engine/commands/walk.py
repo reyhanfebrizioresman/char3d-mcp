@@ -651,7 +651,7 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None):
             began = time.perf_counter()
             bpy.context.scene.frame_set(start)
             planner = Planner(rig, [pos], query, ignored, start)
-            planner.plan([pos], _curves)
+            planner.plan([pos], _curves, escape=False)
             planning_seconds = time.perf_counter()-began
         heading = _target_yaw(target, pos, start, yaw)
         keys = [(0.0, pos, yaw)]
