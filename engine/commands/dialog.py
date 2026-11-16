@@ -172,10 +172,11 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                     angle = max(float(single_angle_limits[0]), min(float(single_angle_limits[1]), angle))
                 subj, size = [who], shot
             r = camera_shot(subject=subj, shot=size, move=move, start_frame=a, end_frame=b,
-                            angle=angle, elevation=3.0, intensity=0.35, name=f"{shot_prefix}{k + 1:02d}")
+                            angle=angle, elevation=3.0, intensity=0.35, name=f"{shot_prefix}{k + 1:02d}",
+                            angle_limits=single_angle_limits or [-89.0, 89.0], action_line=names)
             shots.append({"camera": r.get("camera", f"Dialog{k + 1:02d}"), "frames": [a, b],
                           "subject": "two_shot" if who is None else who,
-                          "angle": round(angle, 1)})
+                          "angle": round(angle, 1), "occlusion": r["occlusion"]})
         report["shots"] = shots
 
     for i, (n, rig) in enumerate(rigs.items()):

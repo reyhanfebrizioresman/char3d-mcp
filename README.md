@@ -44,7 +44,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `secondary_motion` | Ayunan rambut dan hem pakaian baked: `parts=["hair","clothes"]` atau nama objek/aset pakaian. Rok, gaun, ekor jaket/mantel longgar memakai hingga 12 rantai × 4 tulang deform; celana/kaus ketat dilewati dengan alasan. Bobot pinggang lama dibaurkan ke rantai, collider paha/betis + batas jarak tetangga menjaga hem. Jalankan terakhir setelah gerak/duduk/bicara; stiffness/damping/gravity/angin, rerun deterministik, `clear` per rentang, ekspor glTF/FBX. Hasil per pakaian: rantai/tulang, lag tip, clearance kapsul dan waktu bake. Pendekatan rantai elastis, bukan fisika kain per vertex; tanpa tabrakan kursi/prop |
 | `add_terrain`, `clear_terrain` | Buat/hapus tangga, ramp, platform, dan satu anak tangga; mesh bertanda walkable. `walk_path` mengikuti tinggi permukaan, menempatkan telapak utuh pada pijakan, dan mengangkat kaki melewati tepi; `lock_feet(terrain=True)` mengikuti tinggi serta kemiringan lokal. Kecepatan dan irama berubah mulus di sepanjang rute: normal di lantai/platform datar, sedikit melambat sesuai kemiringan ramp, langkah jalan pendek dengan irama lebih cepat hanya di tangga. Permintaan lari tetap berlari di bagian datar/ramp dan beralih ke jalan di sekitar tangga (`terrain.gait`: `walk`, `run`, `run/walk`); putaran/langkah penutup memakai irama tersendiri. Tinggi anak tangga disarankan ≤0,20 m, tepi dengan lonjakan >0,25 m dihindari |
 | `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
-| `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
+| `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera, 8 ukuran shot, multi-shot otomatis; `avoid_occlusion="auto"` menjaga wajah dari laptop, monitor, mikrofon dan penghalang lain |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
 | `dialog`, `stage_dialog` | Percakapan 2–4 karakter dalam satu panggilan: posisi saling berhadapan, lip sync per baris (audio/teks), saling menatap, pendengar mengangguk, gestur per pembicara, kamera two-shot lalu single per pembicara |
 | `script_to_scene` | Naskah pendek Indonesia/Inggris atau dict → 1–4 karakter, set, aksi jalan/duduk/berdiri/pegang prop, dialog, ekspresi, kamera, subtitle, cahaya dan gerak rambut. `build=False` hanya membuat rencana tanpa mengubah adegan; hasil berisi frame, shot, warning dan waktu proses |
@@ -119,6 +119,21 @@ Nama karakter dibuat unik; objek lama dipertahankan, set terkelola mengikuti per
 `set_environment`. Tidak menyimpan atau merender otomatis. Periksa beberapa shot dengan
 `render_frames(camera="scene", engine_name="eevee", size=512)`, lalu simpan dan render
 draft. Format lengkap dan resep ada di [Script → scene](AGENTS.md#script--scene).
+
+`camera_shot(..., avoid_occlusion="auto")` memeriksa wajah/mata pada awal, tengah,
+akhir dan kira-kira setiap 0,5 detik dengan raycast mesh yang sudah dievaluasi.
+Jika terhalang, kamera mencoba elevasi sampai sekitar 20°, sudut ±10–30°, jarak
+lebih dekat dengan lensa lebih lebar, lalu sedikit pergeseran vertikal. Kamera
+dialog dan `script_to_scene` memakai pemeriksaan yang sama, tetap di sisi depan
+garis dialog dan di dalam batas lorong kamera set. Kandidat di dalam mesh atau
+di balik/menembus dinding ditolak. Shot bebas penghalang mempertahankan key kamera
+persis; `False` memakai framing lama, `True` sama dengan `"auto"`.
+Hasil `occlusion` berisi fraksi wajah terhalang terburuk `before`/`after`,
+`adjusted`, frame sampel, waktu pemeriksaan, dan `warning` jika tidak ada kandidat
+aman. Bagian karakter sendiri, prop yang dipegang, ground dan objek tersembunyi
+diabaikan. Landmark wajah bersifat perkiraan; gerakan sangat singkat di antara
+sampel, rambut sendiri dan animasi yang diubah sesudahnya tetap perlu diperiksa
+dengan render Eevee. Lihat [Shots](AGENTS.md#film-cameras-lighting-video).
 
 ## Kebutuhan
 - Blender 5.2 LTS. Secara default dicari di `~/.local/opt/blender/blender`,

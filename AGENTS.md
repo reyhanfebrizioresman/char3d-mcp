@@ -46,7 +46,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   four, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
   `retarget_animation`, `lock_feet`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
-- Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
+- Film: `list_camera_moves`, `camera_shot` (occlusion-aware framing), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
@@ -636,7 +636,7 @@ union center/scale and can put lights behind scenery that casts shadows on the c
 `set_material(objects, color, roughness, metallic, emission_strength)` for quick looks.
 
 **Shots** — `camera_shot(subject, shot, move, start_frame, end_frame, angle, elevation,
-intensity, handheld, roll, depth_of_field)`:
+intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
 - shot sizes: extreme_wide, wide, full, medium_full, medium, medium_close, close_up,
   extreme_close_up (lens picked automatically, override with `lens`).
 - moves: static, push_in, dolly_in, dolly_out, pull_out, orbit_left, orbit_right, arc,
@@ -649,6 +649,23 @@ intensity, handheld, roll, depth_of_field)`:
   `start_frame = previous["next_start_frame"]`. Re-use `name` to replace a shot.
 - Check framing through the real cameras:
   `render_frames([first, middle, last], camera="scene", engine_name="eevee")`.
+- `avoid_occlusion="auto"` (also `True`) raycasts evaluated visible meshes at the
+  start/middle/end and about every 0.5 s. It checks each subject's posed face/eyes,
+  head/chest and, for wider sizes, body bounds. Subject meshes, descendants, active
+  held props, ground and hidden geometry are excluded; other characters can block
+  singles, while every subject in a two-shot is excluded.
+- Blocked faces trigger a deterministic search: raise elevation toward 20°, shift
+  azimuth ±10/20/30°, shorten distance with a wider lens, then small vertical offsets.
+  Adjustments reject camera positions inside scenery, behind walls or crossing walls;
+  dialog stays on the -Y side and honors the set's camera aisle. Clear shots retain
+  exactly the original transform/lens keys; `False` retains the original framing.
+- Results include `occlusion`: worst sampled per-subject face fraction `before` /
+  `after`, `adjusted`, body fractions, `sample_frames`, timing `seconds`, and `warning`
+  when no safe candidate clears the face. Dialog/script shot results include the same
+  report. Inspect before/after with Eevee, especially after changing later animation.
+  This is sampled visibility with approximate face landmarks, not a continuous
+  collision/frustum solver. Own hair/held props can still cover the face; very brief
+  crossings between samples or later animation changes require checking/rerunning.
 
 **Subtitles** — `add_subtitles(style)` turns on captions; `render_video` then burns them in
 (a short Video Sequencer pass after the frames, ~0.1 s/frame) and writes an `.srt` next to the

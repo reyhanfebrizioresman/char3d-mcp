@@ -452,19 +452,25 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                       ease: Literal["linear", "ease_in", "ease_out", "ease_in_out"] = "ease_in_out",
                       lens: float | None = None, handheld: float = 0.0, roll: float = 0.0,
                       depth_of_field: bool = False, f_stop: float = 2.8,
-                      name: str | None = None) -> dict:
+                      name: str | None = None,
+                      avoid_occlusion: Literal["auto"] | bool = "auto") -> dict:
     """Create a cinematic shot camera for frames start..end, framed on `subject` (mesh or
     armature names; default = everything) even while it moves. angle: 0 = in front,
     90 = subject's left, 180 = behind. elevation: degrees (negative = low angle, heroic).
     intensity scales the move. handheld 0..1 adds shake, roll = dutch angle.
     Each shot adds a timeline marker, so consecutive shots CUT automatically in
     render_video. Chain with start_frame = previous next_start_frame. Re-using `name`
-    replaces that shot."""
+    replaces that shot. avoid_occlusion="auto" (or True) samples evaluated face/eyes,
+    head/chest and body visibility across the shot and adjusts blocked framing with
+    small elevation/angle/distance/vertical changes. Clear shots keep identical keys.
+    False retains the original framing. Returns occlusion before/after fractions,
+    adjustments, sampled frames, timing and a warning if no safe framing is found.
+    Subject parts/held props and ground are ignored; other characters can occlude."""
     return await run("camera_shot", subject=subject, shot=shot, move=move,
                      start_frame=start_frame, end_frame=end_frame, angle=angle,
                      elevation=elevation, intensity=intensity, ease=ease, lens=lens,
                      handheld=handheld, roll=roll, depth_of_field=depth_of_field,
-                     f_stop=f_stop, name=name)
+                     f_stop=f_stop, name=name, avoid_occlusion=avoid_occlusion)
 
 
 @mcp.tool()

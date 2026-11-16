@@ -7,13 +7,16 @@ timeline marker at its start frame, so consecutive shots cut automatically in re
 Angles: azimuth 0 = in front of the subject (camera on -Y looking +Y), +90 = the
 subject's left side (+X), 180 = behind. Elevation in degrees above the focus point.
 """
+import json
 import math
+import time
 
 import bpy
 from mathutils import Euler, Vector
 
 from . import command
 from .util import RENDERABLE, is_helper, obj_or_raise, scene_bounds
+from .occlusion import VisibilityProbe, adjusted, sample_frames
 
 # shot size: (visible height as multiple of subject height, aim height fraction, lens mm)
 SHOTS = {
@@ -131,12 +134,17 @@ def list_camera_moves():
 @command("camera_shot")
 def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_frame=72,
                 angle=20.0, elevation=5.0, intensity=1.0, ease="ease_in_out", lens=None,
-                handheld=0.0, roll=0.0, depth_of_field=False, f_stop=2.8, name=None):
-    """Create (or replace) a shot camera with a baked move, bound to a timeline marker."""
+                handheld=0.0, roll=0.0, depth_of_field=False, f_stop=2.8, name=None,
+                avoid_occlusion="auto", angle_limits=None, action_line=None):
+    """Create a baked shot and cut marker. Auto/True clear sampled face obstructions;
+    False keeps old framing. angle_limits/action_line constrain internal dialog coverage.
+    """
     if shot not in SHOTS:
         raise ValueError(f"shot must be one of {list(SHOTS)}")
     if move not in MOVES:
         raise ValueError(f"move must be one of {list(MOVES)}")
+    if avoid_occlusion != "auto" and type(avoid_occlusion) is not bool:
+        raise ValueError('avoid_occlusion must be "auto", True or False')
     sc = bpy.context.scene
     start, end = int(start_frame), int(end_frame)
     if end <= start:
@@ -167,6 +175,9 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     sc.frame_set(start)
     lo, hi = scene_bounds(targets)
     H = max(hi.z - lo.z, 0.05)
+    probe = VisibilityProbe(targets, shot, H, angle_limits, action_line)
+    samples = set(sample_frames(start, end, sc.render.fps / sc.render.fps_base))
+    trajectory = []
     fn = MOVES[move][0]
     smooth_focus, prev_rot = None, None
     base_focus = None
@@ -209,6 +220,9 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
         if roll:
             rot.y += math.radians(roll)
         prev_rot = rot.copy()
+        trajectory.append((f, pos.copy(), aim.copy(), rot.copy(), lens_mm, focus.copy()))
+        if f in samples:
+            probe.capture(f, pos, aim)
 
         cam.location = pos
         cam.rotation_euler = rot
@@ -224,6 +238,28 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             cam_data.dof.focus_distance = (focus - pos).length
             cam_data.dof.keyframe_insert("focus_distance", frame=f)
 
+    adjustment, occlusion = probe.resolve(avoid_occlusion is not False, elevation)
+    if adjustment:
+        adjustment_started = time.perf_counter()
+        prev_rot = None
+        for f, pos, aim, rot, mm, focus in trajectory:
+            new_pos, new_aim = adjusted(pos, aim, H, adjustment)
+            old_rot = (aim - pos).to_track_quat("-Z", "Y").to_euler("XYZ", rot)
+            new_rot = (new_aim - new_pos).to_track_quat("-Z", "Y").to_euler("XYZ", prev_rot or rot)
+            # Retain the original roll and deterministic handheld shake.
+            new_rot = Euler(tuple(new_rot[i] + rot[i] - old_rot[i] for i in range(3)))
+            prev_rot = new_rot.copy()
+            cam.location, cam.rotation_euler = new_pos, new_rot
+            cam_data.lens = mm * adjustment.get("distance", 1)
+            cam.keyframe_insert("location", frame=f)
+            cam.keyframe_insert("rotation_euler", frame=f)
+            cam_data.keyframe_insert("lens", frame=f)
+            if depth_of_field:
+                cam_data.dof.focus_distance = (focus - new_pos).length
+                cam_data.dof.keyframe_insert("focus_distance", frame=f)
+        occlusion["seconds"] = round(occlusion["seconds"] + time.perf_counter() - adjustment_started, 4)
+    cam["c3d_occlusion"] = json.dumps(occlusion)
+
     # timeline: cut to this camera at its start frame
     replaced = []
     for m in [m for m in sc.timeline_markers if m.name == name or m.frame == start]:
@@ -238,8 +274,10 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     sc.frame_set(start)
     return {"camera": cam.name, "shot": shot, "move": move, "frames": [start, end],
             "next_start_frame": end + 1, "subject_height": round(H, 3),
+            "occlusion": occlusion,
             "replaced_shots_at_start_frame": replaced,
-            "lens_mm": [round(base_lens, 1), round(lens_mm, 1)]}
+            "lens_mm": [round(base_lens * (adjustment or {}).get("distance", 1), 1),
+                        round(lens_mm * (adjustment or {}).get("distance", 1), 1)]}
 
 
 @command("list_shots")

@@ -1828,7 +1828,8 @@ REGISTRY['mpfb_assets'] = script_missing_mpfb
         {"id": "ScriptBudi", "gender": 1, "hair": "short01", "clothes": ["male_casualsuit01", "shoes01"]}],
         "beats": [{"say": "ScriptAna", "text": "Selamat pagi!", "emotion": "happy"},
                   {"say": "ScriptBudi", "text": "Terima kasih."},
-                  {"do": "walk", "who": "ScriptBudi", "to": [0.85, 0.0]},
+                  # A seat approach excludes that chair's inflated footprint.
+                  {"do": "walk", "who": "ScriptBudi", "to": "chair"},
                   {"do": "sit", "who": "ScriptBudi", "on": "chair"},
                   {"say": "ScriptAna", "text": "Apa kabar hari ini?"},
                   {"say": "ScriptBudi", "text": "Senang sekali!"}]}
@@ -1919,6 +1920,216 @@ result = angles
           f"{checked['result']['word_counts']} | 3 Eevee shots + draft OK | six lines {benchmark:.2f}s | silent actor OK")
 
 
+async def _occlusion_checks(call):
+    """Real set regressions, unchanged keys, timed blockers and safe failure."""
+    import shutil
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def python(code):
+        return (await data('run_blender_python', code=textwrap.dedent(code)))['result']
+
+    async def render(frame, filename):
+        # Scene-camera frames use the scene resolution; keep the same 16:9 aspect.
+        await python('bpy.context.scene.render.resolution_x=512\nbpy.context.scene.render.resolution_y=288')
+        res = await data('render_frames', frames=[frame], camera='scene',
+                         engine_name='eevee', size=512, subtitles=False)
+        shutil.copyfile(res['path'], os.path.join(ROOT, 'output', filename))
+
+    async def curves():
+        return await python('''
+            from engine.commands.talk import _fcurves
+            c = bpy.data.objects['VisibilityTest']
+            result = [[[fc.data_path, fc.array_index,
+                        [[list(k.co), k.interpolation] for k in fc.keyframe_points]]
+                       for fc in _fcurves(o.animation_data.action)] for o in (c, c.data)]
+        ''')
+
+    async def visibility(subject, frame, camera):
+        # Independent scene raycasts validate the final keys, rather than trusting
+        # the candidate scorer/report. Skip self hits until scenery is encountered.
+        return await python(f'''
+            from engine.commands.camera import _subjects
+            from engine.commands.occlusion import VisibilityProbe, _points
+            from engine.commands.util import scene_bounds, is_helper
+            from bpy_extras.object_utils import world_to_camera_view
+            sc = bpy.context.scene
+            sc.frame_set({frame})
+            dg = bpy.context.evaluated_depsgraph_get()
+            cam = bpy.data.objects[{camera!r}].evaluated_get(dg)
+            parts = _subjects({subject!r})
+            lo, hi = scene_bounds(parts)
+            probe = VisibilityProbe(parts, 'close_up', hi.z-lo.z)
+            blocked, total, in_frame = 0, 0, True
+            for root, meshes in probe.groups.items():
+                face, eyes, body = _points(meshes, root if root.type == 'ARMATURE' else None, hi.z-lo.z, dg)
+                for point in face:
+                    uv = world_to_camera_view(sc, cam, point)
+                    in_frame &= 0 <= uv.x <= 1 and 0 <= uv.y <= 1 and uv.z > 0
+                    origin = cam.matrix_world.translation.copy()
+                    direction = (point-origin).normalized()
+                    for step in range(100):
+                        distance = (point-origin).dot(direction) - 0.005
+                        if distance <= 0:
+                            break
+                        hit, loc, normal, index, obj, matrix = sc.ray_cast(dg, origin, direction, distance=distance)
+                        if not hit:
+                            break
+                        if (obj not in probe.ignored and not obj.hide_render and obj.visible_get()
+                                and obj.get('c3d_role') != 'ground' and not is_helper(obj)):
+                            blocked += 1
+                            break
+                        origin = loc + direction * 0.002
+                    total += 1
+            result = dict(fraction=blocked/max(1,total), in_frame=bool(in_frame))
+        ''')
+
+    # A script-built seated office presenter, with the supplied set's laptop.
+    await call('new_scene')
+    fixture = {'title': 'Visibility office', 'environment': 'office',
+               'characters': [{'id': 'OcclusionAna', 'gender': 0, 'hair': 'short02'}],
+               'beats': [{'do': 'sit', 'who': 'OcclusionAna', 'on': 'chair'},
+                         {'say': 'OcclusionAna', 'text': 'Apa kabar hari ini?'}]}
+    built = await data('script_to_scene', script=fixture, subtitles=False)
+    rig = built['characters']['OcclusionAna']['rig']
+    args = dict(subject=[rig], shot='medium', angle=-10, elevation=3,
+                start_frame=25, end_frame=85, name='VisibilityTest')
+    before = await data('camera_shot', **args, avoid_occlusion=False)
+    before_measure = await visibility([rig], 45, 'VisibilityTest')
+    await render(45, 'occlusion_office_before.png')
+    after = await data('camera_shot', **args)
+    after_measure = await visibility([rig], 45, 'VisibilityTest')
+    await render(45, 'occlusion_office_after.png')
+    assert before['occlusion']['before'] > 0.15, before
+    assert before_measure['fraction'] > 0.15, before_measure
+    assert after['occlusion']['after'] <= 0.05 and after['occlusion']['adjusted'], after
+    assert after_measure['fraction'] <= 0.05 and after_measure['in_frame'], after_measure
+    assert after['occlusion']['seconds'] < 0.5, after
+    await call('save_project', path='occlusion_office.blend')
+
+    # Clear auto and True preserve every transform/lens key, including a moving shot.
+    await call('new_scene')
+    await call('create_human', name='VisibilityHuman', style='realistic')
+    await call('auto_rig_humanoid', mesh='VisibilityHuman')
+    await call('apply_pose', armature='VisibilityHuman_rig', pose='relaxed')
+    clear = dict(subject=['VisibilityHuman_rig'], shot='close_up', move='push_in',
+                 angle=0, elevation=3, start_frame=1, end_frame=73, name='VisibilityTest')
+    await data('camera_shot', **clear, avoid_occlusion=False)
+    original = await curves()
+    for mode in ('auto', True):
+        free = await data('camera_shot', **clear, avoid_occlusion=mode)
+        assert free['occlusion']['before'] == 0 and free['occlusion']['adjusted'] == [], free
+        assert await curves() == original, 'clear camera keys changed'
+
+    # One blocked eye is below the face-fraction threshold, but close-ups must fix it.
+    await python('''
+        from engine.commands.occlusion import _points
+        from engine.commands.camera import _subjects
+        from engine.commands.util import scene_bounds
+        bpy.context.scene.frame_set(37)
+        parts=_subjects(['VisibilityHuman_rig'])
+        lo,hi=scene_bounds(parts)
+        face,eyes,body=_points(parts,bpy.data.objects['VisibilityHuman_rig'],hi.z-lo.z,
+                               bpy.context.evaluated_depsgraph_get())
+        cam=bpy.data.objects['VisibilityTest']
+        bpy.ops.mesh.primitive_cube_add(size=1,location=eyes[0].lerp(cam.location,0.5))
+        bpy.context.object.name='EyeBlocker'
+        bpy.context.object.scale=(0.008,0.005,0.008)
+    ''')
+    eye_before = await data('camera_shot', **clear, avoid_occlusion=False)
+    eye_after = await data('camera_shot', **clear)
+    assert 0 < eye_before['occlusion']['before'] <= 0.15, eye_before
+    assert eye_after['occlusion']['after'] == 0 and eye_after['occlusion']['adjusted'], eye_after
+    await call('delete_objects', names=['EyeBlocker'])
+
+    # A narrow blocker crosses the face at 0.5 s, between start/middle/end.
+    # A separate hidden blocker and a ground-tagged box must not count.
+    await python('''
+        from engine.commands.occlusion import VisibilityProbe, _points
+        from engine.commands.camera import _subjects
+        from engine.commands.util import scene_bounds
+        sc=bpy.context.scene
+        sc.frame_set(13)
+        parts=_subjects(['VisibilityHuman_rig'])
+        lo,hi=scene_bounds(parts)
+        rig=bpy.data.objects['VisibilityHuman_rig']
+        face,eyes,body=_points(parts,rig,hi.z-lo.z,bpy.context.evaluated_depsgraph_get())
+        center=sum(face, Vector())/len(face)
+        cam=bpy.data.objects['VisibilityTest']
+        center=center.lerp(cam.location,0.35)
+        bpy.ops.mesh.primitive_cube_add(size=1, location=center)
+        blocker=bpy.context.object
+        blocker.name='TimedFaceBlocker'
+        blocker.scale=(0.20,0.03,0.21)
+        for f,dx in ((1,2),(13,0),(25,2),(73,2)):
+            blocker.location=center+Vector((dx,0,0))
+            blocker.keyframe_insert('location',frame=f)
+        bpy.ops.mesh.primitive_cube_add(size=1,location=center)
+        bpy.context.object.name='InvisibleFaceBlocker'
+        bpy.context.object.hide_render=True
+        bpy.ops.mesh.primitive_cube_add(size=1,location=center)
+        bpy.context.object.name='IgnoredGround'
+        bpy.context.object['c3d_role']='ground'
+    ''')
+    moving_before = await data('camera_shot', **clear, avoid_occlusion=False)
+    moving_after = await data('camera_shot', **clear)
+    assert 13 in moving_after['occlusion']['sample_frames']
+    assert moving_before['occlusion']['before'] > 0.15, moving_before
+    assert moving_after['occlusion']['after'] <= 0.05, moving_after
+    await call('delete_objects', names=['TimedFaceBlocker', 'InvisibleFaceBlocker', 'IgnoredGround'])
+
+    # Other characters occlude singles, and are excluded when both are subjects.
+    await call('create_human', name='ForegroundHuman', style='realistic')
+    await call('transform_object', name='ForegroundHuman', location=[0, -0.6, 0])
+    single = await data('camera_shot', **clear, avoid_occlusion=False)
+    pair = await data('camera_shot', subject=['VisibilityHuman_rig', 'ForegroundHuman'],
+                      shot='medium_full', angle=0, start_frame=1, end_frame=73,
+                      name='VisibilityPair')
+    assert single['occlusion']['before'] > 0.15, single
+    assert pair['occlusion']['before'] == 0, pair
+    await call('delete_objects', names=['ForegroundHuman'])
+
+    # Enclosed cameras cannot escape through a wall; failure preserves old keys.
+    await call('add_primitive', kind='cube', name='ClosedBackdrop', size=20)
+    await data('camera_shot', **clear, avoid_occlusion=False)
+    enclosed_keys = await curves()
+    enclosed = await data('camera_shot', **clear)
+    assert enclosed['occlusion']['before'] > 0.15 and 'warning' in enclosed['occlusion'], enclosed
+    assert enclosed['occlusion']['adjusted'] == [] and await curves() == enclosed_keys
+
+    # Podcast mixed coverage: two-shot, then an unobstructed single per speaker.
+    await call('new_scene')
+    podcast = await data('script_to_scene', script={'title': 'Visibility podcast',
+        'environment': 'podcast_studio', 'characters': [
+            {'id': 'PodcastAna', 'gender': 0, 'hair': 'short02'},
+            {'id': 'PodcastBudi', 'gender': 1, 'hair': 'short02'}],
+        'beats': [{'say': 'PodcastAna', 'text': 'Selamat pagi.'},
+                  {'say': 'PodcastBudi', 'text': 'Terima kasih, Ana.'},
+                  {'say': 'PodcastAna', 'text': 'Sama sama, Budi.'}]}, subtitles=False)
+    direct = await data('dialog', lines=[
+        {'speaker': 'PodcastAna_rig', 'text': 'Selamat pagi.'},
+        {'speaker': 'PodcastBudi_rig', 'text': 'Terima kasih, Ana.'},
+        {'speaker': 'PodcastAna_rig', 'text': 'Sama sama, Budi.'}],
+        stage=False, camera='mixed', shot='medium', gestures=None)
+    singles = [s for s in direct['shots'] if s['subject'] != 'two_shot']
+    assert len(singles) == 2 and len({s['subject'] for s in singles}) == 2, podcast
+    for i, single in enumerate(singles):
+        line = next(ln for ln in direct['lines'] if ln['speaker'] == single['subject']
+                    and single['frames'][0] <= ln['start'] <= single['frames'][1])
+        frame = (line['start'] + line['end']) // 2
+        final = await visibility([single['subject']], frame, single['camera'])
+        assert final['fraction'] <= 0.05 and final['in_frame'], (single, final)
+        assert single['occlusion']['after'] <= 0.05, single
+        assert await python(f"bpy.context.scene.frame_set({frame})\n"
+                            f"result=bpy.data.objects[{single['camera']!r}].location.y < 0")
+        await render(frame, f'occlusion_podcast_{i+1}.png')
+    await call('save_project', path='occlusion_podcast.blend')
+    print(f"occlusion: office {before['occlusion']['before']:.3f} -> "
+          f"{after['occlusion']['after']:.3f} in {after['occlusion']['seconds']:.3f}s | "
+          "clear keys identical | timed blocker/other cast/walls OK | podcast singles clear")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -1940,6 +2151,7 @@ async def main():
         print("status:", text_of(await call("engine_status")))
         assert "script_to_scene" in tools
         await _script_scene_checks(call)
+        await _occlusion_checks(call)
         await _lighting_checks(call)
         await call("new_scene")
         await call("add_primitive", kind="monkey", name="Hero", location=[0, 0, 1])
