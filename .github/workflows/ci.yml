@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # Blender-free checks: lint, MCP server import, offline unit tests.
+    # The Blender end-to-end tests (tests/e2e_smoke.py) run locally.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ruff
+      - name: Lint (pyflakes rules)
+        run: ruff check --select F --output-format github .
+      - name: Byte-compile everything
+        run: python -m compileall -q engine mcp_server providers tests
+      - name: mcp_server must not import bpy
+        run: |
+          if grep -rnE '^\s*(import|from)\s+bpy' mcp_server providers; then
+            echo "bpy may only be imported inside engine/"; exit 1
+          fi
+      - name: MCP server imports and registers tools
+        run: python -c "import mcp_server.server as s; n = len(s.mcp._tool_manager.list_tools()); print(n, 'tools'); assert n > 50"
+      - name: Unit tests
+        run: python tests/test_phonemes.py

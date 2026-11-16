@@ -81,6 +81,10 @@ chmod +x run_mcp.sh
 Tambahkan `CHAR3D_ENV_VISUALS=1` untuk merender keenam set dengan karakter MPFB di Eevee;
 tes standar merender kantor dan contoh gambar layar agar lebih cepat.
 
+GitHub Actions (`.github/workflows/ci.yml`) menjalankan pemeriksaan tanpa Blender di setiap
+push/PR: lint `ruff --select F`, compile semua modul, larangan `import bpy` di `mcp_server/`,
+impor server MCP, dan `tests/test_phonemes.py`. Tes E2E Blender tetap dijalankan lokal.
+
 ## Menyambungkan ke AI
 Ganti `/PATH/KE/char3d` dengan lokasi folder ini.
 
@@ -189,3 +193,7 @@ Uji alur AI tanpa key dan tanpa internet (memakai server fal.ai tiruan lokal):
 - Komputer tanpa GPU: render Workbench ±1 detik, Eevee ±10 detik per gambar
   (512 px). Cycles lambat, jadi gunakan hanya untuk hasil final.
 - Konvensi: satuan meter, sumbu Z ke atas, karakter menghadap -Y.
+
+## Lisensi
+MIT — lihat [LICENSE](LICENSE). Aset MPFB/MakeHuman berlisensi CC0; gambar, audio, dan
+model milik pengguna tetap mengikuti lisensinya masing-masing.
