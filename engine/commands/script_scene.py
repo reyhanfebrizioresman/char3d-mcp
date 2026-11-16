@@ -4,6 +4,7 @@ import time
 from contextlib import contextmanager
 
 import bpy
+from mathutils import Vector
 
 from . import command, dispatch
 from ..script_plan import parse_script
@@ -213,6 +214,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 report = {}
                 if action == "walk":
                     target = beat["to"]
+                    walk_args = {"armature": rig, "start_frame": start}
                     if isinstance(target, str):
                         obj, _ = resolve(target, ident, seat=target in ("chair", "seat", "sofa", "bench", "stool"))
                         target_obj = bpy.data.objects[obj]
@@ -220,8 +222,23 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                                  else target_obj.matrix_world.translation)
                         target = list(point.xy)
                         # Stop in front of a seat instead of walking through its back.
-                        target[1] -= 0.45
-                    report = _skeleton("walk_path", {"armature": rig, "points": [target[:2]], "start_frame": start})
+                        anchor = bpy.data.objects.get(target_obj.get("c3d_seat_anchor", ""))
+                        if anchor is None and "c3d_seat_centers" in target_obj:
+                            anchor = target_obj
+                        if anchor is not None:
+                            # Stop in front of the seat (its own front direction) and let
+                            # obstacle avoidance ignore only that piece of furniture.
+                            front = (anchor.matrix_world.to_3x3()
+                                     @ Vector(anchor.get("c3d_seat_front", (0.0, -1.0, 0.0))))
+                            front.z = 0.0
+                            front = front.normalized() if front.length > 1e-6 else Vector((0, -1, 0))
+                            target = [target[0] + 0.45 * front.x, target[1] + 0.45 * front.y]
+                            walk_args["ignore"] = sorted(
+                                {o.name for o in bpy.data.objects
+                                 if o is anchor or o.get("c3d_seat_anchor") == anchor.name})
+                        elif target_obj.type != "ARMATURE":
+                            target[1] -= 0.45
+                    report = _skeleton("walk_path", {**walk_args, "points": [target[:2]]})
                 elif action in ("sit", "stand"):
                     dispatch("set_timeline", {"frame_end": start + 20})
                     args = {"character": rig, "start_frame": start}
