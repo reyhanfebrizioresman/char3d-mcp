@@ -49,7 +49,8 @@ Keep previews ≤ 512 px unless the user asks for more.
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
-- Sets & props: `set_environment`, `add_prop`, `clear_environment`
+- Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
+  `hold_prop`, `release_prop`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
   `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
@@ -357,7 +358,8 @@ low-poly geometry and simple materials, suitable for CPU Eevee.
   screens, laptop displays and whiteboards; upright UVs, stretched to fit. Otherwise,
   screens/boards show original geometric graphics. User images retain their own license.
 - `add_prop(kind, location=[x,y,z], rotation_z=0, scale=1)` adds chair, desk, table,
-  microphone, laptop, plant, lamp, screen, bookshelf, sofa or whiteboard. Units are meters,
+  microphone, laptop, plant, lamp, screen, bookshelf, sofa, whiteboard, bench, stool,
+  cup, phone, book or handheld_microphone. Units are meters,
   rotation_z is degrees (0 faces -Y); scale is independent of characters. Location is the
   floor/base center: desk height 1.02 m, coffee table 0.43 m; put microphones/laptops at
   desktop Z. Optional screen_image works here too. Move the returned root to move all parts.
@@ -365,12 +367,43 @@ low-poly geometry and simple materials, suitable for CPU Eevee.
   furniture/lights and unused owned data, preserving characters, cameras and lighting rigs.
   Set calls replace prior sets/props. The central -Y camera path is open; backdrops are
   open at the front/sides/top, designed for frontal medium/wide shots. Static furniture
-  does not follow walking characters or solve seating, hands/desk collisions or arbitrary
+  does not follow walking characters or solve hands/desk collisions or arbitrary
   camera orbits. Use explicit character subjects for lighting and camera framing.
 - Recipe: `set_environment("podcast_studio", subject=["Maya_rig"])` →
   `set_lighting("studio", subject=["Maya_rig"])` →
   `camera_shot(subject=["Maya_rig"], shot="wide", angle=8)` →
   `render_frames([1], camera="scene", engine_name="eevee")`. Inspect the result.
+
+**Sitting & holding** — `sit_on(character, seat, start_frame=None, transition_frames=20,
+seat_index=0, hands="thighs")` seats basic, Rigify and MPFB characters on furniture roots
+or any of their parts. Chair/sofa/bench/stool builders store local seat centers, surface,
+front and floor metadata, so moved/rotated/scaled furniture works. Sofa and bench have
+two positions (`seat_index=0/1`, sofa cushion top 0.46 m); an unmarked mesh uses its
+highest surface and index 0. Set roots enumerate their seat positions too.
+- Buttock contact is measured on the evaluated body/clothes; shared two-bone IK plants
+  flat feet. The character turns toward the seat front and blends back/down from the
+  current pose, then holds through scene end. None appends after the rig's action.
+  `hands`: thighs, lap, armrests (requires seat metadata), none (keeps arm posture).
+  Layer `talk_motion`, `talk_gestures` and `set_hand_pose` afterwards; hips/legs stay seated.
+  `stand_up(character, start_frame=None, transition_frames=20)` stands in front of the
+  saved seat. Results report frames, contact error, IK error and baking time.
+- `add_prop("cup"/"phone"/"book"/"handheld_microphone")` makes original low-poly props
+  in real-world sizes, with their origin at the grip. Omit location to spawn at the most
+  recently created visible rig's right palm (origin if there is no rig).
+  `hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, grip="auto")`
+  places the grip in the palm and poses fingers. Left/right work; mannequins have no
+  fingers. None start uses the current frame; None end keeps the attachment live, including
+  arm animation added later; an end frame releases on the following frame.
+- `release_prop(character, prop, frame, place_at=None)` keeps the release world transform,
+  or places the grip at world XYZ. It remains static, without gravity. Blender keeps a
+  keyed live constraint; export temporarily samples world transforms each frame, including
+  release, then restores scene actions/constraints. Exporting the character includes its
+  held props; glTF receives transform animation, not a constraint or physics simulation.
+- Limits: static level seats and one flat floor; mesh fallback uses the highest vertices
+  (not arbitrary concave seats). No obstacle, clothing, armrest/desk collision or automatic
+  seat occupancy solving. Very high/low seats can exceed limb reach. Each prop supports
+  one pickup/release interval; use separate props for additional intervals. Later finger
+  gestures may replace a grip shape; keep the holding hand out of `talk_gestures`.
 
 **Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane by default and

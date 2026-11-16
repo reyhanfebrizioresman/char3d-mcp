@@ -4,6 +4,7 @@ Only tagged environment objects/data are owned here. Lighting rigs, characters a
 cameras survive replacement; no downloaded geometry, textures or fonts are needed.
 """
 import math
+import json
 import os
 import random
 
@@ -19,7 +20,9 @@ from .util import scene_bounds, vec
 COLLECTION = "char3d_env"
 PRESETS = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk")
 PROPS = ("chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
-         "bookshelf", "sofa", "whiteboard")
+         "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
+         "handheld_microphone")
+HANDHELD = ("cup", "phone", "book", "handheld_microphone")
 THEMES = {
     "warm": {"wall": (0.32, 0.27, 0.22), "accent": (0.10, 0.40, 0.34),
              "fabric": (0.22, 0.29, 0.27)},
@@ -258,6 +261,32 @@ class _Builder:
             for sx in (-1, 1):
                 for sy in (-1, 1):
                     self.rod("chair_leg", (sx*0.20, sy*0.19, 0.43), (sx*0.23, sy*0.23, 0.005), 0.025)
+        elif kind in ("bench", "stool"):
+            width = 1.50 if kind == "bench" else 0.42
+            self.box(kind + "_seat", (0, 0, 0.455), (width, 0.42, 0.09), "wood")
+            for sx in (-1, 1):
+                for sy in (-1, 1):
+                    self.rod(kind + "_leg", (sx*(width/2-0.06), sy*0.15, 0.42),
+                             (sx*(width/2-0.04), sy*0.18, 0.01), 0.025)
+        elif kind == "cup":
+            # Grip origin is on the handle; an open rim and dark interior read at close range.
+            self.cylinder("cup_body", (0.055, 0, 0), 0.039, 0.095, "white", radius_top=0.045)
+            self.cylinder("cup_inside", (0.055, 0, 0.048), 0.036, 0.002, "wood")
+            bpy.ops.mesh.primitive_torus_add(major_segments=24, minor_segments=8,
+                                           major_radius=0.021, minor_radius=0.006)
+            handle = self._mesh("cup_handle", "white")
+            handle.rotation_euler.x = math.pi/2
+        elif kind == "phone":
+            self.box("phone_body", (0, 0, 0.025), (0.012, 0.074, 0.15), "metal", 0.006)
+            self.box("phone_glass", (0.007, 0, 0.025), (0.002, 0.064, 0.13), "screen", 0.002)
+        elif kind == "book":
+            self.box("book_pages", (0, 0, 0.04), (0.025, 0.14, 0.20), "white", 0.002)
+            for sy in (-1, 1):
+                self.box("book_cover", (sy*0.015, 0, 0.04), (0.005, 0.15, 0.21), "accent", 0.002)
+            self.box("book_spine", (0, -0.073, 0.04), (0.034, 0.008, 0.21), "accent", 0.002)
+        elif kind == "handheld_microphone":
+            self.cylinder("handheld_mic_body", (0, 0, 0.025), 0.018, 0.18)
+            self.cylinder("handheld_mic_grille", (0, 0, 0.14), 0.030, 0.065, "fabric")
         elif kind == "microphone":
             self.cylinder("mic_clamp", (0, 0, 0.02), 0.065, 0.04)
             self.rod("mic_arm_lower", (0, 0, 0.04), (0, 0.16, 0.40))
@@ -308,13 +337,31 @@ class _Builder:
                         self.box("shelf_book", (-0.36+i*0.13, -0.03, height+0.025+h/2),
                                  (0.08, 0.23, h), ("accent", "white", "fabric")[i % 3], 0.004)
         elif kind == "sofa":
-            self.box("sofa_base", (0, 0, 0.30), (2.25, 0.85, 0.38), "fabric", 0.08)
-            self.box("sofa_back", (0, 0.36, 0.70), (2.25, 0.20, 0.70), "fabric", 0.07)
+            # A 46 cm cushion top lets adult shins reach the floor without a perched pose.
+            self.box("sofa_base", (0, 0, 0.20), (2.25, 0.85, 0.28), "fabric", 0.08)
+            self.box("sofa_back", (0, 0.36, 0.62), (2.25, 0.20, 0.70), "fabric", 0.07)
             for sx in (-1, 1):
-                self.box("sofa_arm", (sx*1.08, 0, 0.56), (0.20, 0.86, 0.40), "fabric", 0.07)
-                self.box("sofa_cushion", (sx*0.52, -0.04, 0.53), (0.95, 0.65, 0.16), "white", 0.06)
+                self.box("sofa_arm", (sx*1.08, 0, 0.47), (0.20, 0.86, 0.40), "fabric", 0.07)
+                self.box("sofa_cushion", (sx*0.52, -0.04, 0.38), (0.95, 0.65, 0.16), "white", 0.06)
                 for sy in (-1, 1):
                     self.box("sofa_foot", (sx*0.9, sy*0.30, 0.07), (0.09, 0.09, 0.14), "metal")
+        parts = self.objects[start:]
+        if kind in ("chair", "sofa", "bench", "stool"):
+            anchor = parts[0]
+            # Usable sitting centers are near the sofa's front so calves clear its deep base.
+            centers = ([[-0.52, -0.15, 0.26], [0.52, -0.15, 0.26]] if kind == "sofa" else
+                       [[-0.45, 0, 0.045], [0.45, 0, 0.045]] if kind == "bench" else
+                       [[0, 0, 0.055 if kind == "chair" else 0.045]])
+            anchor["c3d_seat_centers"] = json.dumps(centers)
+            anchor["c3d_seat_surface_height"] = centers[0][2]
+            anchor["c3d_seat_front"] = [0.0, -1.0, 0.0]
+            anchor["c3d_seat_floor"] = -anchor.location.z
+            if kind == "sofa":
+                anchor["c3d_seat_armrests"] = json.dumps([[-1.0, -0.1, 0.47], [1.0, -0.1, 0.47]])
+            for part in parts:
+                part["c3d_seat_anchor"] = anchor.name
+            if start == 1:  # standalone add_prop root (sets can contain several chairs)
+                self.root["c3d_seat_anchor"] = anchor.name
         # Transform the whole prop, including its light directions, in the set's local space.
         angle = math.radians(rotation)
         for obj in self.objects[start:]:
@@ -461,16 +508,31 @@ def set_environment(preset, subject=None, scale=1.0, variant=0, color_theme=None
 
 
 @command("add_prop")
-def add_prop(kind, location=(0, 0, 0), rotation_z=0, scale=1.0, screen_image=None):
+def add_prop(kind, location=None, rotation_z=0, scale=1.0, screen_image=None):
     """Add one transformable furniture group; location is its floor/base center in world meters."""
     if kind not in PROPS:
         raise ValueError(f"kind must be one of {list(PROPS)}")
     scale = _positive_scale(scale)
-    location = _vector(location, "location")
+    spawn = location is None and kind in HANDHELD
+    location = _vector(location if location is not None else (0, 0, 0), "location")
     if not math.isfinite(float(rotation_z)):
         raise ValueError("rotation_z must be finite (degrees)")
     image = _screen_image(screen_image)
     b = _Builder(kind, location, scale, rotation=rotation_z, image=image)
     b.prop(kind)
+    b.root["c3d_prop_kind"] = kind
+    b.root["c3d_prop_spawn_at_hand"] = spawn
+    if spawn:
+        from .holding import _palm
+        from .anim import semantic_map
+        rigs = [o for o in bpy.context.scene.objects if o.type == "ARMATURE" and o.visible_get()
+                and not o.name.startswith("__") and "hand.R" in semantic_map(o)]
+        if rigs:
+            rig = rigs[-1]
+            bone, palm = _palm(rig, "R")
+            bpy.context.view_layer.update()
+            b.root.matrix_world = rig.matrix_world @ rig.pose.bones[bone].matrix @ palm
+            b.root.scale = (scale,)*3
+            location = b.root.matrix_world.translation.copy()
     return {**b.result(), "kind": kind, "location": vec(location),
             "rotation_z": rotation_z, "scale": scale}
