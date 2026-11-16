@@ -221,6 +221,227 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
     return measured
 
 
+async def check_terrain(call, kind="basic"):
+    """Check the visible rig on a full course, using an independent analytic surface."""
+    import math
+    await call("scene_info")
+    await call("new_scene")
+    mpfb = kind.startswith("mpfb")
+    rotated = kind.endswith("rigify")
+    angle = 27 if rotated else 0
+    origin = [1.7, 0.4, 0] if rotated else [0, 0, 0]
+    c, s = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+
+    def point(x, y):
+        return [origin[0]+c*x-s*y, origin[1]+s*x+c*y]
+
+    if mpfb:
+        await call("create_realistic_human", name="Climber", face=False,
+                   rig="rigify" if rotated else "game_engine", location=origin)
+        if rotated:
+            await call("transform_object", name="Climber_rig", rotation_deg=[0, 0, angle])
+    else:
+        await call("create_human", name="Climber", height=1.75)
+        await call("auto_rig_humanoid", mesh="Climber", rig_type="rigify" if rotated else "basic")
+        await call("transform_object", name="Climber_rig", location=origin, rotation_deg=[0, 0, angle])
+    for name, terrain, y, length, height, rotation in (
+            ("Stairs", "stairs", -.6, 1.4, .85, 0),
+            ("Landing", "platform", -2, .8, .85, 0),
+            ("Ramp", "ramp", -5, 2.2, .85, 180)):
+        await call("add_terrain", kind=terrain, name=name, location=point(0, y)+[0],
+                   rotation_z=rotation+angle, length=length, height=height,
+                   **({"steps": 5} if terrain == "stairs" else {}))
+    nav = json.loads(text_of(await call("walk_path", armature="Climber_rig",
+                                        points=[point(0, -5.6)], face_end=point(2, -5.6)))[0])
+    code = textwrap.dedent(f'''\
+        import math
+        from engine.commands.anim import semantic_map, _facing
+        from engine.commands.footlock import _legs, _sole_points
+        from engine.commands.terrain import GroundQuery
+        nav = {nav!r}
+        rig = bpy.data.objects['Climber_rig']
+        sc = bpy.context.scene
+        mw = rig.matrix_world
+        smap = semantic_map(rig)
+        legs, _ = _legs(rig)
+        soles = {{side: _sole_points(rig, leg, 0) for side, leg in legs.items()}}
+        planted = {{side: {{f for a,b in nav['foot_lock']['contacts'][side] for f in range(a,b+1)}}
+                   for side in 'LR'}}
+        c, s = {c!r}, {s!r}
+        origin = {origin!r}
+        def surface(p):
+            x, y = p.x-origin[0], p.y-origin[1]
+            x, y = c*x+s*y, -s*x+c*y
+            if abs(x) > .60001: return 0.0
+            if -2 < y <= -.6: return .17*(1+min(4,int((-.6-y)/.28)))
+            if -2.8 <= y <= -2: return .85
+            if -5 <= y < -2.8: return .85*(y+5)/2.2
+            return 0.0
+        query = GroundQuery()
+        ray_error = max(abs(query.sample(*p)[0]-surface(Vector((*p,0))))
+                        for p in [{point(0,-.74)!r}, {point(0,-1.86)!r},
+                                  {point(0,-3.9)!r}, {point(0,-5.4)!r}])
+        drift = contact_error = penetration = rotation_drift = 0.0
+        clearance = 10.0
+        roots, yaws = [], []
+        rest = (mw @ rig.data.bones[smap['hips']].matrix_local).to_quaternion()
+        left = (mw @ rig.data.bones[smap['thigh.L']].head_local -
+                mw @ rig.data.bones[smap['thigh.R']].head_local)
+        forward = Vector((left.y,-left.x,0)).normalized()
+        for side in 'LR':
+            for a,b in nav['foot_lock']['contacts'][side]:
+                anchor = rotation = None
+                for f in range(a,b+1):
+                    sc.frame_set(f)
+                    foot = mw @ rig.pose.bones[smap['foot.'+side]].matrix
+                    p, q = foot.translation, foot.to_quaternion()
+                    anchor = p.copy() if anchor is None else anchor
+                    rotation = q.copy() if rotation is None else rotation
+                    drift = max(drift,(p-anchor).length)
+                    change = rotation.rotation_difference(q).angle
+                    rotation_drift = max(rotation_drift,min(change,2*math.pi-change))
+                    contact_error = max(contact_error,max(abs((foot@v).z-surface(foot@v)) for v in soles[side]))
+        for f in range(nav['frames'][0],nav['frames'][1]+1):
+            sc.frame_set(f)
+            hips = mw @ rig.pose.bones[smap['hips']].matrix
+            roots.append(hips.translation.copy())
+            fw = hips.to_quaternion() @ rest.inverted() @ forward
+            yaws.append(math.atan2(fw.x,-fw.y))
+            for side in 'LR':
+                foot = mw @ rig.pose.bones[smap['foot.'+side]].matrix
+                gaps = [(foot@v).z-surface(foot@v) for v in soles[side]]
+                penetration = max(penetration,-min(gaps))
+                if all(f+j not in planted[side] for j in (-2,-1,0,1,2)):
+                    clearance = min(clearance,min(gaps))
+        turn_rate = max(abs((b-a+math.pi)%(2*math.pi)-math.pi) for a,b in zip(yaws,yaws[1:]))
+        turn_rate *= sc.render.fps/sc.render.fps_base*180/math.pi
+        facing_error = abs((yaws[-1]-math.atan2(c,-s)+math.pi)%(2*math.pi)-math.pi)
+        result = dict(drift=drift, rotation_drift=rotation_drift, contact_error=contact_error,
+                      penetration=penetration, clearance=clearance, ray_error=ray_error,
+                      hips_jump=max(abs(a.z-b.z) for a,b in zip(roots,roots[1:])),
+                      hips_rise=max(p.z for p in roots)-min(p.z for p in roots),
+                      turn_rate=turn_rate, facing_error=facing_error)
+    ''')
+    measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert measured["ray_error"] < 1e-5, measured
+    assert measured["contact_error"] < .015, measured
+    assert measured["drift"] < .02 and measured["rotation_drift"] < .02, measured
+    assert measured["penetration"] < .01 and measured["clearance"] >= .02, measured
+    assert measured["hips_jump"] < .04 and measured["hips_rise"] > .7, measured
+    assert measured["turn_rate"] < 100.1, measured
+    assert measured["facing_error"] < .02, measured
+    assert nav["foot_lock"]["max_penetration_m"] < .01, nav
+    assert nav["foot_lock"]["min_swing_clearance_m"] >= .02, nav
+    assert all(nav["foot_lock"]["ground_heights"].values()), nav
+    if kind == "basic":
+        fingerprint = '''
+import hashlib, json
+from engine.commands.talk import _fcurves
+rig = bpy.data.objects['Climber_rig']
+curves = sorted((fc.data_path, fc.array_index,
+                 [tuple(k.co) for k in fc.keyframe_points])
+                for fc in _fcurves(rig.animation_data.action))
+result = hashlib.sha256(json.dumps(curves).encode()).hexdigest()
+'''
+        first = json.loads(text_of(await call("run_blender_python", code=fingerprint))[0])["result"]
+        await call("clear_animation", armature="Climber_rig")
+        nav = json.loads(text_of(await call("walk_path", armature="Climber_rig",
+                                            points=[point(0, -5.6)], face_end=point(2, -5.6)))[0])
+        second = json.loads(text_of(await call("run_blender_python", code=fingerprint))[0])["result"]
+        assert first == second, "terrain keys must be deterministic"
+    print(f"terrain ({kind}): contact {measured['contact_error']:.6f} m | "
+          f"drift {measured['drift']:.6f} m | penetration {measured['penetration']:.6f} m | "
+          f"clearance {measured['clearance']:.4f} m | hips/frame {measured['hips_jump']:.4f} m | "
+          f"yaw {measured['turn_rate']:.3f} deg/s | bake {nav['terrain']['bake_seconds']:.3f} s")
+    if kind in ("basic", "mpfb"):
+        import shutil
+        # Keep the stairs and full character in frame from the entrance side.
+        images = await call("render_frames", frames=[80, 110], view="right", size=512)
+        for frame, item in zip((80, 110), text_of(images)):
+            shutil.copyfile(json.loads(item)["path"],
+                            os.path.join(ROOT, "output", "renders", f"terrain_{kind}_right_f{frame:04d}.png"))
+        await call("set_lighting", preset="studio", subject=["Climber_rig"])
+        await call("camera_shot", name="TerrainCheck", subject=["Climber_rig"], shot="full",
+                   move="tracking", angle=145, elevation=8, start_frame=80, end_frame=140)
+        images = await call("render_frames", frames=[110], camera="scene", engine_name="eevee", size=512)
+        shutil.copyfile(json.loads(text_of(images)[0])["path"],
+                        os.path.join(ROOT, "output", "renders", f"terrain_{kind}_eevee_f0110.png"))
+        await call("save_project", path=f"e2e_terrain_{kind}.blend")
+        await call("export_asset", path=f"e2e_terrain_{kind}.glb")
+    # Rerunning a lock on an already terrain-aware walk must retain ramp pitch/height.
+    lk = json.loads(text_of(await call("lock_feet", armature="Climber_rig", terrain=True,
+                                       contacts=nav["foot_lock"]["contacts"]))[0])
+    assert lk["max_penetration_m"] < .01 and lk["max_ik_error_m"] < .02, lk
+    removed = json.loads(text_of(await call("clear_terrain"))[0])["removed"]
+    assert sorted(removed) == ["Landing", "Ramp", "Stairs"], removed
+    assert not json.loads(text_of(await call("clear_terrain"))[0])["removed"]
+
+
+async def check_terrain_contact_detection(call):
+    """Automatic local-ground detection, slope pitch, opt-out and single-step geometry."""
+    await call("new_scene")
+    await call("create_human", name="SlopeWalker", height=1.75)
+    await call("auto_rig_humanoid", mesh="SlopeWalker")
+    await call("add_terrain", kind="ramp", location=[0, .5, 0], length=2, height=.3)
+    await call("animate", armature="SlopeWalker_rig", clip="idle", cycles=1, foot_lock=False)
+    flat = json.loads(text_of(await call("lock_feet", armature="SlopeWalker_rig",
+                                         frame_end=24, terrain=False))[0])
+    assert "ground_heights" not in flat, flat
+    await call("clear_animation", armature="SlopeWalker_rig")
+    await call("animate", armature="SlopeWalker_rig", clip="idle", cycles=1, foot_lock=False)
+    slope = json.loads(text_of(await call("lock_feet", armature="SlopeWalker_rig", frame_end=24))[0])
+    assert all(v["contacts"] for v in slope["feet"].values()), slope
+    assert slope["max_penetration_m"] < .01 and slope["max_ik_error_m"] < .02, slope
+    code = '''
+from engine.commands.footlock import _legs, _sole_points
+r = bpy.data.objects['SlopeWalker_rig']; mw = r.matrix_world
+legs, _ = _legs(r); error = angle = 0.0
+normal = Vector((0,.15,1)).normalized()
+for f in range(1,25):
+    bpy.context.scene.frame_set(f)
+    for leg in legs.values():
+        foot = mw @ r.pose.bones[leg['foot']].matrix
+        rest = mw @ r.data.bones[leg['foot']].matrix_local
+        up = foot.to_quaternion() @ rest.to_quaternion().inverted() @ Vector((0,0,1))
+        angle = max(angle, up.angle(normal))
+        for v in _sole_points(r,leg,0):
+            p = foot @ v
+            error = max(error, abs(p.z - .15*(.5-p.y)))
+result = dict(error=error, angle=angle)
+'''
+    measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert measured["error"] < .015 and measured["angle"] < .01, measured
+    await call("clear_terrain")
+    step = json.loads(text_of(await call("add_terrain", kind="step", location=[10,10,0]))[0])
+    assert step["height"] == .17 and step["length"] == .28 and step["walkable"], step
+    sample = json.loads(text_of(await call("run_blender_python", code="""
+from engine.commands.terrain import GroundQuery
+q = GroundQuery()
+result = [q.sample(10,9.86)[0], q.sample(0,0)[0]]
+"""))[0])["result"]
+    assert abs(sample[0]-.17) < 1e-5 and sample[1] == 0, sample
+    await call("clear_terrain")
+    await call("clear_animation", armature="SlopeWalker_rig")
+    await call("add_terrain", kind="ramp", location=[0,-.5,0], length=2, height=.3)
+    await call("add_terrain", kind="platform", location=[0,-2.5,0], length=1, height=.3)
+    stop = json.loads(text_of(await call("walk_path", armature="SlopeWalker_rig",
+                                         points=[[0,-3]], clip="run"))[0])
+    assert stop["clip"] == "run" and stop["terrain"]["gait"] == "walk", stop
+    code = f'''
+r = bpy.data.objects['SlopeWalker_rig']; heights = []
+for f in range({stop['frames'][1]}-5, {stop['frames'][1]}+1):
+    bpy.context.scene.frame_set(f)
+    heights.append((r.matrix_world @ r.pose.bones['hips'].matrix).translation.z)
+rest = (r.matrix_world @ r.data.bones['hips'].matrix_local).translation.z
+result = [min(heights)-rest, max(heights)-min(heights)]
+'''
+    height, motion = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert height > .25 and motion < .001, (height, motion)
+    await call("clear_terrain")
+    print(f"terrain lock: automatic contacts, terrain=False, ramp pitch {measured['angle']:.6f} rad | "
+          f"sole error {measured['error']:.6f} m | single step + elevated stop + run fallback OK")
+
+
 async def isolate_mpfb(session):
     """Keep MPFB's logs, caches and writable asset data inside this test workspace.
 
@@ -425,7 +646,7 @@ for f in range(25, 46):
             # Restore scene length for the next independent seat case.
             await call('set_timeline', frame_end=65)
         if kind=='basic':
-            mesh=await data('add_primitive',kind='cube',name='SeatMesh',location=[0,0,0.23],size=1)
+            await data('add_primitive',kind='cube',name='SeatMesh',location=[0,0,0.23],size=1)
             await call('transform_object',name='SeatMesh',scale=[0.6,0.5,0.46])
             bench=await data('add_prop',kind='bench',location=[2,0,0])
             stool=await data('add_prop',kind='stool',location=[-2,0,0])
@@ -1015,12 +1236,18 @@ async def main():
                 assert (await s.call_tool("walk_path", {"armature": "Navigator_rig", **bad})).isError
             assert (await s.call_tool("turn_to", {"armature": "Navigator_rig", "target": "camera"})).isError
 
+        await check_terrain(call, "basic")
+        await check_terrain_contact_detection(call)
+        await check_terrain(call, "rigify")
+
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})
         if mp.isError:
             print("mpfb: unavailable, skipped:", text_of(mp))
         else:
             await _secondary_motion_checks(call)
+            await check_terrain(call, "mpfb")
+            await check_terrain(call, "mpfb_rigify")
             await call("new_scene")
             h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
                                               age=30, hair="ponytail01", location=[1.25, 0.35, 0],
@@ -1504,7 +1731,7 @@ result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
             assert voice["kind"] == "voice", voice
             voices.append(voice["strip"])
         muted = json.loads(text_of(await call("add_audio", path=tone, start_frame=73))[0])
-        sfx = json.loads(text_of(await call("add_audio", path=tone, kind="sfx", start_frame=73))[0])
+        await call("add_audio", path=tone, kind="sfx", start_frame=73)
         setup = f"""
 from engine.commands.audio import _sound_strips
 from engine.commands.semantic import store_words

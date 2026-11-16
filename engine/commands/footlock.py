@@ -118,7 +118,7 @@ def _intervals(mask, fill=2, min_len=3):
 
 def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
               speed_tolerance=None, blend_frames=None, adjust_hips=True, key=True,
-              contacts=None, foot_targets=None):
+              contacts=None, foot_targets=None, terrain=True, ground=None):
     """contacts: optional {"L": [[first, last], ...], "R": [...]} absolute frames where each
     foot is planted (skips detection). speed_tolerance: m/s a planted foot may drift.
     Internal foot_targets: per-side world (ankle, quaternion) samples from a step planner;
@@ -132,6 +132,10 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
     hips_name = smap.get("hips")
     mw = rig.matrix_world
     floor = float(mw.translation.z if floor is None else floor)
+    if ground is None and terrain:
+        from .terrain import GroundQuery
+        query = GroundQuery(floor)
+        ground = query if query.objects else None
     f0, f1 = int(frame_start), int(frame_end)
     frames = list(range(f0, f1 + 1))
     n = len(frames)
@@ -195,8 +199,11 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
             report[s] = {"contacts": contacts[s], "slide_removed_m": 0.0}
             continue
         pts = S[s]["pts"]
-        low = [min(range(3), key=lambda k: pts[i][k].z) for i in range(n)]
-        height = [pts[i][low[i]].z - floor for i in range(n)]
+        low = [min(range(3), key=lambda k: pts[i][k].z -
+                   (ground.sample(pts[i][k].x, pts[i][k].y)[0] if ground else floor))
+               for i in range(n)]
+        height = [pts[i][low[i]].z - (ground.sample(pts[i][low[i]].x, pts[i][low[i]].y)[0]
+                                    if ground else floor) for i in range(n)]
         speed, vel = [], []
         for i in range(n):
             a, b = max(0, i - 1), min(n - 1, i + 1)
@@ -239,6 +246,16 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
                 m = n - 1
             else:
                 m = min(range(a, b + 1), key=lambda i: speed[i])
+            if ground is not None:
+                # Flatten the original sole before aligning it to the new surface.
+                rest = (mw @ B[legs[s]["foot"]].matrix_local).to_quaternion()
+                normal = R[m] @ (rest.inverted() @ Vector((0, 0, 1)))
+                flat = normal.rotation_difference(Vector((0, 0, 1))) @ R[m].to_quaternion()
+                target, q, _error, _height = ground.fit(A[m], flat, lsole)
+                for i in range(a, b+1):
+                    c[i] = target - A[i]
+                    R[i] = q.to_matrix()
+                continue
             N = {m: A[m].copy()}
             for i in range(m + 1, b + 1):          # roll forward without slipping
                 p = lsole[low[i - 1]]
@@ -276,7 +293,11 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
         clearance = 0.022 * total
         for i in range(n):
             if i not in inside:
-                lowest = min(p.z for p in pts[i])
+                if ground is None:
+                    lowest = min(p.z for p in pts[i])
+                else:
+                    corrected = [S[s]["A"][i] + c[i] + R[i] @ p for p in lsole]
+                    lowest = min(p.z - ground.sample(p.x, p.y)[0] for p in corrected) + floor - c[i].z
                 w = _smoothstep((speed[i] - v_min) / (3 * v_min))   # moving over the ground
                 c[i] = Vector((c[i].x, c[i].y, max(c[i].z, floor + clearance * w - lowest)))
         corr[s] = c
@@ -315,6 +336,10 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
     # ---- pass 2: solve and key
     prev = {}
     worst = 0.0
+    penetration = 0.0
+    swing_clearance = None
+    ground_heights = {s: [] for s in legs}
+    planted = {s: {f for a, b in report[s]["contacts"] for f in range(a, b+1)} for s in legs}
     for i, f in enumerate(frames):
         sc.frame_set(f)
         P = rig.pose.bones
@@ -348,20 +373,36 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
             _set_world_rot(rig, pf, S[s]["R"][i].to_quaternion())
             bpy.context.view_layer.update()
             worst = max(worst, ((mw @ pf.matrix).translation - T).length)
+            if ground is not None:
+                fw = mw @ pf.matrix
+                pts = [fw @ p for p in sole[s]]
+                gaps = [p.z - ground.sample(p.x, p.y)[0] for p in pts]
+                penetration = max(penetration, -min(gaps))
+                # Liftoff/touchdown transitions approach zero clearance continuously;
+                # measure the airborne interior, excluding the two adjacent frames.
+                if all(f+j not in planted[s] for j in (-2, -1, 0, 1, 2)):
+                    swing_clearance = min(gaps) if swing_clearance is None else min(swing_clearance, min(gaps))
+                for a, _b in report[s]["contacts"]:
+                    if f == a:
+                        ground_heights[s].append({"frames": [a, _b],
+                            "height_m": round(ground.sample(pts[1].x, pts[1].y)[0], 5)})
         if key:
             for b in keep:
                 _key_rot(P[b], f, prev)
             if hips_name and max(drop) > 1e-5:
                 P[hips_name].keyframe_insert("location", frame=f, group=hips_name)
     bpy.context.view_layer.update()
-    return {"armature": rig.name, "frames": [f0, f1], "feet": report,
+    metrics = ({"ground_heights": ground_heights, "max_penetration_m": round(max(0, penetration), 5),
+                "min_swing_clearance_m": round(swing_clearance, 5) if swing_clearance is not None else None}
+               if ground is not None else {})
+    return {"armature": rig.name, "frames": [f0, f1], "feet": report, **metrics,
             "hips_lowered_max_m": round(max(drop), 3), "max_ik_error_m": round(worst, 4),
             "floor": round(floor, 3)}
 
 
 @command("lock_feet")
 def lock_feet(armature, frame_start=None, frame_end=None, floor=None, height_tolerance=None,
-              speed_tolerance=None, blend_frames=None, adjust_hips=True, contacts=None):
+              speed_tolerance=None, blend_frames=None, adjust_hips=True, contacts=None, terrain=True):
     """Remove foot sliding from the animation on a rig (rolling foot lock + leg IK)."""
     from .talk import _rig_of
     rig = _rig_of(armature)
@@ -373,4 +414,4 @@ def lock_feet(armature, frame_start=None, frame_end=None, floor=None, height_tol
     fe = int(frame_end if frame_end is not None else act.frame_range[1])
     return foot_lock(rig, fs, fe, floor=floor, height_tolerance=height_tolerance,
                      speed_tolerance=speed_tolerance, blend_frames=blend_frames,
-                     adjust_hips=adjust_hips, contacts=contacts)
+                     adjust_hips=adjust_hips, contacts=contacts, terrain=terrain)

@@ -42,6 +42,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `import_mocap`, `retarget_animation` | Mocap .bvh/.fbx/.glb (CMU, Mixamo, dll.) ke rig apa pun, diselaraskan otomatis |
 | `lock_feet` | Foot IK: kaki yang menapak dikunci di lantai (tidak selip, tidak tenggelam), tumit → jari berguling alami; otomatis di walk/run/jump dan mocap |
 | `secondary_motion` | Ayunan rambut baked: ponytail/braid satu rantai, long/bob beberapa rantai deform yang ikut ekspor glTF/FBX; jalankan setelah animasi tubuh/bicara, atur stiffness/damping/gravity/angin; rantai dipakai ulang, `clear` per rentang. Collider kapsul kepala/leher/bahu/punggung berupa pendekatan; short/afro dan pakaian dilewati, belum ada simulasi kain atau tabrakan per vertex |
+| `add_terrain`, `clear_terrain` | Buat/hapus tangga, ramp, platform, dan satu anak tangga; mesh bertanda walkable. `walk_path` mengikuti tinggi permukaan, menempatkan telapak utuh pada pijakan, dan mengangkat kaki melewati tepi; `lock_feet(terrain=True)` mengikuti tinggi serta kemiringan lokal. Tangga memakai langkah jalan pendek (termasuk permintaan lari); tinggi anak tangga disarankan ≤0,20 m, tanpa penghindaran rintangan |
 | `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; material cepat |

@@ -237,7 +237,7 @@ STRIDE_SCALE = {"walk": 1.25, "run": 1.3}
 
 def _walk_like(i, T, d, rest, amp, run=False):
     p = 2 * math.pi * i / T
-    s, c = math.sin(p), math.cos(p)
+    s = math.sin(p)
     A = (38 if run else 24) * amp
     knee_amp = (85 if run else 48) * amp
     # knee flexes in swing only: straight from heel strike (thigh fully forward, p = pi/2)
@@ -721,7 +721,8 @@ def _lock(rig, f0, f1, contacts=None):
     from .footlock import foot_lock
     r = foot_lock(rig, f0, f1, contacts=contacts)
     return {"contacts": {s: v["contacts"] for s, v in r["feet"].items()},
-            "hips_lowered_max_m": r["hips_lowered_max_m"]}
+            "hips_lowered_max_m": r["hips_lowered_max_m"],
+            **{k: r[k] for k in ("ground_heights", "max_penetration_m", "min_swing_clearance_m") if k in r}}
 
 
 @command("animate")

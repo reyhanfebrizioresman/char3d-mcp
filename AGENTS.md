@@ -51,6 +51,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `render_options`, `render_video`, `render_status`, `cancel_render`
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
   `hold_prop`, `release_prop`
+- Walkable ground: `add_terrain`, `clear_terrain`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
   `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
@@ -306,8 +307,8 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   `start_frame=None` appends after the rig's existing action (otherwise scene start).
   Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`, and
   `foot_lock.contacts`. Check `render_frames(..., view="top")` with waypoint markers
-  for the route and `view="three_quarter"` for steps. Flat Z=0 floor only, no obstacle
-  avoidance; feet use flat contacts rather than heel/toe rolls (running has short flights).
+  for the route and `view="three_quarter"` for steps. Z follows walkable terrain (see below);
+  no obstacle avoidance; feet use flat contacts rather than heel/toe rolls.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - `import_mocap(path, armature)` — .bvh/.fbx/.glb motion (CMU, Mixamo "without skin",
   Rokoko...). Matches names, T/A rest pose, facing and body size automatically;
@@ -337,8 +338,7 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   `blend_frames=N` to force, `0` for a hard cut. During a blend into a standing clip the
   planted foot stays put and the other finishes its step; feet stay planted for the rest
   of that clip. The first clip on a rig has nothing to blend from.
-- Known limits: in_place walks keep their treadmill sliding by design; stairs/uneven
-  ground are not supported (one flat floor height); a crossfade holds the previous
+- Known limits: in_place walks keep their treadmill sliding by design; a crossfade holds the previous
   clip's last pose (it does not keep playing the old clip underneath).
 
 ## Secondary hair motion
@@ -374,6 +374,38 @@ rerun after changing those animations. Range defaults to the scene (inclusive); 
   save the project after baking. Example: `animate("Maya_rig", "run", cycles=3)` →
   `secondary_motion("Maya_rig", frame_end=100)` → `render_frames([2, 8, 25, 78],
   objects=["Maya_rig"], view="right", size=512)`.
+## Walkable terrain
+`add_terrain(kind, location=[x,y,z], rotation_z=0, width=1.2, length=None,
+height=None, steps=None, name=None)` makes stairs, ramp, platform or step geometry in
+`char3d_terrain`. Location is the base at the near edge, width is centered on local X,
+and length extends along local -Y. Stairs/ramp rise toward the far end. To descend,
+rotate 180° and put the low entrance at the far end of the route. Stairs default to
+5 steps, 0.17 m rise, 0.28 m tread; height/steps/length determine rise and tread.
+Platforms and single steps have flat tops. `clear_terrain()` removes owned geometry
+and unused owned data, preserving characters, scenery and the environment stage.
+- Meshes carry `char3d_walkable=True`; tag other static mesh surfaces to include them.
+  Ground queries snapshot evaluated world-space geometry into a BVH once per bake and
+  raycast downward, with the base Z floor as fallback. Only upward surfaces above that
+  floor count; bridges use the highest surface. Moving/deforming terrain is not supported.
+- `walk_path` derives Z from XY: smoothed root elevation, a small uphill lean, whole-sole
+  tread placements, ramp pitch and swing arcs raised above the swept terrain by >=3 cm.
+  Terrain uses shorter, slower walking steps, including when `clip="run"` is requested;
+  the result reports the effective terrain gait and bake time. Flat scenes without
+  walkable meshes retain the existing gait and keys.
+- `lock_feet(rig, terrain=True)` (default) detects contacts relative to local ground and
+  pitches/locks the sole on slopes. `terrain=False` uses only `floor`. Automatic foot lock
+  in `animate`/mocap also queries terrain, but does not plan root elevation or safe treads:
+  use `walk_path` for stairs. Run foot lock after body animation, before speaking layers.
+- Results include `ground_heights` per contact, `max_penetration_m` and
+  `min_swing_clearance_m` in meters, measured at heel/ball/toe sole landmarks. Swing
+  clearance excludes the two frames adjacent to liftoff/touchdown (clearance approaches
+  zero there); penetration includes every frame. These are skeletal sole measurements,
+  not collision checks on every deformed shoe vertex.
+- Limits: no obstacle avoidance or jumping between levels. Use rises <=0.20 m for
+  adult human rigs and treads long enough for the full sole (normally >=0.28 m). Keep
+  routes away from side edges; no whole-sole landing within 0.35 m raises an error.
+  Very steep ramps, large drops, oversized feet and terrain turns in confined treads
+  may exceed leg reach. Stage tops are also tagged walkable.
 
 ## Film: cameras, lighting, video
 **Sets & props** — `set_environment(preset, subject=["Maya_rig"])` replaces the current
@@ -599,7 +631,6 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
-- Foot IK on stairs / uneven ground
 
 ## For agents editing this repo
 - `engine/` runs inside Blender's bundled Python (has `bpy`); never import `bpy` in

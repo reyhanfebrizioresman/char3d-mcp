@@ -285,7 +285,7 @@ async def secondary_motion(character: str, parts: list[Literal['hair', 'clothes'
 async def walk_path(armature: str, points: list[list[float]],
                     clip: Literal["walk", "run"] = "walk", start_frame: int | None = None,
                     speed: float = 1.0, face_end: list[float] | str | None = None) -> dict:
-    """Walk/run from the current position through absolute world XY points (meters, Z=0).
+    """Walk/run from the current position through absolute world XY points (meters).
     Curves pass through the points; duplicates are ignored. Body yaw is limited to 100
     degrees/s: tight bends slow down, corners over 100 degrees stop for stepping turns.
     speed (0.1..4) scales natural travel speed and cadence; shorter steps handle slowing.
@@ -294,7 +294,10 @@ async def walk_path(armature: str, points: list[list[float]],
     object name or "camera" (sampled when the final turn begins). Works on basic, Rigify
     and MPFB rigs. start_frame=None appends after the rig's action, or uses the scene start.
     Returns frames, next_start_frame, distance_m, duration_seconds and foot_lock contacts.
-    Flat floor only; at most 1000 points and 24000 frames per call."""
+    Z follows tagged walkable terrain: tread-fitting steps, raised swings and ramp pitch.
+    Terrain routes use a slower walking cadence (including clip=run). No obstacle avoidance;
+    use rises <= 0.20 m and treads long enough for the whole sole. At most 1000 points and
+    24000 frames per call. Reports contact heights, penetration and swing clearance."""
     return await run("walk_path", armature=armature, points=points, clip=clip,
                      start_frame=start_frame, speed=speed, face_end=face_end)
 
@@ -329,18 +332,43 @@ async def lock_feet(armature: str, frame_start: int | None = None, frame_end: in
                     floor: float | None = None, height_tolerance: float | None = None,
                     speed_tolerance: float | None = None, blend_frames: int | None = None,
                     adjust_hips: bool = True,
-                    contacts: dict[str, list[list[int]]] | None = None) -> dict:
+                    contacts: dict[str, list[list[int]]] | None = None,
+                    terrain: bool = True) -> dict:
     """Foot IK clean-up for an animation already on a rig (any clip, mocap, retarget): finds
     when each foot is planted, keeps it still on the floor (rolling heel -> toe, no sliding,
     no sinking into the floor) and re-solves the legs with IK, lowering the hips slightly when
     a leg can't reach. animate(walk/run/jump) and import_mocap already do this. Tune with
     height_tolerance (m above floor counted as contact), speed_tolerance (m/s drift allowed),
     floor (Z, default the rig's origin), or force contacts {"L": [[10, 27]], "R": [[1, 11]]}
-    (frames; L = character's left)."""
+    (frames; L = character's left). terrain=True raycasts tagged walkable meshes, detects
+    contacts relative to local height and pitches soles to ramps. False uses only floor.
+    For stairs use walk_path to plan safe tread placements and root height first."""
     return await run("lock_feet", armature=armature, frame_start=frame_start,
                      frame_end=frame_end, floor=floor, height_tolerance=height_tolerance,
                      speed_tolerance=speed_tolerance, blend_frames=blend_frames,
-                     adjust_hips=adjust_hips, contacts=contacts)
+                     adjust_hips=adjust_hips, contacts=contacts, terrain=terrain)
+
+
+@mcp.tool()
+async def add_terrain(kind: Literal["stairs", "ramp", "platform", "step"],
+                      location: list[float] | None = None, rotation_z: float = 0,
+                      width: float = 1.2, length: float | None = None,
+                      height: float | None = None, steps: int | None = None,
+                      name: str | None = None) -> dict:
+    """Create original walkable geometry in char3d_terrain (meters). location is the base
+    at the near edge; width is centered on X, length extends along local -Y, rotated by
+    rotation_z degrees. Stairs/ramp rise toward the far end. For descent rotate 180 degrees
+    and place the low entrance at the far end. Stairs default to 5 x 0.17 m rise / 0.28 m
+    tread; height/steps/length override these. Platform/step have flat tops. All meshes are
+    tagged char3d_walkable, so walk_path and lock_feet can query them. No downloads."""
+    return await run("add_terrain", kind=kind, location=location, rotation_z=rotation_z,
+                     width=width, length=length, height=height, steps=steps, name=name)
+
+
+@mcp.tool()
+async def clear_terrain() -> dict:
+    """Remove char3d_terrain geometry and its unused meshes/materials; preserve scenery."""
+    return await run("clear_terrain")
 
 
 @mcp.tool()
