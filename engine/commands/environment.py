@@ -105,11 +105,15 @@ def _sync_ground():
 @command("clear_environment")
 def clear_environment():
     """Remove owned sets/props and unused owned data, preserving all other scene objects."""
+    from .holding import clear_grip
     removed = []
     for obj in bpy.context.scene.objects:
         if "c3d_env_ground_original_z" in obj:
             obj.location.z = obj["c3d_env_ground_original_z"]
             del obj["c3d_env_ground_original_z"]
+    for obj in bpy.context.scene.objects:
+        if obj.get("c3d_role") == "environment" and obj.get("c3d_hold_layer"):
+            clear_grip(obj)
     for obj in list(bpy.data.objects):
         if obj.get("c3d_role") == "environment":
             removed.append(obj.name)
@@ -270,12 +274,15 @@ class _Builder:
                              (sx*(width/2-0.04), sy*0.18, 0.01), 0.025)
         elif kind == "cup":
             # Grip origin is on the handle; an open rim and dark interior read at close range.
-            self.cylinder("cup_body", (0.055, 0, 0), 0.039, 0.095, "white", radius_top=0.045)
-            self.cylinder("cup_inside", (0.055, 0, 0.048), 0.036, 0.002, "wood")
+            # Leave room for curled fingers and the wrist above the handle.
+            self.cylinder("cup_body", (0.095, 0, -0.030), 0.039, 0.095, "white", radius_top=0.045)
+            self.cylinder("cup_inside", (0.095, 0, 0.018), 0.036, 0.002, "wood")
             bpy.ops.mesh.primitive_torus_add(major_segments=24, minor_segments=8,
-                                           major_radius=0.021, minor_radius=0.006)
+                                           major_radius=0.026, minor_radius=0.006)
             handle = self._mesh("cup_handle", "white")
+            handle.location = (0.026, 0, -0.012)
             handle.rotation_euler.x = math.pi/2
+            handle.scale.x = 1.4
         elif kind == "phone":
             self.box("phone_body", (0, 0, 0.025), (0.012, 0.074, 0.15), "metal", 0.006)
             self.box("phone_glass", (0.007, 0, 0.025), (0.002, 0.064, 0.13), "screen", 0.002)

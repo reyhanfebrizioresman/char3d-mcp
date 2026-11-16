@@ -558,15 +558,20 @@ async def stand_up(character: str, start_frame: int | None = None,
 @mcp.tool()
 async def hold_prop(character: str, prop: str, hand: Literal["right", "left"] = "right",
                     start_frame: int | None = None, end_frame: int | None = None,
-                    grip: Literal["auto", "fist", "cup", "relaxed", "open"] = "auto") -> dict:
+                    grip: Literal["auto", "fist", "cup", "relaxed", "open"] = "auto",
+                    upright: bool | None = None) -> dict:
     """Attach a prop root/part to the palm; auto grip follows the prop kind.
     add_prop cup/phone/book/handheld_microphone use real sizes and grip origins; location
     may be omitted. None start uses current frame, None end keeps holding. The live
     attachment follows later arm keys. end_frame releases on the following frame.
+    upright=None auto-levels cups and points handheld microphones up with a slight
+    lean toward the palm; True levels any prop, False keeps the rigid hand rotation.
+    Upright holds constrain wrist roll/flex while preserving yaw; the grip stays in
+    the palm. The finger grip is layered over later gestures until release.
     glTF export samples world transforms (including release) and includes props when
     exporting their character. Mannequins attach but have no fingers. No physics."""
     return await run("hold_prop", character=character, prop=prop, hand=hand,
-                     start_frame=start_frame, end_frame=end_frame, grip=grip)
+                     start_frame=start_frame, end_frame=end_frame, grip=grip, upright=upright)
 
 
 @mcp.tool()

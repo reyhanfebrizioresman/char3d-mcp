@@ -531,6 +531,32 @@ async def _sitting_checks(call):
     import math
     async def data(tool, **args):
         return json.loads(text_of(await call(tool, **args))[-1])
+    def exported_tilt(path, prop, start_frame=1):
+        """Sample actual glTF quaternion outputs, in its +Y-up coordinate system."""
+        with open(path, 'rb') as stream:
+            raw = stream.read()
+        length = struct.unpack_from('<I', raw, 12)[0]
+        gltf = json.loads(raw[20:20+length])
+        node = next(i for i,n in enumerate(gltf['nodes']) if n.get('name') == prop)
+        def values(index):
+            a = gltf['accessors'][index]
+            view = gltf['bufferViews'][a['bufferView']]
+            width = {'SCALAR':1, 'VEC4':4}[a['type']]
+            assert a['componentType'] == 5126
+            offset = 28+length+view.get('byteOffset',0)+a.get('byteOffset',0)
+            stride = view.get('byteStride',width*4)
+            return [struct.unpack_from('<'+'f'*width,raw,offset+i*stride) for i in range(a['count'])]
+        tilts = []
+        for animation in gltf['animations']:
+            for channel in animation['channels']:
+                if channel['target'] == {'node':node, 'path':'rotation'}:
+                    sampler = animation['samplers'][channel['sampler']]
+                    for t,q in zip(values(sampler['input']),values(sampler['output'])):
+                        if t[0] >= start_frame/24-1e-5:
+                            tilts.append(math.degrees(math.acos(max(-1,min(1,1-2*(q[0]**2+q[2]**2))))))
+        assert tilts, 'cup rotation animation missing'
+        assert max(tilts) <= 15, tilts
+        return max(tilts)
     measure = '''
 import math
 from mathutils import Vector
@@ -586,7 +612,7 @@ for f in FRAMES:
         feet={side:list(m.translation) for side,m in feet.items()}, buttock=min(lows),
         sole=[(feet[side] @ p).z-floor for side in 'LR' for p in soles[side]]))
 '''
-    max_contact = max_sole = max_drift = max_angle = max_palm = max_thigh = 0.0
+    max_contact = max_sole = max_drift = max_angle = max_palm = max_thigh = max_tilt = 0.0
     timings = []
     for kind in ('basic', 'rigify', 'game_engine', 'mpfb_rigify'):
         await call('new_scene', frame_end=65)
@@ -634,8 +660,9 @@ for f in FRAMES:
                 await call('hold_prop', character='SeatTester_rig', prop=cup['objects'][-1], start_frame=25)
                 # Animate AFTER attachment, to prove it is live rather than an early bake.
                 await call('talk_gestures', character='SeatTester_rig', frame_start=25, frame_end=55,
-                           hands='right', fingers=False, cues=[{'frame':40, 'gesture':'up'}])
+                           hands='right', cues=[{'frame':40, 'gesture':'up'}])
                 held_code = f'''
+import math
 from mathutils import Vector
 from engine.commands.anim import semantic_map
 r = bpy.data.objects['SeatTester_rig']
@@ -650,19 +677,25 @@ for f in range(25, 46):
     bpy.context.scene.frame_set(f)
     bpy.context.view_layer.update()
     result.append(dict(distance=(o.matrix_world.translation-(r.matrix_world@r.pose.bones[b].matrix@p)).length,
+                       tilt=math.degrees((o.matrix_world.to_3x3()@Vector((0,0,1))).angle(Vector((0,0,1)))),
                        position=list(o.matrix_world.translation),
-                       fingers=[round(x,5) for n in finger_names for row in r.pose.bones[n].matrix_basis for x in row]))
+                       fingers=[x for n in finger_names for row in
+                                (r.pose.bones[n].parent.matrix.inverted()@r.pose.bones[n].matrix) for x in row]))
 '''
                 held = (await data('run_blender_python', code=held_code))['result']
                 max_palm = max(max_palm, max(x['distance'] for x in held))
                 assert max(x['distance'] for x in held) < 0.03, held
-                assert all(x['fingers']==held[0]['fingers'] for x in held), held
+                max_tilt = max(max_tilt, max(x['tilt'] for x in held))
+                assert max(x['tilt'] for x in held) <= 15, (kind, held)
+                assert all(max((abs(a-b) for a,b in zip(x['fingers'],held[0]['fingers'])), default=0)<1e-4
+                           for x in held), (kind, held)
                 assert max(math.dist(x['position'],held[0]['position']) for x in held) > 0.01, held
                 await call('release_prop', character='SeatTester_rig', prop=cup['root'], frame=56)
                 released = (await data('run_blender_python', code=held_code.replace('range(25, 46)', 'range(56, 66)')))['result']
                 assert max(math.dist(x['position'],released[0]['position']) for x in released) < 1e-5, released
                 if kind == 'game_engine':
                     exported = await data('export_asset', path='e2e_held_cup.glb', objects=['SeatTester_rig'])
+                    max_tilt = max(max_tilt, exported_tilt(exported['path'], cup['root'], 25))
                     with open(exported['path'],'rb') as f:
                         raw=f.read()
                     length=struct.unpack_from('<I',raw,12)[0]
@@ -712,7 +745,8 @@ for f in range(25, 46):
         prop = await data('add_prop', kind=kind)
         assert prop['objects'], prop
     phone = await data('add_prop', kind='phone')
-    await call('hold_prop', character='SeatTester_rig', prop=phone['root'], hand='left', start_frame=25, end_frame=40)
+    phone_hold = await data('hold_prop', character='SeatTester_rig', prop=phone['root'], hand='left', start_frame=25, end_frame=40)
+    assert phone_hold['upright'] is False, phone_hold
     placed = await data('release_prop', character='SeatTester_rig', prop=phone['root'], frame=41, place_at=[1, 2, 0.8])
     assert placed['location']==[1, 2, 0.8], placed
     for args in ({'seat_index':99}, {'hands':'armrests'}, {'transition_frames':0}):
@@ -722,6 +756,51 @@ for f in range(25, 46):
             pass
         else:
             raise AssertionError(('invalid sit accepted',args))
+    # Original demo order: attach first, then walk, sit with hands on thighs, gesture.
+    await call('new_scene', frame_end=110)
+    await call('create_realistic_human', name='SeatTester', rig='game_engine', face=False)
+    await call('apply_pose', armature='SeatTester_rig', pose='relaxed')
+    cup = await data('add_prop', kind='cup')
+    attached = await data('hold_prop', character='SeatTester_rig', prop=cup['root'], start_frame=1)
+    assert attached['upright'] is True, attached
+    await call('walk_path', armature='SeatTester_rig', points=[[0,-0.45]], start_frame=1)
+    chair = await data('add_prop', kind='chair', location=[0,-0.45,0])
+    await call('sit_on', character='SeatTester_rig', seat=chair['root'], start_frame=65, hands='thighs')
+    await call('talk_gestures', character='SeatTester_rig', frame_start=86, frame_end=110,
+               hands='right', cues=[{'frame':98, 'gesture':'up'}])
+    all_frames = held_code.replace('range(25, 46)', 'range(1, 111)')
+    samples = (await data('run_blender_python', code=all_frames))['result']
+    assert max(x['tilt'] for x in samples) <= 15, samples
+    assert max(x['distance'] for x in samples) < 0.03, samples
+    assert all(max(abs(a-b) for a,b in zip(x['fingers'],samples[0]['fingers']))<1e-4 for x in samples), samples
+    max_tilt = max(max_tilt, max(x['tilt'] for x in samples))
+    max_palm = max(max_palm, max(x['distance'] for x in samples))
+    exported = await data('export_asset', path='e2e_upright_walk_sit.glb', objects=['SeatTester_rig'])
+    max_export_tilt = exported_tilt(exported['path'], cup['root'])
+    restored = (await data('run_blender_python', code=all_frames))['result']
+    assert max(math.dist(a['position'],b['position']) for a,b in zip(samples,restored)) < 1e-5
+    # Explicit opt-out keeps the original rigid palm frame; the microphone opts in.
+    await call('release_prop', character='SeatTester_rig', prop=cup['root'], frame=111)
+    rigid = await data('add_prop', kind='cup')
+    rigid_hold = await data('hold_prop', character='SeatTester_rig', prop=rigid['root'], start_frame=111, upright=False)
+    assert rigid_hold['upright'] is False, rigid_hold
+    rigid_sample = (await data('run_blender_python', code=all_frames.replace(repr(cup['root']),repr(rigid['root']))
+                               .replace('range(1, 111)', 'range(111, 112)')))['result'][0]
+    assert rigid_sample['tilt'] > 15 and rigid_sample['distance'] < 0.03, rigid_sample
+    mic = await data('add_prop', kind='handheld_microphone')
+    mic_hold = await data('hold_prop', character='SeatTester_rig', prop=mic['root'], hand='left', start_frame=1)
+    assert mic_hold['upright'] is True, mic_hold
+    mic_samples = (await data('run_blender_python', code=all_frames.replace(repr(cup['root']),repr(mic['root']))
+                              .replace("['hand.R']", "['hand.L']").replace("get('R',", "get('L',")))['result']
+    assert max(x['tilt'] for x in mic_samples) <= 15, mic_samples
+    await call('clear_environment')
+    cleaned = (await data('run_blender_python', code="""
+r=bpy.data.objects['SeatTester_rig']
+result=[c.name for pb in r.pose.bones for c in pb.constraints if c.name.startswith('char3d_grip:')]
+"""))['result']
+    assert not cleaned, cleaned
+    print(f'upright cup: 110 walk/sit/gesture frames tilt={max_tilt:.4f}deg palm={max_palm:.6f}m '
+          f'glb tilt={max_export_tilt:.4f}deg; live finger grip, release, opt-out, mic OK')
     print(f'sitting/holding: contact={max_contact:.5f}m sole={max_sole:.5f}m drift={max_drift:.6f}m '
           f'facing={max_angle:.3f}deg thigh={max_thigh:.2f}deg palm={max_palm:.6f}m bake={min(timings):.3f}..{max(timings):.3f}s; glb OK')
 
