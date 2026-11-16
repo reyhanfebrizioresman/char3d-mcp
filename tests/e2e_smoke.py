@@ -1084,6 +1084,132 @@ result = o.name
         print(f"secondary user hair ({kind}): {custom['chains']} chains | moved/rotated rig OK")
 
 
+async def _cloth_motion_checks(call):
+    """Exercise geometric hems, skin preservation, deterministic keys and export."""
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def inspect(code):
+        return (await data('run_blender_python', code=code))['result']
+
+    assets = (await data('mpfb_assets'))['assets']['clothes']
+    preferred = ('toigo_halter_dress_knee_length', 'toigo_shift_dress',
+                 'frankyaye_mini_skirt_01', 'toigo_long_full_skirt')
+    asset = next((a for a in preferred if a in assets),
+                 next((a for a in assets if 'skirt' in a or 'dress' in a), None))
+    if not asset:
+        print('secondary cloth: SKIPPED — no skirt/dress asset installed')
+        return
+    await call('new_scene', frame_end=300)
+    await call('create_realistic_human', name='Hem', gender=0., hair='ponytail01',
+               clothes=[asset], face=False)
+    await call('scene_info')
+    await call('render_views', objects=['Hem_rig'], views=['front', 'right'], size=512)
+    await call('animate', armature='Hem_rig', clip='walk', cycles=2)
+    snapshot = '''
+import hashlib, json
+from engine.commands.talk import _fcurves
+r = bpy.data.objects['Hem_rig']
+def digest(cloth):
+    act = r.animation_data.action if r.animation_data else None
+    rows = [(fc.data_path,fc.array_index,[(list(k.co),k.interpolation) for k in fc.keyframe_points])
+            for fc in _fcurves(act) if ('cloth_' in fc.data_path) == cloth]
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+def weights():
+    rows = [(o.name,[[(g.group,g.weight) for g in v.groups] for v in o.data.vertices])
+            for o in r.children_recursive if o.type=='MESH' and o.name != 'Hem.'+ASSET
+            and 'ponytail' not in o.name]
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+'''.replace('ASSET', repr(asset))
+    original = await inspect(snapshot + 'result = weights()')
+    baked = await data('secondary_motion', character='Hem_rig', parts=['hair', 'clothes'])
+    garment = baked['garments'][0]
+    assert 3 <= garment['chains'] <= 12 and len(garment['bones']) == garment['chains'] * 4, baked
+    assert garment['max_tip_offset_m'] > .02, garment
+    assert garment['final_tip_offset_m'] < .01, garment
+    assert garment['min_collider_clearance_m'] >= 0, garment
+    # Check actual exported-bone positions, independently of solver statistics.
+    sampled = await inspect(snapshot + '''
+from engine.commands.secondary import _closest
+st = json.loads(r['char3d_secondary'])
+clearance = 1.
+for f in (8,25,48,64,150,300):
+    bpy.context.scene.frame_set(f)
+    for ch in st['chains']:
+        if ch.get('part') != 'clothes': continue
+        for name in ch['bones']:
+            a,b = [r.matrix_world @ p for p in (r.pose.bones[name].head,r.pose.bones[name].tail)]
+            for c in st['colliders']:
+                if c.get('part') != 'clothes': continue
+                mat = r.matrix_world @ r.pose.bones[c['bone']].matrix @ r.data.bones[c['bone']].matrix_local.inverted()
+                ca,cb = mat @ Vector(c['a']),mat @ Vector(c['b'])
+                for u in (.25,.5,.75,1.):
+                    p = a.lerp(b,u)
+                    clearance = min(clearance,(p-_closest(p,ca,cb)).length-c['radius']-ch['radius'])
+result = dict(clearance=clearance, weights=weights(), cloth=digest(True), body=digest(False),
+              bones=len(r.data.bones), groups=sum(len(o.vertex_groups) for o in r.children_recursive if o.type=='MESH'))
+''')
+    assert sampled['clearance'] >= -1e-6 and sampled['weights'] == original, sampled
+    again = await data('secondary_motion', character='Hem_rig', parts=['clothes'])
+    repeated = await inspect(snapshot + '''
+result = dict(weights=weights(), cloth=digest(True), body=digest(False),bones=len(r.data.bones),
+              groups=sum(len(o.vertex_groups) for o in r.children_recursive if o.type=='MESH'))
+''')
+    assert all(sampled[k] == v for k, v in repeated.items()), (sampled, repeated)
+    assert again['garments'] == baked['garments'], (baked, again)
+    # Partial clear owns only garment keys; all hair/body curves remain unchanged.
+    body = repeated['body']
+    outside = snapshot + '''
+result = [(fc.data_path,fc.array_index,[list(k.co) for k in fc.keyframe_points if not 30<=k.co.x<=40])
+          for fc in _fcurves(r.animation_data.action) if 'cloth_' in fc.data_path]
+'''
+    saved = await inspect(outside)
+    await call('secondary_motion', character='Hem_rig', parts=[asset], clear=True,
+               frame_start=30, frame_end=40)
+    assert await inspect(outside) == saved
+    assert await inspect(snapshot + 'result = digest(False)') == body
+    await call('secondary_motion', character='Hem_rig', parts=['Hem.'+asset])
+    exported = await data('export_asset', path='cloth.glb', objects=['Hem_rig'], max_influences=4)
+    _check_glb_weights(exported['path'], 4)
+    await call('render_frames', frames=[8,25,64,300], objects=['Hem_rig'], view='right', size=512)
+    await call('set_lighting', preset='studio', subject=['Hem_rig'])
+    await call('render_frames', frames=[25,300], objects=['Hem_rig'], view='right', size=512,
+               engine_name='eevee')
+    await call('save_project', path='cloth_walk.blend')
+    await call('secondary_motion', character='Hem_rig', parts=['clothes'], clear=True)
+    assert await inspect(snapshot + '''
+result = sum(len(fc.keyframe_points) for fc in _fcurves(r.animation_data.action) if 'cloth_' in fc.data_path)
+''') == 0
+    assert await inspect(snapshot + 'result = digest(False)') == body
+    await call('new_scene')
+    await call('import_model', path=exported['path'])
+    imported = await inspect('''
+result = [b.name for o in bpy.context.scene.objects if o.type=='ARMATURE' for b in o.data.bones]
+''')
+    assert set(garment['bones']) <= set(imported), imported
+    await call('new_scene', frame_end=1)
+    await call('create_realistic_human', name='TightHem', gender=0.,
+               clothes=['female_casualsuit01'], face=False)
+    tight = await data('secondary_motion', character='TightHem_rig', parts=['clothes'])
+    assert tight['chains'] == 0 and any('Tight fit' in s['reason'] for s in tight['skipped']), tight
+    await call('new_scene', frame_end=100)
+    await call('create_realistic_human', name='SeatedHem', gender=0., clothes=[asset], face=False)
+    chair = await data('add_prop', kind='chair')
+    await call('sit_on', character='SeatedHem_rig', seat=chair['root'], start_frame=1, hands='none')
+    seated = await data('secondary_motion', character='SeatedHem_rig', parts=['clothes'])
+    assert seated['garments'][0]['min_collider_clearance_m'] >= 0, seated
+    await call('render_frames', frames=[70], objects=['SeatedHem_rig', chair['root']],
+               view='right', size=512)
+    await call('set_lighting', preset='studio', subject=['SeatedHem_rig'])
+    await call('render_frames', frames=[70], objects=['SeatedHem_rig', chair['root']],
+               view='right', size=512, engine_name='eevee')
+    await call('save_project', path='cloth_seated.blend')
+    print(f"secondary cloth: {asset} | {garment['chains']} chains | "
+          f"walk lag {garment['max_tip_offset_m']:.6f} m | settled {garment['final_tip_offset_m']:.6f} m | "
+          f"clearance {sampled['clearance']:.6f} m | hair+cloth 300f {baked['bake_seconds']:.4f}s | "
+          "deterministic/range/clear/weights/glb reimport/trousers/seated OK")
+
+
 async def _lighting_checks(call):
     """Static placement from main, smoothed moving lights, opt-out and owned cleanup."""
     async def data(tool, **args):
@@ -1478,6 +1604,7 @@ async def main():
             print("mpfb: unavailable, skipped:", text_of(mp))
         else:
             await _secondary_motion_checks(call)
+            await _cloth_motion_checks(call)
             await check_terrain(call, "mpfb")
             await check_terrain(call, "mpfb_rigify")
             await call("new_scene")

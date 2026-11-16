@@ -264,18 +264,20 @@ async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int =
 
 
 @mcp.tool()
-async def secondary_motion(character: str, parts: list[Literal['hair', 'clothes']] = ['hair'],
+async def secondary_motion(character: str, parts: list[str] = ['hair'],
                             frame_start: int | None = None, frame_end: int | None = None,
                             stiffness: float = 0.5, damping: float = 0.5, gravity: float = 1.0,
                             wind: list[float] | None = None, clear: bool = False) -> dict:
-    """Bake deterministic secondary hair motion as deform-bone rotations (glTF/FBX).
-    Run LAST, after animate/walk_path/mocap/talk_motion. Reuses chains and replaces only
-    their keys inside the inclusive range (default scene range); clear=True removes them.
-    Long/bob hair gets several chains, ponytails/braids one; short/afro and clothes skip.
-    Skinned user meshes with hair name/group hints also work. stiffness/damping: 0..1;
-    gravity >= 0 is an elastic style control; wind is constant world XYZ acceleration.
-    Conservative head/neck/shoulder/back capsules protect strands, not individual mesh
-    vertices; no hair self-collision or cloth simulation. Returns timing and tip offsets."""
+    """Bake deterministic hair and loose garment motion as skin bones (glTF/FBX).
+    Run LAST, after body motion, seating and talk_motion. parts accepts 'hair',
+    'clothes' (all eligible garments), or skinned garment object/asset names.
+    Geometry below the hips and away from the legs forms short cloth chain rings;
+    tight trousers/shirts skip with reasons. Original weights blend at the waist.
+    Reuses bones and replaces owned keys in the inclusive range; clear=True removes
+    them. stiffness/damping: 0..1; gravity >= 0; wind: world XYZ acceleration.
+    Conservative leg capsules and neighbouring tips constrain cloth; hair uses
+    head/neck/shoulder/back capsules. Not per-vertex or full fabric physics. Returns
+    per-garment chains, tip lag, clearance, skipped reasons and total bake_seconds."""
     return await run('secondary_motion', character=character, parts=parts,
                      frame_start=frame_start, frame_end=frame_end, stiffness=stiffness,
                      damping=damping, gravity=gravity, wind=wind, clear=clear)

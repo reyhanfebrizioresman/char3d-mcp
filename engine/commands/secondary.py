@@ -1,4 +1,4 @@
-"""Deterministic, baked hair springs. Only owned deform bones/curves are modified.
+"""Deterministic, baked hair/garment springs. Only owned bones/curves are modified.
 
 The solver operates on cached world-space attachment/collider samples, without
 evaluating Blender inside its substeps. Authored rest curves are elastic targets;
@@ -166,12 +166,23 @@ def _install(rig, chains, geometry):
                     names = [ch['parent'], *ch['bones']]
                     for n, value in ((names[a], 1 - u), (names[a + 1], u)):
                         result[n] = result.get(n, 0.0) + float(w) * value
+                if mesh_chains[0].get('part') == 'clothes':
+                    # The virtual parent contribution retains the ORIGINAL skin
+                    # weights at the waist, including thigh/spine blends.
+                    top = result.pop(head.name, 0.0)
+                    original = [(old[g.group].name, g.weight) for g in obj.data.vertices[i].groups
+                                if g.group in old]
+                    total = sum(w for _, w in original)
+                    for n, w in original:
+                        result[n] = result.get(n, 0.) + top * w / max(total, 1e-12)
+                    if not total:
+                        result[head.name] = top
                 for g in list(obj.data.vertices[i].groups):
                     if g.group in old:
                         old[g.group].remove([i])
                 for n, value in result.items():
                     if value > 0:
-                        (head if n == head.name else groups[n]).add([i], value, 'REPLACE')
+                        (obj.vertex_groups[n]).add([i], value, 'REPLACE')
     finally:
         if rig.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -251,8 +262,10 @@ def _sample(rig, chains, colliders, f0, f1):
         strands = [[transforms[ch['parent']] @ Vector(p) for p in ch['points']] for ch in chains]
         cols = [(transforms[c['bone']] @ Vector(c['a']), transforms[c['bone']] @ Vector(c['b']),
                  c['radius'] * max(transforms[c['bone']].to_scale())) for c in colliders]
-        samples.append((strands, cols, mw, {ch['parent']: rig.pose.bones[ch['parent']].matrix.copy()
-                                          for ch in chains}))
+        parents = {ch['parent']: rig.pose.bones[ch['parent']].matrix.copy() for ch in chains}
+        from .secondary_cloth import drape_targets
+        normals = drape_targets(strands, cols, colliders, chains, mw, parents, rig)
+        samples.append((strands, cols, mw, parents, normals))
     return samples
 
 
@@ -264,8 +277,11 @@ def _constrain(points, targets, lengths, colliders, radius):
         if d.length < 1e-9:
             d = targets[j + 1] - targets[j]
         p = a + d.normalized() * length
+        # Broad phase avoids substep work on distant limb capsules.
+        nearby = [(ca, cb, cr) for ca, cb, cr in colliders
+                  if (a - _closest(a, ca, cb)).length < length + cr + radius + .01]
         for _ in range(6):
-            for ca, cb, cr in colliders:
+            for ca, cb, cr in nearby:
                 for s in (.25, .5, .75, 1.):
                     q = a.lerp(p, s)
                     nearest = _closest(q, ca, cb)
@@ -292,20 +308,23 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
     offsets = [[Vector() for _ in ch['points']] for ch in chains]
     velocities = [[Vector() for _ in ch['points']] for ch in chains]
     prev = {}
-    motion, final, clearance = 0.0, 0.0, float('inf')
+    from .secondary_cloth import constrain_ring, constrain_cloth
+    stats = {ch['mesh']: dict(max_tip_offset_m=0., final_tip_offset_m=0.,
+                              min_collider_clearance_m=float('inf')) for ch in chains}
     for i, f in enumerate(range(f0, f1 + 1), 1):
-        targets, cols, mw, parents = samples[i]
+        targets, cols, mw, parents, normals = samples[i]
         inverse = mw.inverted()
+        all_points, all_lengths, all_cols = [], [], []
         for k, ch in enumerate(chains):
             rest = targets[k]
             before, after = samples[i - 1][0][k], samples[i + 1][0][k]
             acceleration = [(a - 2 * b + c) / (dt * dt) for a, b, c in zip(before, rest, after)]
-            # Mild air resistance gives sustained travel a trailing groom, even
-            # when root velocity is constant. It vanishes as the body stops.
             air = [(a - b) * ((1.5 + 3 * (1 - stiffness)) / (2 * dt))
                    for a, b in zip(after, before)]
             lengths = [(b - a).length for a, b in zip(rest, rest[1:])]
             radius = ch['radius'] * max(mw.to_scale())
+            own_cols = [c for spec, c in zip(colliders, cols)
+                        if spec.get('part', 'hair') == ch.get('part', 'hair')]
             for _ in range(steps):
                 old = [v.copy() for v in offsets[k]]
                 for j in range(1, len(rest)):
@@ -313,27 +332,45 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
                                           - drag * velocities[k][j]) * step
                     offsets[k][j] += velocities[k][j] * step
                 points = [p + d for p, d in zip(rest, offsets[k])]
-                _constrain(points, rest, lengths, cols, radius)
+                if ch.get('part') == 'clothes':
+                    _constrain(points, rest, lengths, [], radius)
+                else:
+                    _constrain(points, rest, lengths, own_cols, radius)
                 for j in range(1, len(rest)):
                     offsets[k][j] = points[j] - rest[j]
                     velocities[k][j] = (offsets[k][j] - old[j]) / step
+            all_points.append(points)
+            all_lengths.append(lengths)
+            all_cols.append(own_cols)
+        # A ring shares only lateral corrections. Rigid segment lengths and body
+        # collision are projected again before recovering exportable rotations.
+        if any(ch.get('part') == 'clothes' for ch in chains):
+            constrain_ring(all_points, targets, chains)
+            for k, ch in enumerate(chains):
+                if ch.get('part') == 'clothes':
+                    constrain_cloth(all_points[k], targets[k], all_lengths[k], all_cols[k],
+                                    ch['radius'] * max(mw.to_scale()), normals[k])
+                    offsets[k] = [p - t for p, t in zip(all_points[k], targets[k])]
+        for k, ch in enumerate(chains):
+            points, rest, own_cols = all_points[k], targets[k], all_cols[k]
+            radius = ch['radius'] * max(mw.to_scale())
+            st = stats[ch['mesh']]
             displacement = offsets[k][-1].length
-            motion = max(motion, displacement)
+            st['max_tip_offset_m'] = max(st['max_tip_offset_m'], displacement)
             if f == f1:
-                final = max(final, displacement)
+                st['final_tip_offset_m'] = max(st['final_tip_offset_m'], displacement)
             for a, b in zip(points, points[1:]):
-                for s in (.25, .5, .75, 1.):
-                    p = a.lerp(b, s)
-                    for ca, cb, cr in cols:
-                        clearance = min(clearance, (p - _closest(p, ca, cb)).length - cr - radius)
+                for u in (.25, .5, .75, 1.):
+                    p = a.lerp(b, u)
+                    for ca, cb, cr in own_cols:
+                        st['min_collider_clearance_m'] = min(st['min_collider_clearance_m'],
+                            (p - _closest(p, ca, cb)).length - cr - radius)
             parent_matrix = parents[ch['parent']]
             for j, name in enumerate(ch['bones']):
                 bone = rig.data.bones[name]
-                # Recover the posed rest orientation from the attachment, then
-                # swing it to the constrained direction without introducing twist.
                 attach = mw @ parents[ch['parent']] @ rig.data.bones[ch['parent']].matrix_local.inverted()
                 rest_matrix = attach @ bone.matrix_local
-                q = (rest[j + 1] - rest[j]).rotation_difference(points[j + 1] - points[j])
+                q = rest_matrix.to_3x3().col[1].rotation_difference(points[j + 1] - points[j])
                 desired = inverse @ Matrix.LocRotScale(points[j], q @ rest_matrix.to_quaternion(),
                                                        rest_matrix.to_scale())
                 local = bone.convert_local_to_pose(desired, bone.matrix_local,
@@ -344,17 +381,25 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
                 pb.rotation_quaternion = local.to_quaternion()
                 _key_rot(pb, f, prev)
                 parent_matrix = desired
-    return dict(max_tip_offset_m=round(motion, 6), final_tip_offset_m=round(final, 6),
-                min_collider_clearance_m=round(clearance, 6))
+    for st in stats.values():
+        for key in st:
+            st[key] = round(st[key], 6)
+    garments = [dict(object=mesh, chains=sum(c['mesh'] == mesh for c in chains),
+                     bones=[n for c in chains if c['mesh'] == mesh for n in c['bones']], **stats[mesh])
+                for mesh in sorted({c['mesh'] for c in chains if c.get('part') == 'clothes'})]
+    return dict(max_tip_offset_m=max(st['max_tip_offset_m'] for st in stats.values()),
+                final_tip_offset_m=max(st['final_tip_offset_m'] for st in stats.values()),
+                min_collider_clearance_m=min(st['min_collider_clearance_m'] for st in stats.values()),
+                garments=garments)
 
 
 @command('secondary_motion')
 def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=None,
                      stiffness=0.5, damping=0.5, gravity=1.0, wind=None, clear=False):
-    """Bake elastic hair chains after body/face motion; export as ordinary skin bones."""
+    """Bake elastic hair/garment chains after body/face motion; export as ordinary skin bones."""
     started = time.perf_counter()
-    if isinstance(parts, str) or not parts or any(p not in ('hair', 'clothes') for p in parts):
-        raise ValueError('parts must contain hair and/or clothes')
+    if isinstance(parts, str) or not parts or any(not isinstance(p, str) or not p for p in parts):
+        raise ValueError('parts must be a nonempty list of hair, clothes or garment names')
     for n, v in (('stiffness', stiffness), ('damping', damping), ('gravity', gravity)):
         if not math.isfinite(v) or v < 0 or (n != 'gravity' and v > 1):
             raise ValueError(f'{n} must be finite and ' + ('>= 0' if n == 'gravity' else 'in 0..1'))
@@ -369,32 +414,52 @@ def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=Non
         raise ValueError('expected 0 <= frame_start <= frame_end and at most 24000 frames')
     state = json.loads(rig.get(_STATE, '{"meshes": {}, "chains": [], "colliders": []}'))
     skipped = []
-    if 'clothes' in parts:
-        skipped.append(dict(part='clothes', reason='Loose clothes/cloth simulation is not supported; hair only.'))
     saved = sc.frame_current
+    from .secondary_cloth import chains_for_garment, leg_colliders
+    def selected(ch):
+        return (ch.get('part', 'hair') in parts or ch['mesh'] in parts or
+                _asset_name(bpy.data.objects[ch['mesh']], rig) in [p.lower() for p in parts])
     try:
-        if 'hair' in parts and not clear:
+        if not clear:
             smap = semantic_map(rig)
             if not all(n in smap for n in ('head', 'neck', 'chest', 'hips', 'thigh.L', 'thigh.R',
-                                           'upper_arm.L', 'upper_arm.R')):
-                raise ValueError(f'{rig.name}: cannot identify humanoid head/torso bones')
+                                           'shin.L', 'shin.R', 'upper_arm.L', 'upper_arm.R')):
+                raise ValueError(f'{rig.name}: cannot identify humanoid head/torso/leg bones')
             parent = _deform_head(rig, smap)
-            candidates = sorted((o for o in sc.objects if o.type == 'MESH' and o.find_armature() == rig
-                                 and not o.get('c3d_source') and o.get('c3d_kind') != 'humanoid' and
-                                 any(h in _asset_name(o, rig) or any(h in g.name.lower() for g in o.vertex_groups)
-                                     for h in _HAIR)), key=lambda o: o.name)
+            meshes = sorted((o for o in sc.objects if o.type == 'MESH' and o.find_armature() == rig
+                             and not o.get('c3d_source') and o.get('c3d_kind') != 'humanoid'),
+                            key=lambda o: o.name)
+            hair = [o for o in meshes if any(h in _asset_name(o, rig) or
+                    any(h in g.name.lower() for g in o.vertex_groups) for h in _HAIR)]
+            # Geometry, not an asset-name allowlist, determines garment eligibility.
+            garments = [o for o in meshes if o not in hair and not any(h in _asset_name(o, rig)
+                        for h in ('eyebrow', 'eyelash', 'high-poly', 'teeth', 'tongue', 'eye'))]
+            candidates = ([o for o in hair] if 'hair' in parts else [])
+            candidates += [o for o in garments if 'clothes' in parts or o.name in parts or
+                           _asset_name(o, rig) in [p.lower() for p in parts]]
+            for p in parts:
+                if p not in ('hair', 'clothes') and not any(
+                        p == o.name or p.lower() == _asset_name(o, rig) for o in garments):
+                    skipped.append(dict(part=p, reason='No matching skinned garment object/asset.'))
+            legs = leg_colliders(rig, smap) if any(o in garments for o in candidates) else []
             fresh, geometry = [], []
             for obj in candidates:
                 if obj.name in state['meshes']:
                     if len(obj.data.vertices) != state['meshes'][obj.name]:
                         raise ValueError(f'{obj.name}: topology changed after secondary chain setup')
                     continue
-                if any(h in _asset_name(obj, rig) for h in ('short', 'afro')):
-                    skipped.append(dict(object=obj.name, reason='Short/scalp hair has no loose tail.'))
-                    continue
-                chains, data = _chains(obj, rig, smap, parent, len(state['chains']) + len(fresh))
+                if obj in hair:
+                    if any(h in _asset_name(obj, rig) for h in ('short', 'afro')):
+                        skipped.append(dict(object=obj.name, reason='Short/scalp hair has no loose tail.'))
+                        continue
+                    index = sum(c.get('part', 'hair') == 'hair' for c in state['chains'] + fresh)
+                    chains, data = _chains(obj, rig, smap, parent, index)
+                    reason = 'No sufficiently long loose hair region.'
+                else:
+                    index = sum(c.get('part') == 'clothes' for c in state['chains'] + fresh)
+                    chains, data, reason = chains_for_garment(obj, rig, smap, legs, index)
                 if not chains:
-                    skipped.append(dict(object=obj.name, reason='No sufficiently long loose hair region.'))
+                    skipped.append(dict(object=obj.name, reason=reason))
                     continue
                 fresh.extend(chains)
                 geometry.append((obj, chains, data))
@@ -402,11 +467,16 @@ def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=Non
                 _install(rig, fresh, geometry)
                 state['chains'].extend(fresh)
                 state['meshes'].update({obj.name: len(obj.data.vertices) for obj, _, _ in geometry})
-                state['colliders'] = _colliders(rig, smap, parent, state['chains'])
+                hairs = [c for c in state['chains'] if c.get('part', 'hair') == 'hair']
+                state['colliders'] = _colliders(rig, smap, parent, hairs) if hairs else []
+                if any(c.get('part') == 'clothes' for c in state['chains']):
+                    state['colliders'].extend(legs or leg_colliders(rig, smap))
                 rig[_STATE] = json.dumps(state)
-            if not candidates:
+            if 'hair' in parts and not hair:
                 skipped.append(dict(part='hair', reason='No skinned mesh with a hair name/group hint.'))
-        chains = state['chains'] if 'hair' in parts else []
+            if 'clothes' in parts and not garments:
+                skipped.append(dict(part='clothes', reason='No skinned garment mesh.'))
+        chains = [ch for ch in state['chains'] if selected(ch)]
         names = [n for ch in chains for n in ch['bones']]
         _clear_keys(rig, names, f0, f1, neutral=clear)
         measured = {}
@@ -414,14 +484,22 @@ def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=Non
             samples = _sample(rig, chains, state['colliders'], f0, f1)
             measured = _bake(rig, chains, state['colliders'], samples, f0, f1,
                              stiffness, damping, gravity, wind)
+            paths = {rig.pose.bones[n].path_from_id('rotation_quaternion') for n in names}
             for fc in _fcurves(rig.animation_data.action):
-                if any(fc.data_path == rig.pose.bones[n].path_from_id('rotation_quaternion') for n in names):
+                if fc.data_path in paths:
                     for key in fc.keyframe_points:
                         if f0 <= key.co.x <= f1:
                             key.interpolation = 'LINEAR'
+        garments = measured.pop('garments', [])
+        if clear:
+            garments = [dict(object=mesh, chains=sum(c['mesh'] == mesh for c in chains),
+                             bones=[n for c in chains if c['mesh'] == mesh for n in c['bones']],
+                             cleared=True) for mesh in sorted({c['mesh'] for c in chains
+                                                               if c.get('part') == 'clothes'})]
         return dict(character=rig.name, frames=[f0, f1], chains=len(chains), bones=names,
-                    meshes=sorted(state['meshes']) if chains else [], cleared=bool(clear),
-                    skipped=skipped, **measured, bake_seconds=round(time.perf_counter() - started, 4))
+                    meshes=sorted({ch['mesh'] for ch in chains}), cleared=bool(clear),
+                    skipped=skipped, garments=garments, **measured,
+                    bake_seconds=round(time.perf_counter() - started, 4))
     finally:
         sc.frame_set(saved)
         bpy.context.view_layer.update()
