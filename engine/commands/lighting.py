@@ -4,6 +4,7 @@ Lights are placed around the subject with the same angle convention as cameras
 (azimuth 0 = in front of the subject, 90 = subject's left, 180 = behind).
 """
 import math
+from bisect import bisect_left, bisect_right
 
 import bpy
 from mathutils import Vector
@@ -83,7 +84,10 @@ def _world(color, strength):
 def _clear_c3d(role):
     for o in [o for o in bpy.data.objects if o.get("c3d_role") == role]:
         data = o.data
+        action = o.animation_data.action if o.animation_data else None
         bpy.data.objects.remove(o, do_unlink=True)
+        if action is not None and action.users == 0:
+            bpy.data.actions.remove(action)
         if data is not None and data.users == 0:
             if isinstance(data, bpy.types.Light):
                 bpy.data.lights.remove(data)
@@ -116,20 +120,83 @@ def list_lighting_presets():
     return {k: v["desc"] for k, v in PRESETS.items()}
 
 
+def _motion_bounds(targets):
+    """Sample evaluated bounds, keeping the caller's frame (including subframe)."""
+    sc = bpy.context.scene
+    saved = sc.frame_current, sc.frame_subframe
+    frames = sorted({*range(sc.frame_start, sc.frame_end + 1, 3), sc.frame_end})
+    samples = []
+    try:
+        for frame in frames:
+            sc.frame_set(frame)
+            lo, hi = scene_bounds(targets)
+            samples.append((frame, Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)),
+                            hi.z - lo.z))
+    finally:
+        sc.frame_set(saved[0], subframe=saved[1])
+    return samples
+
+
+def _follow_rig(samples):
+    """Centered half-second average: suppress gait bob without a trailing light rig.
+
+    Z follows the feet/ground, rather than the bounds' center, so sitting does not
+    lower the lights. A single fixed standing height controls power, size and aim.
+    """
+    from .talk import _fcurves
+
+    sc = bpy.context.scene
+    rig = bpy.data.objects.new("c3d_light_rig", None)
+    rig["c3d_role"] = "light"
+    sc.collection.objects.link(rig)
+    frames = [s[0] for s in samples]
+    sums = [Vector((0, 0, 0))]
+    for _, position, _ in samples:
+        sums.append(sums[-1] + position)
+    radius = max(1.0, sc.render.fps / sc.render.fps_base * 0.25)
+    for frame, _, _ in samples:
+        a, b = bisect_left(frames, frame - radius), bisect_right(frames, frame + radius)
+        rig.location = (sums[b] - sums[a]) / (b - a)
+        rig.keyframe_insert("location", frame=frame)
+    for curve in _fcurves(rig.animation_data.action):
+        for key in curve.keyframe_points:
+            key.interpolation = "LINEAR"
+    sc.frame_set(sc.frame_current, subframe=sc.frame_subframe)
+    return rig
+
+
 @command("set_lighting")
 def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, background=None,
-                 ground=True, ground_color=(0.32, 0.32, 0.33)):
-    """Replace char3d lights with a preset aimed at the subject; optional ground plane."""
+                 ground=True, ground_color=(0.32, 0.32, 0.33), follow="auto"):
+    """Replace preset lights; follow=True/False/'auto' bakes a smoothed subject path.
+
+    Auto follows XY travel above 0.43 times standing height (~0.75 m for a human).
+    Call after body animation and rerun after motion changes. SUNs remain static.
+    Returns actual follow, travel_m and keys (location samples, not scalar keys).
+    """
     from .environment import _sync_ground
 
     if preset not in PRESETS:
         raise ValueError(f"preset must be one of {list(PRESETS)}")
+    if not (isinstance(follow, bool) or follow == "auto"):
+        raise ValueError("follow must be True, False or 'auto'")
     sc = bpy.context.scene
     p = PRESETS[preset]
-    _clear_c3d("light")
     targets = _subjects(subject)
     lo, hi = scene_bounds(targets) if targets else (Vector((-0.5, -0.5, 0)), Vector((0.5, 0.5, 1.8)))
     H = max(hi.z - lo.z, 0.1)
+    call_height = H
+    anchor = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
+    samples = _motion_bounds(targets) if targets else []
+    travel = max(((pos.xy - anchor.xy).length for _, pos, _ in samples), default=0.0)
+    standing_height = max([H] + [h for _, _, h in samples])
+    motion = max(((pos - anchor).length for _, pos, _ in samples), default=0.0) > 1e-4
+    following = bool(motion and (follow is True or (follow == "auto" and travel > 0.43 * standing_height))
+                     and any(light[0] != "SUN" for light in p["lights"]))
+    _clear_c3d("light")
+    rig = _follow_rig(samples) if following else None
+    if following:
+        H = standing_height
     center = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z + H * 0.55))
     scale = (H / 1.75) ** 2   # keep exposure similar for small/large subjects
 
@@ -157,6 +224,9 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
         obj["c3d_role"] = "light"
         sc.collection.objects.link(obj)
         obj.location = loc
+        if rig is not None and kind != "SUN":
+            obj.parent = rig
+            obj.location = loc - anchor
         obj.rotation_euler = (center - loc).to_track_quat("-Z", "Y").to_euler()
         made.append(obj.name)
 
@@ -168,7 +238,7 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     ground_name = None
     _clear_c3d("ground")
     if ground:
-        bpy.ops.mesh.primitive_plane_add(size=max(400.0, H * 200))   # horizon far away
+        bpy.ops.mesh.primitive_plane_add(size=max(400.0, call_height * 200))   # horizon far away
         g = bpy.context.view_layer.objects.active
         g.name = "c3d_ground"
         g["c3d_role"] = "ground"
@@ -179,7 +249,8 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     if sc.render.engine == "BLENDER_WORKBENCH":
         sc.render.engine = "BLENDER_EEVEE"
     return {"preset": preset, "lights": made, "ground": ground_name,
-            "world_color": [round(c, 3) for c in color]}
+            "world_color": [round(c, 3) for c in color], "follow": following,
+            "travel_m": round(travel, 4), "keys": len(samples) if following else 0}
 
 
 @command("set_material")

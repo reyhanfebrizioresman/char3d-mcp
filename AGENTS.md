@@ -483,9 +483,18 @@ highest surface and index 0. Set roots enumerate their seat positions too.
   a pronounced wrist bend or still intersect the body/prop. There is no arm/prop collision
   solver or automatic elbow lift; choose a suitable arm pose for drinking/raised microphones.
 
-**Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
+**Lighting** — `set_lighting(preset, subject, follow="auto")`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane by default and
 switches the scene to Eevee. `rotate` spins the rig of lights around the subject.
+Call **after body animation** (`walk_path`, `animate`, `sit_on`) so it can sample the
+whole scene range; rerun after changing motion. `follow="auto"` follows horizontal
+travel > 0.43 x standing height (~0.75 m for a human); `True` follows any motion,
+`False` keeps the old static placement. Local lights follow the smoothed union bounds'
+XY center and ground height, with a stable standing scale through stairs/sitting.
+SUNs, ground, world and environment practical lights stay static. Results include
+`follow` (actually used), `travel_m` and `keys` (location sample count).
+Use character subjects for character exposure; adding large static props changes the
+union center/scale and can put lights behind scenery that casts shadows on the cast.
 `set_material(objects, color, roughness, metallic, emission_strength)` for quick looks.
 
 **Shots** — `camera_shot(subject, shot, move, start_frame, end_frame, angle, elevation,

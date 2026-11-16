@@ -1084,6 +1084,107 @@ result = o.name
         print(f"secondary user hair ({kind}): {custom['chains']} chains | moved/rotated rig OK")
 
 
+async def _lighting_checks(call):
+    """Static placement from main, smoothed moving lights, opt-out and owned cleanup."""
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def inspect(code):
+        return (await data("run_blender_python", code=textwrap.dedent(code)))["result"]
+
+    await call("new_scene", frame_end=96)
+    await call("create_human", name="LightWalker", style="realistic")
+    await call("auto_rig_humanoid", mesh="LightWalker")
+    await inspect("bpy.context.scene.frame_set(17, subframe=0.25)")
+    # This is main's static placement formula, including rotate, power and aim.
+    # Check every preset, including SUN and SPOT, against it rather than another
+    # invocation of the changed set_lighting implementation.
+    for preset in (await data("list_lighting_presets")):
+        light = await data("set_lighting", preset=preset, subject=["LightWalker_rig"],
+                           rotate=23, strength=1.2)
+        assert not light["follow"] and light["keys"] == 0 and light["travel_m"] == 0, light
+        await inspect(f'''
+            import math
+            from engine.commands.camera import _subjects
+            from engine.commands.lighting import PRESETS
+            from engine.commands.util import scene_bounds
+            sc = bpy.context.scene
+            assert sc.frame_current == 17 and sc.frame_subframe == 0.25
+            lo, hi = scene_bounds(_subjects(['LightWalker_rig']))
+            height = max(hi.z - lo.z, 0.1)
+            center = Vector(((lo.x+hi.x)/2, (lo.y+hi.y)/2, lo.z + height*0.55))
+            for i, (kind, az, el, dist, power, rgb, size) in enumerate(PRESETS[{preset!r}]['lights']):
+                o = bpy.data.objects[f'c3d_{preset}_{{i}}']
+                a, e = math.radians(az+23), math.radians(el)
+                direction = Vector((math.sin(a)*math.cos(e), -math.cos(a)*math.cos(e), math.sin(e)))
+                loc = center + direction * height * (3 if kind == 'SUN' else dist)
+                rotation = (center-loc).to_track_quat('-Z', 'Y').to_euler()
+                energy = power*1.2*(1 if kind == 'SUN' else (height/1.75)**2)
+                assert (o.location-loc).length < 1e-6, (o.name, list(o.location), list(loc))
+                assert max(abs(x-y) for x, y in zip(o.rotation_euler, rotation)) < 1e-6
+                assert abs(o.data.energy-energy) < 1e-3
+                assert o.parent is None and o.animation_data is None
+            assert 'c3d_light_rig' not in bpy.data.objects
+        ''')
+    await inspect("bpy.context.scene.frame_set(1)")
+    route = await data("walk_path", armature="LightWalker_rig", points=[[0, -3]])
+    await call("set_timeline", frame_end=route["frames"][1])
+    await inspect("bpy.context.scene.frame_set(1)")
+    followed = await data("set_lighting", preset="soft", subject=["LightWalker_rig"], rotate=23)
+    assert followed["follow"] and followed["keys"] > 0 and followed["travel_m"] > 2.5, followed
+    motion = await inspect(f'''
+        from engine.commands.camera import _subjects
+        from engine.commands.talk import _fcurves
+        from engine.commands.util import scene_bounds
+        sc = bpy.context.scene
+        rig = bpy.data.objects['c3d_light_rig']
+        assert rig.get('c3d_role') == 'light'
+        curves = _fcurves(rig.animation_data.action)
+        assert len(curves) == 3
+        assert all(k.interpolation == 'LINEAR' for fc in curves for k in fc.keyframe_points)
+        distances = []
+        end = {route['frames'][1]}
+        for f in [1, end//2, end]:
+            sc.frame_set(f)
+            lo, hi = scene_bounds(_subjects(['LightWalker_rig']))
+            center = (lo+hi)/2
+            distances.append([(bpy.data.objects[n].matrix_world.translation-center).length
+                              for n in {followed['lights']!r}])
+        assert all(abs(d/base-1) < 0.1 for row in distances for d, base in zip(row, distances[0])), distances
+        sc.frame_set(1)
+        result = dict(distances=distances, actions=sorted(a.name for a in bpy.data.actions))
+    ''')
+    # Repeated calls replace the owned empty/action; other animation is untouched.
+    again = await data("set_lighting", preset="soft", subject=["LightWalker_rig"], rotate=23)
+    assert again == followed, (again, followed)
+    await inspect(f'''
+        assert sorted(a.name for a in bpy.data.actions) == {motion['actions']!r}
+        assert len([o for o in bpy.data.objects if o.type == 'EMPTY' and o.get('c3d_role') == 'light']) == 1
+    ''')
+    await call("camera_shot", subject=["LightWalker_rig"], shot="full", move="tracking",
+               start_frame=1, end_frame=route["frames"][1])
+    looks = [json.loads(t)["path"] for t in text_of(await call(
+        "render_frames", frames=[1, route["frames"][1]], camera="scene",
+        engine_name="eevee", size=256))]
+    await call("save_project", path="e2e_light_follow.blend")
+    await inspect("bpy.context.scene.frame_set(1)")
+    static = await data("set_lighting", preset="soft", subject=["LightWalker_rig"], follow=False)
+    assert not static["follow"] and static["keys"] == 0 and static["travel_m"] > 2.5, static
+    await inspect('''
+        sc = bpy.context.scene
+        lights = [o for o in sc.objects if o.type == 'LIGHT' and o.get('c3d_role') == 'light']
+        before = [o.matrix_world.copy() for o in lights]
+        sc.frame_set(sc.frame_end)
+        assert [o.matrix_world for o in lights] == before
+        assert 'c3d_light_rig' not in bpy.data.objects
+        assert not any(a.name.startswith('c3d_light_rig') for a in bpy.data.actions)
+    ''')
+    print("lighting: static transforms/energies match main (10 presets) | "
+          f"{followed['travel_m']:.3f} m travel, {followed['keys']} keys | "
+          f"distances {motion['distances']} | opt-out/cleanup OK | "
+          f"renders {looks}")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -1103,6 +1204,7 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
+        await _lighting_checks(call)
         await call("new_scene")
         await call("add_primitive", kind="monkey", name="Hero", location=[0, 0, 1])
         await call("transform_object", name="Hero", rotation_deg=[0, 0, 0])

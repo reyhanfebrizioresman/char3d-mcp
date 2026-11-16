@@ -45,7 +45,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `add_terrain`, `clear_terrain` | Buat/hapus tangga, ramp, platform, dan satu anak tangga; mesh bertanda walkable. `walk_path` mengikuti tinggi permukaan, menempatkan telapak utuh pada pijakan, dan mengangkat kaki melewati tepi; `lock_feet(terrain=True)` mengikuti tinggi serta kemiringan lokal. Kecepatan dan irama berubah mulus di sepanjang rute: normal di lantai/platform datar, sedikit melambat sesuai kemiringan ramp, langkah jalan pendek dengan irama lebih cepat hanya di tangga. Permintaan lari tetap berlari di bagian datar/ramp dan beralih ke jalan di sekitar tangga (`terrain.gait`: `walk`, `run`, `run/walk`); putaran/langkah penutup memakai irama tersendiri. Tinggi anak tangga disarankan ≤0,20 m, tanpa penghindaran rintangan |
 | `clear_animation`, `render_frames` | Hapus animasi; render beberapa frame untuk mengecek gerakan |
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
-| `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; material cepat |
+| `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
 | `dialog`, `stage_dialog` | Percakapan 2–4 karakter dalam satu panggilan: posisi saling berhadapan, lip sync per baris (audio/teks), saling menatap, pendengar mengangguk, gestur per pembicara, kamera two-shot lalu single per pembicara |
 | `set_environment`, `add_prop`, `clear_environment` | Set prosedural: podcast_studio, classroom, office, stage, living_room, news_desk; furnitur, bangku, stool, cup, phone, book, handheld_microphone + lampu praktis dalam koleksi char3d_env, variant/tema warna dan gambar lokal pada layar/papan; bersihkan tanpa menghapus karakter/kamera |
 | `sit_on`, `stand_up` | Duduk pada kursi/sofa/bangku/stool atau permukaan mesh: kontak bokong diukur, kaki IK menapak, arah mengikuti kursi, transisi halus dan pilihan posisi sofa; bisa dilapisi gerak bicara. Berdiri kembali di depan kursi; dudukan statis dan lantai datar |
@@ -61,6 +61,12 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).
+
+Panggil `set_lighting` setelah animasi tubuh (`walk_path`, `animate`, `sit_on`), lalu
+ulangi jika geraknya berubah. `follow="auto"` mengikuti perpindahan horizontal di atas
+0,43 x tinggi berdiri (~0,75 m untuk manusia); `True` mengikuti setiap perpindahan,
+`False` mempertahankan lampu statis. Lampu SUN tetap statis. Hasil menyertakan `follow`,
+`travel_m`, dan `keys` (jumlah sampel posisi).
 
 ## Kebutuhan
 - Blender 5.2 LTS. Secara default dicari di `~/.local/opt/blender/blender`,

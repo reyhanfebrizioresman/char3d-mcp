@@ -478,14 +478,20 @@ async def list_lighting_presets() -> dict:
 async def set_lighting(preset: Light = "studio", subject: list[str] | None = None,
                        strength: float = 1.0, rotate: float = 0.0,
                        background: list[float] | None = None, ground: bool = True,
-                       ground_color: list[float] = [0.32, 0.32, 0.33]) -> dict:
+                       ground_color: list[float] = [0.32, 0.32, 0.33],
+                       follow: bool | Literal["auto"] = "auto") -> dict:
     """Replace the scene lighting aimed at subject (default: visible subjects, excluding sets):
     studio, soft, dramatic, sunset, noon, overcast, night, neon, silhouette, horror.
     rotate spins all lights around the subject (degrees). background overrides the sky
-    color (RGB 0..1). ground adds a large floor at the subject's feet."""
+    color (RGB 0..1). ground adds a large floor at the subject's feet.
+    follow='auto' follows travel > 0.43 x standing height (~0.75 m); True follows
+    any motion, False keeps lights static. SUN lights stay static. Call AFTER body
+    animation (walk_path, animate, sit_on); rerun after motion changes. The smoothed
+    rig follows XY and ground height, keeping standing light scale when sitting.
+    Returns follow (actually used), travel_m and keys (location sample count)."""
     return await run("set_lighting", preset=preset, subject=subject, strength=strength,
                      rotate=rotate, background=background, ground=ground,
-                     ground_color=ground_color)
+                     ground_color=ground_color, follow=follow)
 
 
 Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk"]
