@@ -221,6 +221,227 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
     return measured
 
 
+async def check_terrain(call, kind="basic"):
+    """Check the visible rig on a full course, using an independent analytic surface."""
+    import math
+    await call("scene_info")
+    await call("new_scene")
+    mpfb = kind.startswith("mpfb")
+    rotated = kind.endswith("rigify")
+    angle = 27 if rotated else 0
+    origin = [1.7, 0.4, 0] if rotated else [0, 0, 0]
+    c, s = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+
+    def point(x, y):
+        return [origin[0]+c*x-s*y, origin[1]+s*x+c*y]
+
+    if mpfb:
+        await call("create_realistic_human", name="Climber", face=False,
+                   rig="rigify" if rotated else "game_engine", location=origin)
+        if rotated:
+            await call("transform_object", name="Climber_rig", rotation_deg=[0, 0, angle])
+    else:
+        await call("create_human", name="Climber", height=1.75)
+        await call("auto_rig_humanoid", mesh="Climber", rig_type="rigify" if rotated else "basic")
+        await call("transform_object", name="Climber_rig", location=origin, rotation_deg=[0, 0, angle])
+    for name, terrain, y, length, height, rotation in (
+            ("Stairs", "stairs", -.6, 1.4, .85, 0),
+            ("Landing", "platform", -2, .8, .85, 0),
+            ("Ramp", "ramp", -5, 2.2, .85, 180)):
+        await call("add_terrain", kind=terrain, name=name, location=point(0, y)+[0],
+                   rotation_z=rotation+angle, length=length, height=height,
+                   **({"steps": 5} if terrain == "stairs" else {}))
+    nav = json.loads(text_of(await call("walk_path", armature="Climber_rig",
+                                        points=[point(0, -5.6)], face_end=point(2, -5.6)))[0])
+    code = textwrap.dedent(f'''\
+        import math
+        from engine.commands.anim import semantic_map, _facing
+        from engine.commands.footlock import _legs, _sole_points
+        from engine.commands.terrain import GroundQuery
+        nav = {nav!r}
+        rig = bpy.data.objects['Climber_rig']
+        sc = bpy.context.scene
+        mw = rig.matrix_world
+        smap = semantic_map(rig)
+        legs, _ = _legs(rig)
+        soles = {{side: _sole_points(rig, leg, 0) for side, leg in legs.items()}}
+        planted = {{side: {{f for a,b in nav['foot_lock']['contacts'][side] for f in range(a,b+1)}}
+                   for side in 'LR'}}
+        c, s = {c!r}, {s!r}
+        origin = {origin!r}
+        def surface(p):
+            x, y = p.x-origin[0], p.y-origin[1]
+            x, y = c*x+s*y, -s*x+c*y
+            if abs(x) > .60001: return 0.0
+            if -2 < y <= -.6: return .17*(1+min(4,int((-.6-y)/.28)))
+            if -2.8 <= y <= -2: return .85
+            if -5 <= y < -2.8: return .85*(y+5)/2.2
+            return 0.0
+        query = GroundQuery()
+        ray_error = max(abs(query.sample(*p)[0]-surface(Vector((*p,0))))
+                        for p in [{point(0,-.74)!r}, {point(0,-1.86)!r},
+                                  {point(0,-3.9)!r}, {point(0,-5.4)!r}])
+        drift = contact_error = penetration = rotation_drift = 0.0
+        clearance = 10.0
+        roots, yaws = [], []
+        rest = (mw @ rig.data.bones[smap['hips']].matrix_local).to_quaternion()
+        left = (mw @ rig.data.bones[smap['thigh.L']].head_local -
+                mw @ rig.data.bones[smap['thigh.R']].head_local)
+        forward = Vector((left.y,-left.x,0)).normalized()
+        for side in 'LR':
+            for a,b in nav['foot_lock']['contacts'][side]:
+                anchor = rotation = None
+                for f in range(a,b+1):
+                    sc.frame_set(f)
+                    foot = mw @ rig.pose.bones[smap['foot.'+side]].matrix
+                    p, q = foot.translation, foot.to_quaternion()
+                    anchor = p.copy() if anchor is None else anchor
+                    rotation = q.copy() if rotation is None else rotation
+                    drift = max(drift,(p-anchor).length)
+                    change = rotation.rotation_difference(q).angle
+                    rotation_drift = max(rotation_drift,min(change,2*math.pi-change))
+                    contact_error = max(contact_error,max(abs((foot@v).z-surface(foot@v)) for v in soles[side]))
+        for f in range(nav['frames'][0],nav['frames'][1]+1):
+            sc.frame_set(f)
+            hips = mw @ rig.pose.bones[smap['hips']].matrix
+            roots.append(hips.translation.copy())
+            fw = hips.to_quaternion() @ rest.inverted() @ forward
+            yaws.append(math.atan2(fw.x,-fw.y))
+            for side in 'LR':
+                foot = mw @ rig.pose.bones[smap['foot.'+side]].matrix
+                gaps = [(foot@v).z-surface(foot@v) for v in soles[side]]
+                penetration = max(penetration,-min(gaps))
+                if all(f+j not in planted[side] for j in (-2,-1,0,1,2)):
+                    clearance = min(clearance,min(gaps))
+        turn_rate = max(abs((b-a+math.pi)%(2*math.pi)-math.pi) for a,b in zip(yaws,yaws[1:]))
+        turn_rate *= sc.render.fps/sc.render.fps_base*180/math.pi
+        facing_error = abs((yaws[-1]-math.atan2(c,-s)+math.pi)%(2*math.pi)-math.pi)
+        result = dict(drift=drift, rotation_drift=rotation_drift, contact_error=contact_error,
+                      penetration=penetration, clearance=clearance, ray_error=ray_error,
+                      hips_jump=max(abs(a.z-b.z) for a,b in zip(roots,roots[1:])),
+                      hips_rise=max(p.z for p in roots)-min(p.z for p in roots),
+                      turn_rate=turn_rate, facing_error=facing_error)
+    ''')
+    measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert measured["ray_error"] < 1e-5, measured
+    assert measured["contact_error"] < .015, measured
+    assert measured["drift"] < .02 and measured["rotation_drift"] < .02, measured
+    assert measured["penetration"] < .01 and measured["clearance"] >= .02, measured
+    assert measured["hips_jump"] < .04 and measured["hips_rise"] > .7, measured
+    assert measured["turn_rate"] < 100.1, measured
+    assert measured["facing_error"] < .02, measured
+    assert nav["foot_lock"]["max_penetration_m"] < .01, nav
+    assert nav["foot_lock"]["min_swing_clearance_m"] >= .02, nav
+    assert all(nav["foot_lock"]["ground_heights"].values()), nav
+    if kind == "basic":
+        fingerprint = '''
+import hashlib, json
+from engine.commands.talk import _fcurves
+rig = bpy.data.objects['Climber_rig']
+curves = sorted((fc.data_path, fc.array_index,
+                 [tuple(k.co) for k in fc.keyframe_points])
+                for fc in _fcurves(rig.animation_data.action))
+result = hashlib.sha256(json.dumps(curves).encode()).hexdigest()
+'''
+        first = json.loads(text_of(await call("run_blender_python", code=fingerprint))[0])["result"]
+        await call("clear_animation", armature="Climber_rig")
+        nav = json.loads(text_of(await call("walk_path", armature="Climber_rig",
+                                            points=[point(0, -5.6)], face_end=point(2, -5.6)))[0])
+        second = json.loads(text_of(await call("run_blender_python", code=fingerprint))[0])["result"]
+        assert first == second, "terrain keys must be deterministic"
+    print(f"terrain ({kind}): contact {measured['contact_error']:.6f} m | "
+          f"drift {measured['drift']:.6f} m | penetration {measured['penetration']:.6f} m | "
+          f"clearance {measured['clearance']:.4f} m | hips/frame {measured['hips_jump']:.4f} m | "
+          f"yaw {measured['turn_rate']:.3f} deg/s | bake {nav['terrain']['bake_seconds']:.3f} s")
+    if kind in ("basic", "mpfb"):
+        import shutil
+        # Keep the stairs and full character in frame from the entrance side.
+        images = await call("render_frames", frames=[80, 110], view="right", size=512)
+        for frame, item in zip((80, 110), text_of(images)):
+            shutil.copyfile(json.loads(item)["path"],
+                            os.path.join(ROOT, "output", "renders", f"terrain_{kind}_right_f{frame:04d}.png"))
+        await call("set_lighting", preset="studio", subject=["Climber_rig"])
+        await call("camera_shot", name="TerrainCheck", subject=["Climber_rig"], shot="full",
+                   move="tracking", angle=145, elevation=8, start_frame=80, end_frame=140)
+        images = await call("render_frames", frames=[110], camera="scene", engine_name="eevee", size=512)
+        shutil.copyfile(json.loads(text_of(images)[0])["path"],
+                        os.path.join(ROOT, "output", "renders", f"terrain_{kind}_eevee_f0110.png"))
+        await call("save_project", path=f"e2e_terrain_{kind}.blend")
+        await call("export_asset", path=f"e2e_terrain_{kind}.glb")
+    # Rerunning a lock on an already terrain-aware walk must retain ramp pitch/height.
+    lk = json.loads(text_of(await call("lock_feet", armature="Climber_rig", terrain=True,
+                                       contacts=nav["foot_lock"]["contacts"]))[0])
+    assert lk["max_penetration_m"] < .01 and lk["max_ik_error_m"] < .02, lk
+    removed = json.loads(text_of(await call("clear_terrain"))[0])["removed"]
+    assert sorted(removed) == ["Landing", "Ramp", "Stairs"], removed
+    assert not json.loads(text_of(await call("clear_terrain"))[0])["removed"]
+
+
+async def check_terrain_contact_detection(call):
+    """Automatic local-ground detection, slope pitch, opt-out and single-step geometry."""
+    await call("new_scene")
+    await call("create_human", name="SlopeWalker", height=1.75)
+    await call("auto_rig_humanoid", mesh="SlopeWalker")
+    await call("add_terrain", kind="ramp", location=[0, .5, 0], length=2, height=.3)
+    await call("animate", armature="SlopeWalker_rig", clip="idle", cycles=1, foot_lock=False)
+    flat = json.loads(text_of(await call("lock_feet", armature="SlopeWalker_rig",
+                                         frame_end=24, terrain=False))[0])
+    assert "ground_heights" not in flat, flat
+    await call("clear_animation", armature="SlopeWalker_rig")
+    await call("animate", armature="SlopeWalker_rig", clip="idle", cycles=1, foot_lock=False)
+    slope = json.loads(text_of(await call("lock_feet", armature="SlopeWalker_rig", frame_end=24))[0])
+    assert all(v["contacts"] for v in slope["feet"].values()), slope
+    assert slope["max_penetration_m"] < .01 and slope["max_ik_error_m"] < .02, slope
+    code = '''
+from engine.commands.footlock import _legs, _sole_points
+r = bpy.data.objects['SlopeWalker_rig']; mw = r.matrix_world
+legs, _ = _legs(r); error = angle = 0.0
+normal = Vector((0,.15,1)).normalized()
+for f in range(1,25):
+    bpy.context.scene.frame_set(f)
+    for leg in legs.values():
+        foot = mw @ r.pose.bones[leg['foot']].matrix
+        rest = mw @ r.data.bones[leg['foot']].matrix_local
+        up = foot.to_quaternion() @ rest.to_quaternion().inverted() @ Vector((0,0,1))
+        angle = max(angle, up.angle(normal))
+        for v in _sole_points(r,leg,0):
+            p = foot @ v
+            error = max(error, abs(p.z - .15*(.5-p.y)))
+result = dict(error=error, angle=angle)
+'''
+    measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert measured["error"] < .015 and measured["angle"] < .01, measured
+    await call("clear_terrain")
+    step = json.loads(text_of(await call("add_terrain", kind="step", location=[10,10,0]))[0])
+    assert step["height"] == .17 and step["length"] == .28 and step["walkable"], step
+    sample = json.loads(text_of(await call("run_blender_python", code="""
+from engine.commands.terrain import GroundQuery
+q = GroundQuery()
+result = [q.sample(10,9.86)[0], q.sample(0,0)[0]]
+"""))[0])["result"]
+    assert abs(sample[0]-.17) < 1e-5 and sample[1] == 0, sample
+    await call("clear_terrain")
+    await call("clear_animation", armature="SlopeWalker_rig")
+    await call("add_terrain", kind="ramp", location=[0,-.5,0], length=2, height=.3)
+    await call("add_terrain", kind="platform", location=[0,-2.5,0], length=1, height=.3)
+    stop = json.loads(text_of(await call("walk_path", armature="SlopeWalker_rig",
+                                         points=[[0,-3]], clip="run"))[0])
+    assert stop["clip"] == "run" and stop["terrain"]["gait"] == "walk", stop
+    code = f'''
+r = bpy.data.objects['SlopeWalker_rig']; heights = []
+for f in range({stop['frames'][1]}-5, {stop['frames'][1]}+1):
+    bpy.context.scene.frame_set(f)
+    heights.append((r.matrix_world @ r.pose.bones['hips'].matrix).translation.z)
+rest = (r.matrix_world @ r.data.bones['hips'].matrix_local).translation.z
+result = [min(heights)-rest, max(heights)-min(heights)]
+'''
+    height, motion = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
+    assert height > .25 and motion < .001, (height, motion)
+    await call("clear_terrain")
+    print(f"terrain lock: automatic contacts, terrain=False, ramp pitch {measured['angle']:.6f} rad | "
+          f"sole error {measured['error']:.6f} m | single step + elevated stop + run fallback OK")
+
+
 async def isolate_mpfb(session):
     """Keep MPFB's logs, caches and writable asset data inside this test workspace.
 
@@ -251,6 +472,207 @@ async def isolate_mpfb(session):
     ''')
     res = await session.call_tool("run_blender_python", {"code": code})
     assert not res.isError, text_of(res)
+
+
+async def _sitting_checks(call):
+    """Seat contacts, facing, planted holds, layered gestures and exported palm attachments."""
+    import struct
+    import math
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[-1])
+    measure = '''
+import math
+from mathutils import Vector
+from engine.commands.anim import semantic_map
+r = bpy.data.objects['SeatTester_rig']
+s = semantic_map(r)
+mw = r.matrix_world
+front = Vector(FRONT)
+center = Vector(CENTER)
+floor = FLOOR
+rest_left = mw @ r.data.bones[s['thigh.L']].head_local - mw @ r.data.bones[s['thigh.R']].head_local
+rest_front = Vector((rest_left.y, -rest_left.x, 0)).normalized()
+root_rest = mw @ r.data.bones[s['hips']].matrix_local
+soles = {}
+for side in 'LR':
+    foot = r.data.bones[s['foot.'+side]]
+    toe = r.data.bones[s['toe.'+side]]
+    inv = (mw @ foot.matrix_local).inverted()
+    points = [mw @ foot.head_local, mw @ toe.head_local, mw @ toe.tail_local]
+    soles[side] = [inv @ Vector((p.x, p.y, mw.translation.z)) for p in points]
+result = []
+for f in FRAMES:
+    bpy.context.scene.frame_set(f)
+    bpy.context.view_layer.update()
+    hip = mw @ r.pose.bones[s['hips']].matrix
+    direction = hip.to_quaternion() @ root_rest.to_quaternion().inverted() @ rest_front
+    direction.z = 0
+    feet = {side: mw @ r.pose.bones[s['foot.'+side]].matrix for side in 'LR'}
+    # Independent evaluated-surface probe behind the hip, excluding forward knees.
+    import numpy as np
+    lows=[]
+    left=Vector((-front.y,front.x,0))
+    pelvis=sum(((mw@r.pose.bones[s['thigh.'+side]].matrix).translation for side in 'LR'),Vector())/2
+    for obj in r.children_recursive:
+        if obj.type!='MESH' or obj.hide_render or obj.get('c3d_role')=='environment':
+            continue
+        ev=obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh=ev.to_mesh()
+        co=np.empty(len(mesh.vertices)*3)
+        mesh.vertices.foreach_get('co',co)
+        mat=np.asarray(ev.matrix_world)
+        pts=co.reshape(-1,3)@mat[:3,:3].T+mat[:3,3]
+        d=pts-np.asarray(pelvis)
+        use=(abs(d@np.asarray(left))<0.22)&(d@np.asarray(front)<0.045)&(d@np.asarray(front)>-0.18)&(d[:,2]>-0.23)&(d[:,2]<0.10)
+        if use.any(): lows.append(float(pts[use,2].min()))
+        ev.to_mesh_clear()
+    slopes=[]
+    for side in 'LR':
+        v=(mw@r.pose.bones[s['shin.'+side]].matrix).translation-(mw@r.pose.bones[s['thigh.'+side]].matrix).translation
+        slopes.append(abs(math.degrees(math.atan2(v.z,math.hypot(v.x,v.y)))))
+    result.append(dict(hip=list(hip.translation), angle=math.degrees(direction.angle(front)),
+        thigh_slope=max(slopes), standing_rest_z=root_rest.translation.z+floor-mw.translation.z,
+        feet={side:list(m.translation) for side,m in feet.items()}, buttock=min(lows),
+        sole=[(feet[side] @ p).z-floor for side in 'LR' for p in soles[side]]))
+'''
+    max_contact = max_sole = max_drift = max_angle = max_palm = max_thigh = 0.0
+    timings = []
+    for kind in ('basic', 'rigify', 'game_engine', 'mpfb_rigify'):
+        await call('new_scene', frame_end=65)
+        if kind in ('basic', 'rigify'):
+            await call('create_human', name='SeatTester', location=[-0.4, 0.2, 0])
+            await call('auto_rig_humanoid', mesh='SeatTester', rig_type=kind)
+        else:
+            await call('create_realistic_human', name='SeatTester', rig='rigify' if kind=='mpfb_rigify' else kind,
+                       face=False, hair='short01', clothes=['male_casualsuit01'])
+        await call('transform_object', name='SeatTester_rig', location=[-0.4, 0.2, 0], rotation_deg=[0, 0, 23])
+        await call('apply_pose', armature='SeatTester_rig', pose='relaxed')
+        for seat_kind, index, rotation in (('chair', 0, 30), ('sofa', 1, -47)):
+            await call('clear_animation', armature='SeatTester_rig')
+            await call('set_timeline', frame_end=65)
+            prop = await data('add_prop', kind=seat_kind, location=[0.4, 0.5, 0], rotation_z=rotation)
+            # Resolve by a non-seat furniture part as well as by root.
+            name = prop['objects'][-1] if seat_kind=='chair' else prop['root']
+            sit = await data('sit_on', character='SeatTester_rig', seat=name, seat_index=index, start_frame=1)
+            assert abs(sit['contact_error_m']) < 0.02, sit
+            timings.append(sit['bake_seconds'])
+            max_contact = max(max_contact, abs(sit['contact_error_m']))
+            angle = math.radians(rotation)
+            front = [math.sin(angle), -math.cos(angle), 0]
+            center = [0.4, 0.5, sit['seat_surface_z']]
+            code = measure.replace('FRONT', repr(front)).replace('CENTER', repr(center)).replace('FLOOR', repr(sit['floor'])).replace('FRAMES', '[21, 35, 55]')
+            samples = (await data('run_blender_python', code=code))['result']
+            for row in samples:
+                assert abs(row['buttock']-sit['seat_surface_z']) < 0.02, (kind,seat_kind,row)
+                max_thigh=max(max_thigh,row['thigh_slope'])
+                assert row['thigh_slope'] < 45, (kind,seat_kind,row)
+                max_angle = max(max_angle, row['angle'])
+                assert row['angle'] < 10, (kind, seat_kind, row)
+                max_sole = max(max_sole, max(abs(z) for z in row['sole']))
+                assert max(abs(z) for z in row['sole']) < 0.015, (kind, seat_kind, row)
+                for side in 'LR':
+                    drift = math.dist(row['feet'][side], samples[0]['feet'][side])
+                    max_drift = max(max_drift, drift)
+                    assert drift < 0.001, row
+            await call('talk_gestures', character='SeatTester_rig', frame_start=25, frame_end=55,
+                       cues=[{'frame':40, 'gesture':'good'}])
+            after = (await data('run_blender_python', code=code))['result']
+            assert all(math.dist(a['hip'], b['hip']) < 1e-5 for a,b in zip(samples,after)), after
+            if seat_kind=='sofa':
+                cup = await data('add_prop', kind='cup')
+                await call('hold_prop', character='SeatTester_rig', prop=cup['objects'][-1], start_frame=25)
+                # Animate AFTER attachment, to prove it is live rather than an early bake.
+                await call('talk_gestures', character='SeatTester_rig', frame_start=25, frame_end=55,
+                           hands='right', fingers=False, cues=[{'frame':40, 'gesture':'up'}])
+                held_code = f'''
+from mathutils import Vector
+from engine.commands.anim import semantic_map
+r = bpy.data.objects['SeatTester_rig']
+o = bpy.data.objects[{cup['root']!r}]
+b = semantic_map(r)['hand.R']
+from engine.commands.fingers import HandRig
+finger_names=[n for chain in HandRig(r).fingers.get('R',{{}}).values() for n in chain]
+import json
+p = Vector(json.loads(o['c3d_hold_palm']))
+result = []
+for f in range(25, 46):
+    bpy.context.scene.frame_set(f)
+    bpy.context.view_layer.update()
+    result.append(dict(distance=(o.matrix_world.translation-(r.matrix_world@r.pose.bones[b].matrix@p)).length,
+                       position=list(o.matrix_world.translation),
+                       fingers=[round(x,5) for n in finger_names for row in r.pose.bones[n].matrix_basis for x in row]))
+'''
+                held = (await data('run_blender_python', code=held_code))['result']
+                max_palm = max(max_palm, max(x['distance'] for x in held))
+                assert max(x['distance'] for x in held) < 0.03, held
+                assert all(x['fingers']==held[0]['fingers'] for x in held), held
+                assert max(math.dist(x['position'],held[0]['position']) for x in held) > 0.01, held
+                await call('release_prop', character='SeatTester_rig', prop=cup['root'], frame=56)
+                released = (await data('run_blender_python', code=held_code.replace('range(25, 46)', 'range(56, 66)')))['result']
+                assert max(math.dist(x['position'],released[0]['position']) for x in released) < 1e-5, released
+                if kind == 'game_engine':
+                    exported = await data('export_asset', path='e2e_held_cup.glb', objects=['SeatTester_rig'])
+                    with open(exported['path'],'rb') as f:
+                        raw=f.read()
+                    length=struct.unpack_from('<I',raw,12)[0]
+                    gltf=json.loads(raw[20:20+length])
+                    node=next(i for i,n in enumerate(gltf['nodes']) if n.get('name')==cup['root'])
+                    channels=[c for a in gltf['animations'] for c in a['channels'] if c['target']['node']==node]
+                    assert any(c['target']['path']=='translation' for c in channels), channels
+                    binary_offset=20+length+8
+                    def accessor(index):
+                        a=gltf['accessors'][index]
+                        view=gltf['bufferViews'][a['bufferView']]
+                        width={'SCALAR':1,'VEC3':3,'VEC4':4}[a['type']]
+                        assert a['componentType']==5126
+                        offset=binary_offset+view.get('byteOffset',0)+a.get('byteOffset',0)
+                        stride=view.get('byteStride',width*4)
+                        return [struct.unpack_from('<'+'f'*width,raw,offset+i*stride) for i in range(a['count'])]
+                    for animation in gltf['animations']:
+                        for channel in animation['channels']:
+                            if channel['target']=={'node':node,'path':'translation'}:
+                                sampler=animation['samplers'][channel['sampler']]
+                                times=accessor(sampler['input'])
+                                values=accessor(sampler['output'])
+                                tail=[v for t,v in zip(times,values) if t[0]>=56/24]
+                                assert len(tail)>1 and max(math.dist(v,tail[0]) for v in tail)<1e-5, tail
+                                assert max(math.dist(v,values[0]) for v in values)>0.01
+            stand = await data('stand_up', character='SeatTester_rig')
+            assert stand['frames'][0] == 66, stand
+            standing_code=code.replace('[21, 35, 55]', '[86]')
+            standing = (await data('run_blender_python', code=standing_code))['result'][0]
+            assert abs(standing['hip'][2]-standing['standing_rest_z']) < 0.02, standing
+            assert max(abs(z) for z in standing['sole']) < 0.015, standing
+            # Restore scene length for the next independent seat case.
+            await call('set_timeline', frame_end=65)
+        if kind=='basic':
+            await data('add_primitive',kind='cube',name='SeatMesh',location=[0,0,0.23],size=1)
+            await call('transform_object',name='SeatMesh',scale=[0.6,0.5,0.46])
+            bench=await data('add_prop',kind='bench',location=[2,0,0])
+            stool=await data('add_prop',kind='stool',location=[-2,0,0])
+            for seat_name,index,hands in (('SeatMesh',0,'lap'),(bench['root'],1,'none'),(stool['root'],0,'thighs'),(prop['root'],1,'armrests')):
+                await call('clear_animation',armature='SeatTester_rig')
+                await call('set_timeline',frame_end=12)
+                extra=await data('sit_on',character='SeatTester_rig',seat=seat_name,seat_index=index,hands=hands,start_frame=1,transition_frames=3)
+                assert abs(extra['contact_error_m'])<0.02,extra
+        print('sitting rig:', kind, 'chair + sofa[1], stand, layered gestures, live cup/release OK')
+    # Other handheld kinds, bounded hold and explicit placement.
+    for kind in ('phone', 'book', 'handheld_microphone', 'bench', 'stool'):
+        prop = await data('add_prop', kind=kind)
+        assert prop['objects'], prop
+    phone = await data('add_prop', kind='phone')
+    await call('hold_prop', character='SeatTester_rig', prop=phone['root'], hand='left', start_frame=25, end_frame=40)
+    placed = await data('release_prop', character='SeatTester_rig', prop=phone['root'], frame=41, place_at=[1, 2, 0.8])
+    assert placed['location']==[1, 2, 0.8], placed
+    for args in ({'seat_index':99}, {'hands':'armrests'}, {'transition_frames':0}):
+        try:
+            await call('sit_on', character='SeatTester_rig', seat=prop['root'], **args)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(('invalid sit accepted',args))
+    print(f'sitting/holding: contact={max_contact:.5f}m sole={max_sole:.5f}m drift={max_drift:.6f}m '
+          f'facing={max_angle:.3f}deg thigh={max_thigh:.2f}deg palm={max_palm:.6f}m bake={min(timings):.3f}..{max(timings):.3f}s; glb OK')
 
 
 async def _graphics_checks(call):
@@ -368,6 +790,168 @@ async def _graphics_checks(call):
     assert np.abs(titled[0].astype(float) - plain[16]).mean() > 1
     assert (await data("remove_graphics", all=True))["graphics"] == []
     print("graphics: 48/48 frames | fade in/out black | crossfade 12 handles | lower third + captions | crop + color dips + title-only OK")
+
+
+async def _secondary_motion_checks(call):
+    """Measure evaluated skin/bones, untouched body curves, and exported animation."""
+    import struct
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def inspect(code):
+        return (await data('run_blender_python', code=code))['result']
+
+    await call('new_scene', frame_end=100)
+    await call('create_realistic_human', name='Spring', gender=0.0, hair='ponytail01',
+               clothes=['female_sportsuit01'], location=[1.2, .3, 0], face=False)
+    await call('transform_object', name='Spring_rig', rotation_deg=[0, 0, 32])
+    snapshot = '''
+import hashlib, json
+from engine.commands.talk import _fcurves
+r = bpy.data.objects['Spring_rig']
+def curves(hair):
+    act = r.animation_data.action if r.animation_data else None
+    return [(fc.data_path, fc.array_index, [(list(k.co), k.interpolation) for k in fc.keyframe_points])
+            for fc in _fcurves(act) if ('hair_' in fc.data_path) == hair]
+def digest(hair):
+    return hashlib.sha256(json.dumps(curves(hair)).encode()).hexdigest()
+'''
+    await inspect(snapshot + '''
+o = bpy.data.objects['Spring.ponytail01']
+dg = bpy.context.evaluated_depsgraph_get()
+bpy.app.driver_namespace['secondary_rest'] = [v.co.copy() for v in o.evaluated_get(dg).data.vertices]
+result = len(o.data.vertices)
+''')
+    rest = await data('secondary_motion', character='Spring', gravity=0, frame_end=1)
+    assert rest['chains'] == 1 and len(rest['bones']) == 4, rest
+    error = await inspect('''
+o = bpy.data.objects['Spring.ponytail01']
+after = o.evaluated_get(bpy.context.evaluated_depsgraph_get())
+result = max((v.co-p).length for v,p in zip(after.data.vertices, bpy.app.driver_namespace['secondary_rest']))
+''')
+    assert error < .001, error
+    await call('render_frames', frames=[1], objects=['Spring_rig'], view='right', size=512)
+    await call('animate', armature='Spring_rig', clip='run', cycles=3)
+    body = await inspect(snapshot + 'result = digest(False)')
+    baked = await data('secondary_motion', character='Spring_rig')
+    measured = await inspect(snapshot + '''
+from engine.commands.secondary import _closest
+st = json.loads(r['char3d_secondary'])
+saved = bpy.context.scene.frame_current
+offsets, clearance = [], 1.0
+for f in range(1,101):
+    bpy.context.scene.frame_set(f)
+    ch = st['chains'][0]
+    transform = r.matrix_world @ r.pose.bones[ch['parent']].matrix @ r.data.bones[ch['parent']].matrix_local.inverted()
+    tail = r.matrix_world @ r.pose.bones[ch['bones'][-1]].tail
+    offsets.append((tail - transform @ Vector(ch['points'][-1])).length)
+    for name in ch['bones']:
+        a = r.matrix_world @ r.pose.bones[name].head
+        b = r.matrix_world @ r.pose.bones[name].tail
+        for c in st['colliders']:
+            mat = r.matrix_world @ r.pose.bones[c['bone']].matrix @ r.data.bones[c['bone']].matrix_local.inverted()
+            ca, cb = mat @ Vector(c['a']), mat @ Vector(c['b'])
+            for u in (.25,.5,.75,1):
+                p = a.lerp(b,u)
+                clearance = min(clearance, (p - _closest(p,ca,cb)).length - c['radius'] - ch['radius'])
+bpy.context.scene.frame_set(saved)
+result = dict(peak=max(offsets), running=max(offsets[6:48]), settled=offsets[77],
+              clearance=clearance, hair=digest(True), body=digest(False),
+              bones=len(r.data.bones), groups=len(bpy.data.objects['Spring.ponytail01'].vertex_groups))
+''')
+    assert measured['running'] > .03, measured
+    assert measured['settled'] < .015 and measured['clearance'] > -.001, measured
+    assert measured['body'] == body, measured
+    # Target, not a flaky wall-clock assertion on a shared CPU: report measured timing.
+    await call('secondary_motion', character='Spring_rig')
+    again = await inspect(snapshot + "result = dict(hair=digest(True), body=digest(False), bones=len(r.data.bones), groups=len(bpy.data.objects['Spring.ponytail01'].vertex_groups))")
+    assert all(again[k] == measured[k] for k in again), (measured, again)
+    exported = await data('export_asset', path='hair.glb', objects=['Spring_rig'], max_influences=4)
+    raw = open(exported['path'], 'rb').read()
+    gltf = json.loads(raw[20:20 + struct.unpack_from('<I', raw, 12)[0]])
+    joints = {gltf['nodes'][i]['name'] for skin in gltf['skins'] for i in skin['joints']}
+    animated = {gltf['nodes'][c['target']['node']]['name'] for a in gltf['animations']
+                for c in a['channels'] if c['target']['path'] == 'rotation'}
+    assert set(baked['bones']) <= joints & animated, (joints, animated)
+    _check_glb_weights(exported['path'], 4)
+    await call('render_frames', frames=[2, 8, 25, 78], objects=['Spring_rig'], view='right', size=512)
+    await call('save_project', path='e2e_secondary.blend')
+    # Inclusive partial replacement leaves every key outside its range untouched.
+    outside_code = snapshot + "result = [(p,i,[k for k in ks if not 30 <= k[0][0] <= 40]) for p,i,ks in curves(True)]"
+    outside = await inspect(outside_code)
+    await call('secondary_motion', character='Spring_rig', frame_start=30, frame_end=40, wind=[2, 0, 0])
+    assert await inspect(outside_code) == outside
+    await call('secondary_motion', character='Spring_rig', frame_start=30, frame_end=40, clear=True)
+    assert await inspect(outside_code) == outside
+    neutral = await inspect(snapshot + '''
+bpy.context.scene.frame_set(35)
+result = max(r.pose.bones[n].rotation_quaternion.rotation_difference(Quaternion()).angle
+             for ch in json.loads(r['char3d_secondary'])['chains'] for n in ch['bones'])
+'''.replace('Quaternion()', '__import__("mathutils").Quaternion()'))
+    assert neutral < .0001, neutral
+    await call('secondary_motion', character='Spring_rig', clear=True)
+    assert await inspect(snapshot + 'result = sum(len(k) for p,i,k in curves(True))') == 0
+    assert await inspect(snapshot + 'result = digest(False)') == body
+    print(f"secondary ponytail: rest {error * 1000:.6f} mm | running lag {measured['running']:.6f} m | "
+          f"settled +1s {measured['settled']:.6f} m | clearance {measured['clearance']:.6f} m | "
+          f"100f {baked['bake_seconds']:.4f}s | deterministic/range/clear/body/glb OK")
+
+    # MPFB Rigify: actual deform head attachment, hidden collection, talking/nodding.
+    await call('new_scene', frame_end=80)
+    await call('create_realistic_human', name='LongSpring', gender=0.0, rig='rigify', hair='long01')
+    await call('animate', armature='LongSpring_rig', clip='nod', cycles=2)
+    await call('lip_sync', character='LongSpring_rig', text='Mari kita berbicara bersama', language='id')
+    await call('camera_shot', subject=['LongSpring_rig'], shot='medium', end_frame=80)
+    await call('auto_blink', character='LongSpring_rig')
+    await call('talk_motion', character='LongSpring_rig')
+    long = await data('secondary_motion', character='LongSpring_rig')
+    assert 3 <= long['chains'] <= 6 and long['max_tip_offset_m'] > .01, long
+    assert await inspect('''
+r = bpy.data.objects['LongSpring_rig']
+import json
+st = json.loads(r['char3d_secondary'])
+result = (not r.data.collections['Secondary motion'].is_visible and
+          all(r.data.bones[c['parent']].use_deform for c in st['chains']) and
+          all([bc.name for bc in r.data.bones[n].collections] == ['Secondary motion']
+              for c in st['chains'] for n in c['bones']))
+''')
+    await call('render_frames', frames=[12, 45], objects=['LongSpring_rig'], view='right', size=512)
+    await call('export_asset', path='hair_rigify.glb', objects=['LongSpring_rig'], max_influences=4)
+    await call('create_realistic_human', name='ShortSpring', hair='short02', face=False)
+    short = await data('secondary_motion', character='ShortSpring_rig', parts=['hair', 'clothes'])
+    assert not short['bones'] and len(short['skipped']) == 2, short
+    print(f"secondary long/Rigify: {long['chains']} chains | tip {long['max_tip_offset_m']:.6f} m | "
+          f"80f {long['bake_seconds']:.4f}s | hidden deform chains + export | short02/clothes skipped")
+
+    # Name-hinted user hair on both mannequin rigs, with moved/rotated armatures.
+    for kind in ('basic', 'rigify'):
+        await call('new_scene', frame_end=40)
+        await call('create_human', name='HairUser', style='realistic')
+        await call('auto_rig_humanoid', mesh='HairUser', rig_type=kind)
+        await call('transform_object', name='HairUser_rig', location=[1, -2, 0], rotation_deg=[0, 0, 47])
+        await inspect('''
+from engine.commands.anim import semantic_map
+from engine.commands.secondary import _deform_head
+r = bpy.data.objects['HairUser_rig']
+parent = _deform_head(r, semantic_map(r))
+p = r.data.bones[parent].head_local
+verts = [(p.x+x, p.y+.13, p.z+.02-i*.07) for i in range(6) for x in (-.025, 0, .025)]
+faces = [(i*3+j,i*3+j+1,(i+1)*3+j+1,(i+1)*3+j) for i in range(5) for j in range(2)]
+mesh = bpy.data.meshes.new('UserHair')
+mesh.from_pydata(verts, [], faces)
+o = bpy.data.objects.new('UserHair', mesh)
+bpy.context.scene.collection.objects.link(o)
+o.parent = r
+o.vertex_groups.new(name=parent).add(list(range(len(verts))), 1., 'REPLACE')
+o.modifiers.new('Skin', 'ARMATURE').object = r
+result = o.name
+''')
+        await call('animate', armature='HairUser_rig', clip='nod', cycles=1)
+        custom = await data('secondary_motion', character='HairUser_rig')
+        assert custom['bones'] and custom['max_tip_offset_m'] > .005, custom
+        assert custom['meshes'] == ['UserHair'], custom
+        print(f"secondary user hair ({kind}): {custom['chains']} chains | moved/rotated rig OK")
 
 
 async def main():
@@ -570,6 +1154,7 @@ async def main():
         after = json.loads(text_of(await call("scene_info"))[0])
         assert {o["name"] for o in after["objects"]} == keep
         print("environments: 6 presets, 11 props, collection/replace/clear/validation OK")
+        await _sitting_checks(call)
         await _graphics_checks(call)
         # Floor routes: rounded bend, sharp reversal, final facing and chained stepping turn.
         for kind in ("basic", "rigify"):
@@ -651,11 +1236,18 @@ async def main():
                 assert (await s.call_tool("walk_path", {"armature": "Navigator_rig", **bad})).isError
             assert (await s.call_tool("turn_to", {"armature": "Navigator_rig", "target": "camera"})).isError
 
+        await check_terrain(call, "basic")
+        await check_terrain_contact_detection(call)
+        await check_terrain(call, "rigify")
+
         # realistic humans (skipped when MPFB is not installed)
         mp = await s.call_tool("mpfb_assets", {})
         if mp.isError:
             print("mpfb: unavailable, skipped:", text_of(mp))
         else:
+            await _secondary_motion_checks(call)
+            await check_terrain(call, "mpfb")
+            await check_terrain(call, "mpfb_rigify")
             await call("new_scene")
             h = json.loads(text_of(await call("create_realistic_human", name="Rina", gender=0.0,
                                               age=30, hair="ponytail01", location=[1.25, 0.35, 0],
@@ -1139,7 +1731,7 @@ result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
             assert voice["kind"] == "voice", voice
             voices.append(voice["strip"])
         muted = json.loads(text_of(await call("add_audio", path=tone, start_frame=73))[0])
-        sfx = json.loads(text_of(await call("add_audio", path=tone, kind="sfx", start_frame=73))[0])
+        await call("add_audio", path=tone, kind="sfx", start_frame=73)
         setup = f"""
 from engine.commands.audio import _sound_strips
 from engine.commands.semantic import store_words

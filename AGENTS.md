@@ -44,12 +44,14 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
   four, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`, `turn_to`, `import_mocap`,
-  `retarget_animation`, `lock_feet`, `clear_animation`, `render_frames`
+  `retarget_animation`, `lock_feet`, `secondary_motion`, `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot`, `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
-- Sets & props: `set_environment`, `add_prop`, `clear_environment`
+- Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
+  `hold_prop`, `release_prop`
+- Walkable ground: `add_terrain`, `clear_terrain`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
   `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
@@ -305,8 +307,8 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   `start_frame=None` appends after the rig's existing action (otherwise scene start).
   Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`, and
   `foot_lock.contacts`. Check `render_frames(..., view="top")` with waypoint markers
-  for the route and `view="three_quarter"` for steps. Flat Z=0 floor only, no obstacle
-  avoidance; feet use flat contacts rather than heel/toe rolls (running has short flights).
+  for the route and `view="three_quarter"` for steps. Z follows walkable terrain (see below);
+  no obstacle avoidance; feet use flat contacts rather than heel/toe rolls.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - `import_mocap(path, armature)` — .bvh/.fbx/.glb motion (CMU, Mixamo "without skin",
   Rokoko...). Matches names, T/A rest pose, facing and body size automatically;
@@ -336,9 +338,74 @@ straight A-pose arm first, so `relaxed`/walk arms hang at the sides on every rig
   `blend_frames=N` to force, `0` for a hard cut. During a blend into a standing clip the
   planted foot stays put and the other finishes its step; feet stay planted for the rest
   of that clip. The first clip on a rig has nothing to blend from.
-- Known limits: in_place walks keep their treadmill sliding by design; stairs/uneven
-  ground are not supported (one flat floor height); a crossfade holds the previous
+- Known limits: in_place walks keep their treadmill sliding by design; a crossfade holds the previous
   clip's last pose (it does not keep playing the old clip underneath).
+
+## Secondary hair motion
+`secondary_motion(character, parts=["hair"], frame_start=None, frame_end=None,
+stiffness=0.5, damping=0.5, gravity=1.0, wind=None, clear=False)` bakes spring motion
+onto extra deform bones. Run it **last**, after body clips, routes, mocap and talk_motion;
+rerun after changing those animations. Range defaults to the scene (inclusive); include
+~1 s after the body stops for settling. Existing body/face keys are preserved.
+- Ponytail/braid: one four-bone chain; long/bob: up to five geometry-derived chains.
+  Hair vertices below the attachment blend from head to chain bones; scalp and other
+  meshes keep their weights. MPFB game_engine/Rigify and basic/Rigify mannequin rigs
+  with a skinned mesh named/grouped with a hair hint are supported. Short/afro and
+  missing/insufficiently long hair are reported in `skipped`.
+- Bones `hair_XX_YY` are reused, deform enabled, in the hidden `Secondary motion` bone
+  collection. Normal glTF/FBX export includes their baked rotations:
+  `export_asset("hair.glb", objects=["Maya_rig"], max_influences=4)`.
+- `stiffness` / `damping` are 0..1; higher values return to the groom faster / reduce
+  oscillation. `gravity` >= 0 is an elastic style control (reduced effective gravity
+  preserves the authored groom). `wind=[x,y,z]` is constant world-space acceleration.
+  Results include `bake_seconds`, tip offsets and sampled collider clearance in meters.
+- Reruns replace only owned keys in the requested range. `clear=True` removes them
+  (partial clears hold identity inside the range); reusable bones/weights remain.
+  Geometry/topology should be finalized before the first bake.
+- Limits: hair only; `parts=["clothes"]` reports unsupported (no cloth/hem simulation).
+  Head/neck/shoulder/back capsules are conservative proxies fitted inside the rest
+  groom. Collisions constrain strand centers with thickness at sampled segment points,
+  not every surface vertex; no exact body-mesh, arm, prop or self-collision. Extreme
+  poses, existing mesh intersections and very wide hair cards can still clip. Bakes
+  start at rest at the range start, so a partial bake can change continuity there.
+  Uniform rig scale, translation and rotation are supported; nonuniform scaling/shear
+  is not modeled as physical hair. At most 24000 frames per call.
+- Check the rest shape and moving side view with `render_frames(..., view="right")`;
+  save the project after baking. Example: `animate("Maya_rig", "run", cycles=3)` →
+  `secondary_motion("Maya_rig", frame_end=100)` → `render_frames([2, 8, 25, 78],
+  objects=["Maya_rig"], view="right", size=512)`.
+## Walkable terrain
+`add_terrain(kind, location=[x,y,z], rotation_z=0, width=1.2, length=None,
+height=None, steps=None, name=None)` makes stairs, ramp, platform or step geometry in
+`char3d_terrain`. Location is the base at the near edge, width is centered on local X,
+and length extends along local -Y. Stairs/ramp rise toward the far end. To descend,
+rotate 180° and put the low entrance at the far end of the route. Stairs default to
+5 steps, 0.17 m rise, 0.28 m tread; height/steps/length determine rise and tread.
+Platforms and single steps have flat tops. `clear_terrain()` removes owned geometry
+and unused owned data, preserving characters, scenery and the environment stage.
+- Meshes carry `char3d_walkable=True`; tag other static mesh surfaces to include them.
+  Ground queries snapshot evaluated world-space geometry into a BVH once per bake and
+  raycast downward, with the base Z floor as fallback. Only upward surfaces above that
+  floor count; bridges use the highest surface. Moving/deforming terrain is not supported.
+- `walk_path` derives Z from XY: smoothed root elevation, a small uphill lean, whole-sole
+  tread placements, ramp pitch and swing arcs raised above the swept terrain by >=3 cm.
+  Terrain uses shorter, slower walking steps, including when `clip="run"` is requested;
+  the result reports the effective terrain gait and bake time. Flat scenes without
+  walkable meshes retain the existing gait and keys.
+- `lock_feet(rig, terrain=True)` (default) detects contacts relative to local ground and
+  pitches/locks the sole on slopes. `terrain=False` uses only `floor`. Automatic foot lock
+  in `animate`/mocap also queries terrain, but does not plan root elevation or safe treads:
+  use `walk_path` for stairs. Run foot lock after body animation, before speaking layers.
+- Results include `ground_heights` per contact, `max_penetration_m` and
+  `min_swing_clearance_m` in meters, measured at heel/ball/toe sole landmarks. Swing
+  clearance excludes the two frames adjacent to liftoff/touchdown (clearance approaches
+  zero there); penetration includes every frame. These are skeletal sole measurements,
+  not collision checks on every deformed shoe vertex.
+- Limits: no obstacle avoidance or jumping between levels. Use rises <=0.20 m for
+  adult human rigs and treads long enough for the full sole (normally >=0.28 m). Keep
+  routes away from side edges; no whole-sole landing within 0.35 m raises an error.
+  Very steep ramps, large drops, oversized feet and terrain turns in confined treads
+  may exceed leg reach. Stage tops are also tagged walkable.
 
 ## Film: cameras, lighting, video
 **Sets & props** — `set_environment(preset, subject=["Maya_rig"])` replaces the current
@@ -357,7 +424,8 @@ low-poly geometry and simple materials, suitable for CPU Eevee.
   screens, laptop displays and whiteboards; upright UVs, stretched to fit. Otherwise,
   screens/boards show original geometric graphics. User images retain their own license.
 - `add_prop(kind, location=[x,y,z], rotation_z=0, scale=1)` adds chair, desk, table,
-  microphone, laptop, plant, lamp, screen, bookshelf, sofa or whiteboard. Units are meters,
+  microphone, laptop, plant, lamp, screen, bookshelf, sofa, whiteboard, bench, stool,
+  cup, phone, book or handheld_microphone. Units are meters,
   rotation_z is degrees (0 faces -Y); scale is independent of characters. Location is the
   floor/base center: desk height 1.02 m, coffee table 0.43 m; put microphones/laptops at
   desktop Z. Optional screen_image works here too. Move the returned root to move all parts.
@@ -365,12 +433,43 @@ low-poly geometry and simple materials, suitable for CPU Eevee.
   furniture/lights and unused owned data, preserving characters, cameras and lighting rigs.
   Set calls replace prior sets/props. The central -Y camera path is open; backdrops are
   open at the front/sides/top, designed for frontal medium/wide shots. Static furniture
-  does not follow walking characters or solve seating, hands/desk collisions or arbitrary
+  does not follow walking characters or solve hands/desk collisions or arbitrary
   camera orbits. Use explicit character subjects for lighting and camera framing.
 - Recipe: `set_environment("podcast_studio", subject=["Maya_rig"])` →
   `set_lighting("studio", subject=["Maya_rig"])` →
   `camera_shot(subject=["Maya_rig"], shot="wide", angle=8)` →
   `render_frames([1], camera="scene", engine_name="eevee")`. Inspect the result.
+
+**Sitting & holding** — `sit_on(character, seat, start_frame=None, transition_frames=20,
+seat_index=0, hands="thighs")` seats basic, Rigify and MPFB characters on furniture roots
+or any of their parts. Chair/sofa/bench/stool builders store local seat centers, surface,
+front and floor metadata, so moved/rotated/scaled furniture works. Sofa and bench have
+two positions (`seat_index=0/1`, sofa cushion top 0.46 m); an unmarked mesh uses its
+highest surface and index 0. Set roots enumerate their seat positions too.
+- Buttock contact is measured on the evaluated body/clothes; shared two-bone IK plants
+  flat feet. The character turns toward the seat front and blends back/down from the
+  current pose, then holds through scene end. None appends after the rig's action.
+  `hands`: thighs, lap, armrests (requires seat metadata), none (keeps arm posture).
+  Layer `talk_motion`, `talk_gestures` and `set_hand_pose` afterwards; hips/legs stay seated.
+  `stand_up(character, start_frame=None, transition_frames=20)` stands in front of the
+  saved seat. Results report frames, contact error, IK error and baking time.
+- `add_prop("cup"/"phone"/"book"/"handheld_microphone")` makes original low-poly props
+  in real-world sizes, with their origin at the grip. Omit location to spawn at the most
+  recently created visible rig's right palm (origin if there is no rig).
+  `hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, grip="auto")`
+  places the grip in the palm and poses fingers. Left/right work; mannequins have no
+  fingers. None start uses the current frame; None end keeps the attachment live, including
+  arm animation added later; an end frame releases on the following frame.
+- `release_prop(character, prop, frame, place_at=None)` keeps the release world transform,
+  or places the grip at world XYZ. It remains static, without gravity. Blender keeps a
+  keyed live constraint; export temporarily samples world transforms each frame, including
+  release, then restores scene actions/constraints. Exporting the character includes its
+  held props; glTF receives transform animation, not a constraint or physics simulation.
+- Limits: static level seats and one flat floor; mesh fallback uses the highest vertices
+  (not arbitrary concave seats). No obstacle, clothing, armrest/desk collision or automatic
+  seat occupancy solving. Very high/low seats can exceed limb reach. Each prop supports
+  one pickup/release interval; use separate props for additional intervals. Later finger
+  gestures may replace a grip shape; keep the holding hand out of `talk_gestures`.
 
 **Lighting** — `set_lighting(preset, subject)`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane by default and
@@ -532,7 +631,6 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 
 ## Roadmap (tools not available yet — say so instead of improvising)
 - MPFB: more asset packs (hair/clothes)
-- Foot IK on stairs / uneven ground
 
 ## For agents editing this repo
 - `engine/` runs inside Blender's bundled Python (has `bpy`); never import `bpy` in

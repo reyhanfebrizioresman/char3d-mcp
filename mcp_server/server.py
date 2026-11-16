@@ -264,10 +264,28 @@ async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int =
 
 
 @mcp.tool()
+async def secondary_motion(character: str, parts: list[Literal['hair', 'clothes']] = ['hair'],
+                            frame_start: int | None = None, frame_end: int | None = None,
+                            stiffness: float = 0.5, damping: float = 0.5, gravity: float = 1.0,
+                            wind: list[float] | None = None, clear: bool = False) -> dict:
+    """Bake deterministic secondary hair motion as deform-bone rotations (glTF/FBX).
+    Run LAST, after animate/walk_path/mocap/talk_motion. Reuses chains and replaces only
+    their keys inside the inclusive range (default scene range); clear=True removes them.
+    Long/bob hair gets several chains, ponytails/braids one; short/afro and clothes skip.
+    Skinned user meshes with hair name/group hints also work. stiffness/damping: 0..1;
+    gravity >= 0 is an elastic style control; wind is constant world XYZ acceleration.
+    Conservative head/neck/shoulder/back capsules protect strands, not individual mesh
+    vertices; no hair self-collision or cloth simulation. Returns timing and tip offsets."""
+    return await run('secondary_motion', character=character, parts=parts,
+                     frame_start=frame_start, frame_end=frame_end, stiffness=stiffness,
+                     damping=damping, gravity=gravity, wind=wind, clear=clear)
+
+
+@mcp.tool()
 async def walk_path(armature: str, points: list[list[float]],
                     clip: Literal["walk", "run"] = "walk", start_frame: int | None = None,
                     speed: float = 1.0, face_end: list[float] | str | None = None) -> dict:
-    """Walk/run from the current position through absolute world XY points (meters, Z=0).
+    """Walk/run from the current position through absolute world XY points (meters).
     Curves pass through the points; duplicates are ignored. Body yaw is limited to 100
     degrees/s: tight bends slow down, corners over 100 degrees stop for stepping turns.
     speed (0.1..4) scales natural travel speed and cadence; shorter steps handle slowing.
@@ -276,7 +294,10 @@ async def walk_path(armature: str, points: list[list[float]],
     object name or "camera" (sampled when the final turn begins). Works on basic, Rigify
     and MPFB rigs. start_frame=None appends after the rig's action, or uses the scene start.
     Returns frames, next_start_frame, distance_m, duration_seconds and foot_lock contacts.
-    Flat floor only; at most 1000 points and 24000 frames per call."""
+    Z follows tagged walkable terrain: tread-fitting steps, raised swings and ramp pitch.
+    Terrain routes use a slower walking cadence (including clip=run). No obstacle avoidance;
+    use rises <= 0.20 m and treads long enough for the whole sole. At most 1000 points and
+    24000 frames per call. Reports contact heights, penetration and swing clearance."""
     return await run("walk_path", armature=armature, points=points, clip=clip,
                      start_frame=start_frame, speed=speed, face_end=face_end)
 
@@ -311,18 +332,43 @@ async def lock_feet(armature: str, frame_start: int | None = None, frame_end: in
                     floor: float | None = None, height_tolerance: float | None = None,
                     speed_tolerance: float | None = None, blend_frames: int | None = None,
                     adjust_hips: bool = True,
-                    contacts: dict[str, list[list[int]]] | None = None) -> dict:
+                    contacts: dict[str, list[list[int]]] | None = None,
+                    terrain: bool = True) -> dict:
     """Foot IK clean-up for an animation already on a rig (any clip, mocap, retarget): finds
     when each foot is planted, keeps it still on the floor (rolling heel -> toe, no sliding,
     no sinking into the floor) and re-solves the legs with IK, lowering the hips slightly when
     a leg can't reach. animate(walk/run/jump) and import_mocap already do this. Tune with
     height_tolerance (m above floor counted as contact), speed_tolerance (m/s drift allowed),
     floor (Z, default the rig's origin), or force contacts {"L": [[10, 27]], "R": [[1, 11]]}
-    (frames; L = character's left)."""
+    (frames; L = character's left). terrain=True raycasts tagged walkable meshes, detects
+    contacts relative to local height and pitches soles to ramps. False uses only floor.
+    For stairs use walk_path to plan safe tread placements and root height first."""
     return await run("lock_feet", armature=armature, frame_start=frame_start,
                      frame_end=frame_end, floor=floor, height_tolerance=height_tolerance,
                      speed_tolerance=speed_tolerance, blend_frames=blend_frames,
-                     adjust_hips=adjust_hips, contacts=contacts)
+                     adjust_hips=adjust_hips, contacts=contacts, terrain=terrain)
+
+
+@mcp.tool()
+async def add_terrain(kind: Literal["stairs", "ramp", "platform", "step"],
+                      location: list[float] | None = None, rotation_z: float = 0,
+                      width: float = 1.2, length: float | None = None,
+                      height: float | None = None, steps: int | None = None,
+                      name: str | None = None) -> dict:
+    """Create original walkable geometry in char3d_terrain (meters). location is the base
+    at the near edge; width is centered on X, length extends along local -Y, rotated by
+    rotation_z degrees. Stairs/ramp rise toward the far end. For descent rotate 180 degrees
+    and place the low entrance at the far end. Stairs default to 5 x 0.17 m rise / 0.28 m
+    tread; height/steps/length override these. Platform/step have flat tops. All meshes are
+    tagged char3d_walkable, so walk_path and lock_feet can query them. No downloads."""
+    return await run("add_terrain", kind=kind, location=location, rotation_z=rotation_z,
+                     width=width, length=length, height=height, steps=steps, name=name)
+
+
+@mcp.tool()
+async def clear_terrain() -> dict:
+    """Remove char3d_terrain geometry and its unused meshes/materials; preserve scenery."""
+    return await run("clear_terrain")
 
 
 @mcp.tool()
@@ -443,7 +489,8 @@ async def set_lighting(preset: Light = "studio", subject: list[str] | None = Non
 
 Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk"]
 Prop = Literal["chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
-               "bookshelf", "sofa", "whiteboard"]
+               "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
+               "handheld_microphone"]
 
 
 @mcp.tool()
@@ -462,23 +509,71 @@ async def set_environment(preset: Environment, subject: list[str] | None = None,
     across screens/whiteboards (stretched to fit). All objects are in char3d_env; returns
     object names and a transformable root. Set lighting and camera_shot separately with
     the character as subject. Replaces add_prop objects too; preserves characters/cameras
-    and set_lighting lights. Static set: no automatic seating or collision avoidance."""
+    and set_lighting lights. Use sit_on for seating; no general collision avoidance."""
     return await run("set_environment", preset=preset, subject=subject, scale=scale,
                      variant=variant, color_theme=color_theme, screen_image=screen_image)
 
 
 @mcp.tool()
-async def add_prop(kind: Prop, location: list[float] = [0, 0, 0], rotation_z: float = 0,
+async def add_prop(kind: Prop, location: list[float] | None = None, rotation_z: float = 0,
                    scale: float = 1.0, screen_image: str | None = None) -> dict:
     """Add procedural furniture in char3d_env without replacing existing sets/props.
     location is the floor/base center in world meters; rotation_z is degrees about Z
     (0 faces -Y); scale is a positive uniform multiplier, independent of character height.
     Desk is standing height (1.02 m), table is a coffee table (0.43 m), microphone/laptop
     bases sit at location.z (use a desktop height). Lamp includes a practical light.
+    Cup/phone/book/handheld_microphone have grip-point origins; omit location to spawn
+    at the latest visible humanoid's right palm (or origin without a character).
     screen_image: optional local image for screen/laptop/whiteboard, relative to imports/.
     Returns all part names and a root; move/rotate/scale that root to move the whole prop."""
     return await run("add_prop", kind=kind, location=location, rotation_z=rotation_z,
                      scale=scale, screen_image=screen_image)
+
+
+@mcp.tool()
+async def sit_on(character: str, seat: str, start_frame: int | None = None,
+                 transition_frames: int = 20, seat_index: int = 0,
+                 hands: Literal["thighs", "lap", "armrests", "none"] = "thighs") -> dict:
+    """Sit a humanoid on a chair/sofa/bench/stool root or part, or a mesh's top surface.
+    Metadata follows moved/rotated/scaled furniture; sofa and bench have two positions.
+    Aligns the character to the seat front, measures buttock contact and solves flat feet.
+    start_frame=None appends after the rig action; ease into sitting and hold to scene end.
+    hands: thighs, lap, armrests (seat must have them), none. Layer talk_motion,
+    talk_gestures or set_hand_pose afterwards. Static level seats and flat floors only;
+    no obstacle avoidance or hand/desk collision solving. Returns contact/IK errors/timing."""
+    return await run("sit_on", character=character, seat=seat, start_frame=start_frame,
+                     transition_frames=transition_frames, seat_index=seat_index, hands=hands)
+
+
+@mcp.tool()
+async def stand_up(character: str, start_frame: int | None = None,
+                   transition_frames: int = 20) -> dict:
+    """Stand in front of the saved seat, with a smooth transition and flat feet.
+    Call sit_on first. None appends after the rig's action; holds until scene end."""
+    return await run("stand_up", character=character, start_frame=start_frame,
+                     transition_frames=transition_frames)
+
+
+@mcp.tool()
+async def hold_prop(character: str, prop: str, hand: Literal["right", "left"] = "right",
+                    start_frame: int | None = None, end_frame: int | None = None,
+                    grip: Literal["auto", "fist", "cup", "relaxed", "open"] = "auto") -> dict:
+    """Attach a prop root/part to the palm; auto grip follows the prop kind.
+    add_prop cup/phone/book/handheld_microphone use real sizes and grip origins; location
+    may be omitted. None start uses current frame, None end keeps holding. The live
+    attachment follows later arm keys. end_frame releases on the following frame.
+    glTF export samples world transforms (including release) and includes props when
+    exporting their character. Mannequins attach but have no fingers. No physics."""
+    return await run("hold_prop", character=character, prop=prop, hand=hand,
+                     start_frame=start_frame, end_frame=end_frame, grip=grip)
+
+
+@mcp.tool()
+async def release_prop(character: str, prop: str, frame: int,
+                       place_at: list[float] | None = None) -> dict:
+    """Release at frame: keep the prop's world transform, or put its grip at place_at.
+    The prop remains static afterwards; no falling simulation. place_at is world XYZ."""
+    return await run("release_prop", character=character, prop=prop, frame=frame, place_at=place_at)
 
 
 @mcp.tool()
