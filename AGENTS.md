@@ -33,8 +33,9 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Scene: `engine_status`, `scene_info`, `new_scene`, `add_primitive`,
   `transform_object`, `delete_objects`
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
-- Look: `render_preview`, `render_views`
-- Realistic humans (MPFB): `mpfb_assets`, `create_realistic_human`
+- Look: `render_preview`, `render_views` (`engine_name="eevee"` for textures)
+- Realistic humans (MPFB): `mpfb_assets` (categories + installed packs),
+  `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
@@ -65,7 +66,8 @@ cartoon 4.5, chibi 3. `build` 0.7–1.4 = slim–heavy. Keep `arm_angle` 35 (A-p
 the character will be rigged.
 
 ## Realistic humans (MPFB / MakeHuman, CC0)
-`create_realistic_human(name, gender, age, race, muscle, weight, height, hair, clothes)`
+`create_realistic_human(name, gender, age, race, muscle, weight, height, hair, clothes,
+beard=None, outfit=None, seed=0)`
 builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes) that is
 **already rigged** with MPFB's hand-made weights — do NOT run `auto_rig_humanoid` on it.
 - gender 0 = female … 1 = male; age in years; muscle/weight/height/proportions 0..1;
@@ -79,11 +81,41 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 - Use the **armature** as the subject for framing/lighting:
   `camera_shot(subject=["Maya_rig"])`, `set_lighting(subject=["Maya_rig"])`,
   `render_preview(objects=["Maya_rig"])` (frames body + hair + clothes together).
-- Hair: afro01, bob01 (black), bob02 (platinum blonde), braid01 (black), long01
-  (dark auburn), ponytail01 (brown), short01/short04 (black), short02/short03 (brown).
-  Clothes: male_casualsuit01-06, male_elegantsuit01, male_worksuit01,
-  female_casualsuit01-02, female_elegantsuit01, female_sportsuit01, shoes01-06,
-  fedora01, fedora_cocked. Full list: `mpfb_assets`.
+- Install optional CC0 packs with `scripts/install_mpfb_packs.sh` (all 12), or pass
+  pack names, e.g. `scripts/install_mpfb_packs.sh shirts01 pants01 hair01`.
+  Cached archives are reused; recorded sizes/checksums are in `scripts/mpfb_packs.tsv`.
+- List everything with `mpfb_assets()`: `assets` groups skins, hair, beards/moustaches,
+  eyes, eyebrows, eyelashes, teeth, tongue, clothes and proxies; `packs` lists installed
+  members per pack. Existing names/lists remain usable. `clothing_categories` groups
+  clothes by category; `clothing_metadata[name]` gives category, gender, display name,
+  tags and z_depth. Hair/skin/eyebrow/eyelash parameters accept installed names.
+- Examples (optional packs must be installed): tops `namuhekam_male_polo_shirt`,
+  `toigo_basic_tucked_t-shirt`, `toigo_fisherman_sweater`; bottoms `cortu_cargo_pants`,
+  `toigo_wool_pants`, `toigo_tiered_mini_skirt`; dresses `toigo_shift_dress`,
+  `toigo_halter_dress_midi`; suits `toigo_female_suit`, `toigo_male_suit_3`;
+  shoes `toigo_flats`, `toigo_ankle_boots_male`; hats `jujube_newsboy_cap`, `joepal_xmas_cap`;
+  glasses `spamrakuen_sagerfrogs_glasses_01`, `toigo_round_glasses_leopard`.
+  All go in `clothes`, including hats/glasses. `beard="wdg_scruffy_beard"` or
+  `"rehmanpolanski_moustache_viking"` selects facial hair (also usable in clothes).
+  Facial hair is discovered in clothes or separate beards/moustaches directories.
+- Hair examples: system `ponytail01`, `bob01`, `short02`; hair01 `faydaen_hair_1`,
+  `toigo_inverted_bob`, `toigo_curled_under_bob`. Skin examples:
+  `toigo_light_skin_female_freckles`, `toigo_light_skin_male_ginger`;
+  `skin="auto"` keeps the system age/gender/ethnicity matches. Alternatives include
+  eyebrows `eyebrow001`, `eyebrow012` and eyelashes `eyelashes01`, `eyelashes04`.
+- `outfit="casual"|"formal"|"sport"|"summer"|"winter"` chooses compatible installed
+  top+bottom (or dress/full suit) + shoes, plus a winter hat; `seed=0` makes the choice
+  repeatable for the same catalog/gender. Names/tags declaring male/female are respected;
+  unmarked items are treated as unisex. Explicit `clothes` (including `[]`) overrides
+  the preset. `warnings` reports unavailable categories or overlaps (two tops, suit+top,
+  two shoes, etc.) without rejecting explicit combinations. Presets use name/tag style
+  hints and available fallbacks, not a clothing collision solver. Hats may clip hair;
+  broad skirts and extreme joint bends may intersect. Check posed Eevee views.
+- MPFB proxy interpolation can leave gaps on some skeletons (e.g. 10 vertices in
+  `faydaen_hair_1` on Mixamo). Only unweighted part vertices are filled from the nearest
+  weighted vertex on that part (body fallback if the whole part lacks weights);
+  authored nonzero weights and delete groups stay intact. `weights_repaired` reports
+  counts per mesh. This does not repair intersecting geometry or clothing design.
 - ~1.5–3.5 s to build; ~19k vertices + clothes. Use Eevee to see skin/clothes; workbench
   shows untextured grey. glTF export with textures is ~20 MB per character.
 - MPFB weights use up to ~7 influences per vertex. For Unity/Unreal/glTF games use
@@ -755,9 +787,6 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
 - Slight creasing around neck/shoulders when the head or arms move a lot.
 - Landmark estimation assumes a standard humanoid; creatures/quadrupeds are not
   supported yet.
-
-## Roadmap (tools not available yet — say so instead of improvising)
-- MPFB: more asset packs (hair/clothes)
 
 ## For agents editing this repo
 - `engine/` runs inside Blender's bundled Python (has `bpy`); never import `bpy` in

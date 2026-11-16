@@ -150,12 +150,12 @@ async def render_preview(view: View = "three_quarter", width: int = 512, height:
 @mcp.tool(structured_output=False)
 async def render_views(views: list[View] = ["front", "right", "back", "three_quarter"],
                        size: int = 320, objects: list[str] | None = None,
-                       frame: int | None = None):
-    """Render several workbench views at once (model sheet) to inspect a character
-    from all sides."""
+                       frame: int | None = None, engine_name: Engine = "workbench"):
+    """Render several views (model sheet) to inspect a character from all sides.
+    workbench checks shape; engine_name="eevee" shows skin, clothes and textures."""
     out = []
     for v in views:
-        r = await run("render_preview", view=v, width=size, height=size, engine="workbench",
+        r = await run("render_preview", view=v, width=size, height=size, engine=engine_name,
                       frame=frame, objects=objects)
         out += _image_result(r)
     return out
@@ -774,15 +774,17 @@ async def cancel_render(job_id: str) -> dict:
 
 
 # --- realistic humans (MPFB) --------------------------------------------------------
-Hair = Literal["afro01", "bob01", "bob02", "braid01", "long01", "ponytail01", "short01",
-               "short02", "short03", "short04"]
 MpfbRig = Literal["game_engine", "rigify", "default", "default_no_toes", "mixamo", "cmu_mb", "none"]
+Outfit = Literal["casual", "formal", "sport", "summer", "winter"]
 
 
 @mcp.tool()
 async def mpfb_assets() -> dict:
     """Realistic-human assets available for create_realistic_human: skins, hair, eyebrows,
-    eyelashes, eyes, clothes (incl. shoes, hats) and MPFB rigs."""
+    eyelashes, eyes, beards/moustaches, clothes (incl. shoes, hats, glasses) and rigs.
+    clothing_categories groups clothing names by category; clothing_metadata gives each
+    item's category, gender, display name, tags and z_depth. Includes optional CC0 packs.
+    outfits lists deterministic outfit presets. Existing assets lists are unchanged."""
     return await run("mpfb_assets")
 
 
@@ -791,17 +793,23 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
                                  muscle: float = 0.5, weight: float = 0.5, height: float = 0.5,
                                  proportions: float = 0.5,
                                  race: dict[str, float] | None = None, skin: str = "auto",
-                                 hair: Hair | None = None, eyebrows: str = "eyebrow001",
+                                 hair: str | None = None, eyebrows: str = "eyebrow001",
                                  eyelashes: str = "eyelashes01", eyes: str = "high-poly",
                                  clothes: list[str] | None = None, rig: MpfbRig = "game_engine",
                                  subdiv: int = 0, location: list[float] = [0, 0, 0],
-                                 face: bool = True) -> dict:
+                                 face: bool = True, beard: str | None = None,
+                                 outfit: Outfit | None = None, seed: int = 0) -> dict:
     """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
     eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
     gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
     0..1 (0.5 average); race e.g. {"asian": 1} or {"african": 0.5, "caucasian": 0.5}.
     skin "auto" picks age/gender/ethnicity-matched skin. clothes: names from mpfb_assets,
-    e.g. ["male_casualsuit01", "shoes01"]. The rig works with apply_pose, animate,
+    including hats/glasses; beard: a name from assets.beards (also includes moustaches).
+    hair and skin accept all installed names. outfit: casual/formal/sport/summer/winter
+    selects compatible installed clothes deterministically by seed and gender. Explicit
+    clothes (even []) overrides outfit. Result warnings report missing outfit categories
+    or overlapping exclusive clothing categories; explicit conflicts still load.
+    The rig works with apply_pose, animate,
     import_mocap and camera_shot (pass the armature name `<name>_rig` as subject).
     rig="game_engine" (53 bones, best for games/glTF) or "rigify" (full animator control
     rig incl. face controls, ~930 bones; slower, ~9 s). face=True loads ARKit face shapes +
@@ -809,7 +817,8 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
-                     clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face)
+                     clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face,
+                     beard=beard, outfit=outfit, seed=seed)
 
 
 Expression = Literal["neutral", "smile", "big_smile", "laugh", "sad", "angry", "furious",
