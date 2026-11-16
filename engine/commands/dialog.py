@@ -96,11 +96,15 @@ def _look_schedule(char, turns, others, f0, f1):
 def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_shot="medium_full",
                   move="static", lead_frames=4, gestures="presenter", expression="smile",
                   expression_strength=0.3, blink=True, motion=True, idle=True,
-                  frame_start=None, frame_end=None):
+                  frame_start=None, frame_end=None, shot_prefix="Dialog", two_shot_angle=0.0,
+                  single_angle_bias=-25.0, single_angle_limits=None):
     """Perform lip-synced dialog lines: gaze, listener nods, gestures, blinks and cameras.
 
     turns: [{"speaker": rig name, "start": frame, "end": frame}] (from lip sync).
     camera: mixed (two-shot first, then singles), singles, two_shot, none.
+    Positive single_angle_bias covers the speaker from the listener's side;
+    the default negative bias opens singles toward the scene front (-Y).
+    single_angle_limits optionally clamps that azimuth to a set's clear camera aisle.
     """
     from .anim import animate
     from .camera import camera_shot
@@ -158,13 +162,17 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
             if b <= a:
                 continue
             if who is None:
-                angle, subj, size = 0.0, names, two_shot
+                angle, subj, size = float(two_shot_angle), names, two_shot
             else:
                 az = _facing_az(rigs[who])
-                angle = az - math.copysign(min(25.0, abs(az)), az) if abs(az) > 1e-3 else 0.0
+                bias = float(single_angle_bias)
+                angle = (az - math.copysign(min(-bias, abs(az)), az) if bias <= 0 else
+                         az + math.copysign(bias, az)) if abs(az) > 1e-3 else 0.0
+                if single_angle_limits is not None:
+                    angle = max(float(single_angle_limits[0]), min(float(single_angle_limits[1]), angle))
                 subj, size = [who], shot
             r = camera_shot(subject=subj, shot=size, move=move, start_frame=a, end_frame=b,
-                            angle=angle, elevation=3.0, intensity=0.35, name=f"Dialog{k + 1:02d}")
+                            angle=angle, elevation=3.0, intensity=0.35, name=f"{shot_prefix}{k + 1:02d}")
             shots.append({"camera": r.get("camera", f"Dialog{k + 1:02d}"), "frames": [a, b],
                           "subject": "two_shot" if who is None else who,
                           "angle": round(angle, 1)})
@@ -193,3 +201,75 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                 pass          # this character never speaks
     sc.frame_set(f0)
     return report
+
+
+def line_frames(line, fps):
+    """Use the lip-sync commands' duration rules before authoring any body motion."""
+    from .face import text_tokens
+    if line.get("audio"):
+        from .audio import load_audio, _resolve
+        samples, rate = load_audio(_resolve(line["audio"]))
+        if not len(samples):
+            raise ValueError("audio file is empty")
+        return math.ceil(len(samples) * fps / rate) + 2
+    return int(round(1 + len(text_tokens(line["text"])) * fps / 14.0)) + 3
+
+
+@command("dialog")
+def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
+           start_frame=1, gap_s=0.35, camera="mixed", shot="medium",
+           gestures="presenter", expression="smile", language=None, perform=True):
+    """In-process dialog for scene orchestration. Audio accepts pre-transcribed `words`.
+
+    perform=False authors only speech, leaving performance/cameras for a later pass.
+    Mannequins retain real word times and sound but cannot animate a missing face.
+    Whisper preparation belongs in the MCP process, never inside Blender.
+    """
+    from .face import _basemesh, _ensure_face, lip_sync, text_tokens
+    from .audio import lip_sync_audio, add_audio, load_audio, analyze, _resolve, _words_from_text, _strips
+    from .semantic import store_words, text_word_frames
+
+    if not lines or any(not ln.get("speaker") or not (ln.get("text") or ln.get("audio")) for ln in lines):
+        raise ValueError("each dialog line needs speaker and text or audio")
+    cast = characters or list(dict.fromkeys(ln["speaker"] for ln in lines))
+    if stage and len(cast) > 1:
+        stage_dialog(cast, layout=layout, distance=distance)
+    sc = bpy.context.scene
+    fps, frame, turns, warnings = sc.render.fps, int(start_frame), [], []
+    for ln in lines:
+        frame += round(float(ln.get("delay_s", 0)) * fps)
+        base = _basemesh(ln["speaker"])
+        try:
+            _ensure_face(base)
+            face = True
+        except (ValueError, RuntimeError):
+            face = False
+        if face:
+            if ln.get("audio"):
+                r = lip_sync_audio(ln["speaker"], ln["audio"], start_frame=frame,
+                                   words=ln.get("words"), text=ln.get("text"), language=language)
+            else:
+                r = lip_sync(ln["speaker"], ln["text"], start_frame=frame, language=language)
+            a, b = r["frames"]
+        else:
+            a, b = frame, frame + line_frames(ln, fps) - 1
+            if ln.get("audio"):
+                samples, rate = load_audio(_resolve(ln["audio"]))
+                feat = analyze(samples, rate, fps)
+                words = ln.get("words") or _words_from_text(ln.get("text", ""), feat, fps)
+                word_frames = [(w["word"], a + float(w["start"]) * fps,
+                                a + float(w["end"]) * fps) for w in words]
+                sound = add_audio(ln["audio"], start_frame=a)
+                _strips(sc.sequence_editor)[sound["strip"]]["char3d_speaker"] = _rig_of(ln["speaker"]).name
+            else:
+                word_frames = text_word_frames(ln["text"], a, fps / 14.0, text_tokens)
+            store_words(base, word_frames, a, b)
+            warnings.append(f"{ln['speaker']}: no face shapes; speech timing/audio only")
+        turns.append({"speaker": ln["speaker"], "start": a, "end": b, "text": ln.get("text")})
+        frame = b + 1 + round(float(ln.get("pause_s", gap_s)) * fps)
+    sc.frame_end = max(sc.frame_end, turns[-1]["end"])
+    report = dialog_direct(turns, characters=cast, camera=camera, shot=shot,
+                           gestures=gestures, expression=expression) if perform else {
+                               "frames": [int(start_frame), turns[-1]["end"]], "shots": []}
+    return {**report, "lines": turns, "next_start_frame": max(frame, report["frames"][1] + 1),
+            "warnings": list(dict.fromkeys(warnings))}

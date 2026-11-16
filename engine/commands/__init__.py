@@ -17,3 +17,4 @@ def dispatch(name, params):
 
 
 from . import scene, io, render, character, rig, anim, camera, lighting, video, mpfb, face, audio, talk, gesture, fingers, footlock, subtitles, dialog, environment, walk, graphics, secondary, seating, holding, terrain  # noqa: E402,F401  (registers commands)
+from . import script_scene  # noqa: E402,F401

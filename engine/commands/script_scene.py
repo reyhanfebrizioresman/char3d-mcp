@@ -1,0 +1,363 @@
+"""Build a screenplay by composing the registered engine commands in-process."""
+import json
+import time
+from contextlib import contextmanager
+
+import bpy
+
+from . import command, dispatch
+from ..script_plan import parse_script
+
+
+@contextmanager
+def _bones_only():
+    """Defer skin evaluation during skeleton-only commands; restore even on failure.
+
+    Seat contact, bounds and lights still see evaluated meshes. Hair's solver uses
+    rest geometry and sampled bones, so it can also defer skin evaluation. This is the
+    same viewport optimization used by walk_path's terrain bake, scoped to this build.
+    """
+    hidden = [o for o in bpy.context.scene.objects if o.type == "MESH" and not o.hide_viewport
+              and any(m.type == "ARMATURE" for m in o.modifiers)]
+    try:
+        for obj in hidden:
+            obj.hide_viewport = True
+        yield
+    finally:
+        for obj in hidden:
+            obj.hide_viewport = False
+        if hidden:
+            bpy.context.view_layer.update()
+
+
+def _skeleton(command_name, params):
+    with _bones_only():
+        return dispatch(command_name, params)
+
+
+@command("script_to_scene")
+def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
+                    subtitles=True, language="auto", seed=0, build=True):
+    """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
+    from .anim import CLIPS, POSES
+    from .dialog import line_frames, _look_schedule
+    from .environment import PRESETS, PROPS
+    from .lighting import PRESETS as LIGHTS
+    from .semantic import load_words
+    from .walk import _start as navigation_start
+
+    started = time.perf_counter()
+    timings = {}
+
+    @contextmanager
+    def timed(stage):
+        t = time.perf_counter()
+        yield
+        timings[stage] = round(time.perf_counter() - t + timings.get(stage, 0), 4)
+
+    sc = bpy.context.scene
+    with timed("parse"):
+        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps)
+        if camera not in ("mixed", "singles", "two_shot", "none"):
+            raise ValueError("camera must be mixed, singles, two_shot or none")
+        if plan["environment"] and plan["environment"] not in PRESETS:
+            raise ValueError(f"unknown environment: {plan['environment']}")
+        if lighting not in LIGHTS:
+            raise ValueError(f"unknown lighting: {lighting}")
+        if language not in ("auto", "id", "ms", "en", None):
+            raise ValueError("language must be auto, id, ms or en")
+    warnings = list(plan["warnings"])
+    characters, shots = {}, []
+    result = {"plan": plan, "characters": characters, "frames": plan["estimated_frames"],
+              "shots": shots, "duration_s": round(plan["estimated_frames"][1] / sc.render.fps, 3),
+              "warnings": warnings, "timings": timings}
+    if not build:
+        timings["total"] = round(time.perf_counter() - started, 4)
+        return result
+
+    # Validate known action names and audio readability before adding any objects.
+    for beat in plan["beats"]:
+        action = beat.get("do")
+        valid_pose = beat.get("name") in POSES or (action == "gesture" and beat.get("name") in CLIPS)
+        if action in ("pose", "gesture") and not valid_pose:
+            warnings.append(f"Unknown pose/gesture {beat['name']!r}; using relaxed")
+            beat["name"] = "relaxed"
+        if "say" in beat:
+            beat["speech_frames"] = line_frames(beat, sc.render.fps)
+    sc.name = plan["name"]
+    with timed("characters"):
+        try:
+            assets = dispatch("mpfb_assets", {})["assets"]
+            realistic = bool(assets.get("skins"))
+        except RuntimeError:
+            assets, realistic = {}, False
+        if not realistic:
+            warnings.append("MPFB unavailable: using mannequins without facial animation; install scripts/install_mpfb.sh")
+        for char in plan["characters"]:
+            ident = char["id"]
+            objname = ident
+            suffix = 1
+            while objname in bpy.data.objects or f"{objname}_rig" in bpy.data.objects:
+                objname = f"{ident}_{suffix}"
+                suffix += 1
+            if realistic:
+                args = {k: v for k, v in char.items() if k != "id"}
+                for kind in ("hair", "clothes"):
+                    chosen = [args[kind]] if kind == "hair" and args[kind] else args[kind] or []
+                    valid = [a for a in chosen if a in assets[kind]]
+                    if chosen != valid:
+                        warnings.append(f"{ident}: unavailable {kind} omitted: {sorted(set(chosen) - set(valid))}")
+                    args[kind] = (valid[0] if valid else None) if kind == "hair" else valid
+                h = dispatch("create_realistic_human", {"name": objname, **args})
+                rig = h["armature"]
+            else:
+                h = dispatch("create_human", {"name": objname, "style": "realistic",
+                    "gender": "female" if char["gender"] < 0.5 else "male", "arm_angle": 35})
+                r = dispatch("auto_rig_humanoid", {"mesh": h["name"]})
+                if not r["ok"]:
+                    raise RuntimeError(f"rig failed: {r}")
+                rig = r["armature"]
+            characters[ident] = {"rig": rig, "mesh": h["name"], "realistic": realistic}
+            _skeleton("apply_pose", {"armature": rig, "pose": "relaxed", "keyframe": True, "frame": 1})
+    cast = [c["rig"] for c in characters.values()]
+    prefix = f"{cast[0]}_Script"
+    with timed("staging"):
+        sc.frame_set(1)
+        if len(cast) > 1:
+            # Open torsos toward coverage while leaving a natural head/eye turn to peers.
+            dispatch("stage_dialog", {"characters": cast, "cheat_deg": 55.0})
+        if plan["environment"]:
+            dispatch("set_environment", {"preset": plan["environment"], "subject": cast, "variant": abs(int(seed))})
+
+    props, occupied, assigned_seats, body_started, looks, titles, lines = {}, set(), {}, set(), [], [], []
+    fps = sc.render.fps
+
+    def initial_idle(ident, end):
+        if ident in body_started:
+            return
+        body_started.add(ident)
+        length = end - 1
+        if length >= 4:
+            # A brief breathing settle then a held posture. Speech supplies continuous
+            # head/arm motion; retargeting a whole-scene idle adds dense body keys with
+            # no useful change during conversation, and is costly on clothed MPFB rigs.
+            period = min(24, length)
+            _skeleton("animate", {"armature": characters[ident]["rig"], "clip": "idle",
+                                "start_frame": 1, "cycles": 1, "speed": 96 * fps / 24 / period,
+                                "amplitude": 0.15, "blend_frames": 0})
+
+    def resolve(target, ident, seat=False):
+        def seat_anchor(obj):
+            anchor = obj.get("c3d_seat_anchor")
+            if anchor:
+                return anchor
+            if obj.type == "EMPTY":
+                first = next((o for o in obj.children_recursive if "c3d_seat_centers" in o), None)
+                if first is not None:
+                    return first.name
+            return obj.name
+
+        if target in characters:
+            return characters[target]["rig"], 0
+        if target in props and not seat:
+            return props[target], 0
+        obj = bpy.data.objects.get(target)
+        if obj:
+            return seat_anchor(obj) if seat else obj.name, 0
+        rig = bpy.data.objects[characters[ident]["rig"]]
+        position = navigation_start(rig, sc.frame_current + 1)[1]
+        candidates = []
+        for o in sc.objects:
+            if seat and "c3d_seat_centers" in o and (target in ("chair", "seat") or target in o.name.lower()):
+                for i in range(len(json.loads(o["c3d_seat_centers"]))):
+                    if (o.name, i) not in occupied:
+                        candidates.append(((o.matrix_world.translation - position).length, o.name, i))
+            elif not seat and o.get("c3d_prop_kind") == target:
+                candidates.append(((o.matrix_world.translation - position).length, o.name, 0))
+        if candidates:
+            _, name, index = min(candidates)
+            return name, index
+        kind = "chair" if target == "seat" else target
+        if kind not in PROPS:
+            raise ValueError(f"unknown scene target: {target!r}")
+        location = list(position)
+        if seat:
+            location[1] += 0.25
+        added = dispatch("add_prop", {"kind": kind, "location": location})
+        props[target] = added["root"]
+        return seat_anchor(bpy.data.objects[added["root"]]) if seat else added["root"], 0
+
+    with timed("body"):
+        dispatch("set_timeline", {"frame_start": 1, "frame_end": 2})
+        frame = 1
+        for beat in plan["beats"]:
+            start, end = frame, frame
+            if "say" in beat:
+                end = start + beat["speech_frames"] - 1
+                ln = {"speaker": characters[beat["say"]]["rig"], "start_frame": start,
+                      **{k: beat[k] for k in ("text", "audio", "words") if k in beat}}
+                lines.append(ln)
+                frame = end + 1 + round(0.35 * fps)
+            elif "title" in beat:
+                end = start + beat["estimated_frames"][1] - beat["estimated_frames"][0]
+                titles.append(beat)
+                frame = end + 1
+            elif beat["do"] == "pause":
+                end = start + max(1, round(beat["seconds"] * fps)) - 1
+                frame = end + 1
+            else:
+                ident, action = beat["who"], beat["do"]
+                rig = characters[ident]["rig"]
+                initial_idle(ident, start - 1)
+                sc.frame_set(max(1, start - 1))
+                report = {}
+                if action == "walk":
+                    target = beat["to"]
+                    if isinstance(target, str):
+                        obj, _ = resolve(target, ident, seat=target in ("chair", "seat", "sofa", "bench", "stool"))
+                        target_obj = bpy.data.objects[obj]
+                        point = (navigation_start(target_obj, start)[1] if target_obj.type == "ARMATURE"
+                                 else target_obj.matrix_world.translation)
+                        target = list(point.xy)
+                        # Stop in front of a seat instead of walking through its back.
+                        target[1] -= 0.45
+                    report = _skeleton("walk_path", {"armature": rig, "points": [target[:2]], "start_frame": start})
+                elif action in ("sit", "stand"):
+                    dispatch("set_timeline", {"frame_end": start + 20})
+                    args = {"character": rig, "start_frame": start}
+                    if action == "sit":
+                        occupied.discard(assigned_seats.pop(ident, None))
+                        seat, index = resolve(beat["on"], ident, seat=True)
+                        occupied.add((seat, index))
+                        assigned_seats[ident] = (seat, index)
+                        args.update(seat=seat, seat_index=index)
+                    else:
+                        occupied.discard(assigned_seats.pop(ident, None))
+                    report = dispatch("sit_on" if action == "sit" else "stand_up", args)
+                    end = report["transition_end"]
+                elif action == "hold":
+                    prop, _ = resolve(beat["prop"], ident)
+                    report = dispatch("hold_prop", {"character": rig, "prop": prop,
+                        "hand": beat.get("hand", "right"), "start_frame": start})
+                    end = start + 11
+                elif action in ("pose", "gesture"):
+                    if action == "gesture" and beat["name"] in CLIPS:
+                        report = _skeleton("animate", {"armature": rig, "clip": beat["name"], "start_frame": start, "cycles": 1})
+                    else:
+                        _skeleton("apply_pose", {"armature": rig, "pose": beat["name"], "frame": start, "keyframe": True})
+                        _skeleton("apply_pose", {"armature": rig, "pose": beat["name"], "frame": start + 23, "keyframe": True})
+                        end = start + 23
+                elif action == "look":
+                    target = beat["at"]
+                    if isinstance(target, str) and target != "camera":
+                        target, _ = resolve(target, ident)
+                    elif not isinstance(target, str):
+                        marker = bpy.data.objects.new(prefix + "LookTarget", None)
+                        sc.collection.objects.link(marker)
+                        marker.location = tuple(target) if len(target) == 3 else (*target, 1.5)
+                        target = marker.name
+                    looks.append({"who": rig, "target": target, "frame_start": start})
+                    end = start + 23
+                if action not in ("sit", "stand", "hold", "pose", "look") and "frames" in report:
+                    end = report["frames"][1]
+                beat["result"] = report
+                frame = end + 1
+            beat["frames"] = [start, end]
+            dispatch("set_timeline", {"frame_end": max(sc.frame_end, end)})
+        final = max(2, frame - 1)
+        for ident in characters:
+            initial_idle(ident, final)
+        dispatch("set_timeline", {"frame_start": 1, "frame_end": final})
+
+    with timed("speech"):
+        turns = []
+        for line in lines:
+            start = line.pop("start_frame")
+            d = dispatch("dialog", {"lines": [line], "characters": cast, "stage": False,
+                         "start_frame": start, "language": language, "perform": False})
+            turns.extend(d["lines"])
+            warnings.extend(d["warnings"])
+        for ident, char in characters.items():
+            if not char["realistic"]:
+                continue
+            rig = char["rig"]
+            dispatch("set_expression", {"character": rig, "expression": "smile", "strength": 0.35, "frame": 1, "keyframe": True})
+            cues = [{"frame": b["frames"][0], "expression": b["emotion"], "strength": 0.65}
+                    for b in plan["beats"] if b.get("say") == ident and b.get("emotion")]
+            if cues or load_words(bpy.data.objects[char["mesh"]], 1, final):
+                dispatch("auto_expression", {"character": rig, "frame_start": 1, "frame_end": final,
+                                              "language": language, "cues": cues})
+    with timed("cameras"):
+        if turns and camera != "none":
+            coverage = dispatch("dialog_direct", {"turns": turns, "characters": cast, "camera": camera,
+                "expression": None, "blink": False, "motion": False, "gestures": None, "idle": False,
+                "frame_start": 1, "frame_end": final, "shot_prefix": prefix,
+                "two_shot_angle": 20.0 if plan["environment"] == "office" else 0.0,
+                "shot": "medium_close" if plan["environment"] == "office" else "medium",
+                "single_angle_bias": 25.0,
+                "single_angle_limits": [-40.0, 80.0] if plan["environment"] == "office" else None})
+            shots.extend(coverage.get("shots", []))
+        else:
+            # Even camera='none' builds a renderable scene, without editorial cuts.
+            shot = dispatch("camera_shot", {"subject": cast, "shot": "medium_full", "angle": 0,
+                "start_frame": 1, "end_frame": final, "name": prefix + "Wide"})
+            shots.append(shot)
+    with timed("performance"), _bones_only():
+        for i, (ident, char) in enumerate(characters.items()):
+            rig = char["rig"]
+            if char["realistic"]:
+                dispatch("auto_blink", {"character": rig, "frame_start": 1, "frame_end": final, "seed": seed + i * 13})
+            # Each layer samples the untouched body once for the entire range. Calling
+            # it per turn would sample the preceding turn's held keys as the next base,
+            # accumulating head/arm offsets on characters without intervening body keys.
+            others = [n for n in cast if n != rig]
+            schedule = _look_schedule(rig, turns, others, 1, final) if turns else []
+            for cue in looks:
+                if cue["who"] == rig:
+                    a = cue["frame_start"]
+                    schedule = [dict(s, frame_end=min(s["frame_end"], a - 1))
+                                for s in schedule if s["frame_start"] < a]
+                    schedule.append({"frame_start": a, "frame_end": final, "target": cue["target"]})
+            if turns or schedule:
+                dispatch("talk_motion", {"character": rig, "frame_start": 1, "frame_end": final,
+                    "look_at": schedule or None, "look_at_camera": not others, "seed": seed + 11 * i,
+                    "listen_to": others[0] if len(others) == 1 else None})
+            own_turns = [t for t in turns if t["speaker"] == rig]
+            if own_turns:
+                args = {"character": rig, "frame_start": 1, "frame_end": final,
+                        "style": "calm", "seed": seed + i * 17}
+                if not char["realistic"]:
+                    args["cues"] = [{"frame": (t["start"] + t["end"]) // 2, "gesture": "you"}
+                                    for t in own_turns]
+                try:
+                    dispatch("talk_gestures", args)
+                except ValueError as exc:
+                    if "no speech found" not in str(exc):
+                        raise
+                    warnings.append(f"{ident}: no speech signal; gestures skipped")
+    with timed("lighting"):
+        dispatch("set_lighting", {"preset": lighting, "subject": cast})
+    with timed("graphics"):
+        words_available = any(load_words(bpy.data.objects[c["mesh"]], 1, final) for c in characters.values())
+        if subtitles and words_available:
+            dispatch("add_subtitles", {"style": "classic"})
+        else:
+            dispatch("remove_subtitles", {})
+            if subtitles:
+                warnings.append("No word times available; subtitles disabled")
+        if plan["title"]:
+            dispatch("add_title", {"text": plan["title"], "style": "lower_third", "size": 0.7, "start_s": 0,
+                "duration_s": min(2, final / fps), "name": prefix + "Title"})
+        for i, beat in enumerate(titles):
+            dispatch("add_title", {"text": beat["title"], "subtitle": beat.get("subtitle"), "style": "center",
+                "start_s": (beat["frames"][0] - 1) / fps,
+                "duration_s": (beat["frames"][1] - beat["frames"][0] + 1) / fps, "name": prefix + f"Title{i}"})
+    with timed("secondary_motion"), _bones_only():
+        for char in characters.values():
+            dispatch("secondary_motion", {"character": char["rig"], "frame_start": 1, "frame_end": final})
+    dispatch("set_timeline", {"frame_start": 1, "frame_end": final})
+    sc.frame_set(1)
+    warnings[:] = list(dict.fromkeys(warnings))
+    timings["total"] = round(time.perf_counter() - started, 4)
+    result.update(frames=[1, final], duration_s=round(final / fps, 3), lines=turns)
+    return result

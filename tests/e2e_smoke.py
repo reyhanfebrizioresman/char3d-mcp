@@ -1185,6 +1185,200 @@ async def _lighting_checks(call):
           f"renders {looks}")
 
 
+async def _script_scene_checks(call):
+    """Bilingual parse purity, real scheduling/word ownership and rendered coverage."""
+    import time
+    import shutil
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    await call("new_scene")
+    before = await data("scene_info")
+    indonesian = """JUDUL: Pagi di Studio
+LOKASI: podcast_studio
+ANA (perempuan, 28, rambut bob): Halo semuanya!
+BUDI (laki-laki, 35): Terima kasih, Ana.
+[Budi duduk di kursi]
+[Ana melambai]
+ANA: Apa kabar?
+[Budi memegang cangkir dengan tangan kiri]
+[Ana melihat Budi]
+[Ana menari cepat]
+"""
+    parsed = await data("script_to_scene", script=indonesian, build=False, seed=5)
+    plan = parsed["plan"]
+    assert plan["title"] == "Pagi di Studio" and plan["environment"] == "podcast_studio", plan
+    assert [(c["id"], c["gender"], c["age"], c["hair"]) for c in plan["characters"]] == [
+        ("ANA", 0, 28, "bob01"), ("BUDI", 1, 35, "short01")], plan
+    assert [(b.get("say"), b.get("do")) for b in plan["beats"]] == [
+        ("ANA", None), ("BUDI", None), (None, "sit"), (None, "gesture"),
+        ("ANA", None), (None, "hold"), (None, "look")], plan
+    assert plan["beats"][2]["who"] == "BUDI" and plan["beats"][2]["on"] == "chair"
+    assert plan["beats"][5]["prop"] == "cup" and plan["beats"][5]["hand"] == "left"
+    assert plan["beats"][6]["at"] == "BUDI"
+    assert parsed["warnings"] == ["Unknown stage direction: Ana menari cepat"], parsed
+    assert (await data("scene_info")) == before, "parse-only mutated the scene"
+    again = await data("script_to_scene", script=indonesian, build=False, seed=5)
+    assert again["plan"] == plan
+    english = """TITLE: Morning
+LOCATION: office
+Ana (female, 29, ponytail, formal, mysterious): Welcome!
+Budi (male, 36, short hair, casual): Thank you.
+[Budi walks to 1, -1]
+[Budi sits on the chair]
+[Budi stands up]
+[Ana waves]
+[Budi holds a book in the right hand]
+[Ana points]
+[Ana looks at Budi]
+[pause 1 second]
+"""
+    en = (await data("script_to_scene", script=english, build=False))["plan"]
+    assert en["title"] == "Morning" and en["environment"] == "office"
+    assert en["characters"][0]["hair"] == "ponytail01"
+    assert en["characters"][0]["clothes"] == ["female_elegantsuit01"]
+    assert en["warnings"] == ["Ana: unknown descriptors: mysterious"]
+    assert en["beats"][2]["to"] == [1, -1]
+    assert [b.get("do") for b in en["beats"][2:]] == ["walk", "sit", "stand", "gesture", "hold", "gesture", "look", "pause"]
+    assert en["beats"][-1]["estimated_frames"][1] - en["beats"][-1]["estimated_frames"][0] + 1 == 24
+    assert en["beats"][3]["on"] == "chair" and en["beats"][6]["prop"] == "book"
+
+    # Exercise the real fallback even on installations that have MPFB.
+    await call("run_blender_python", code="""
+from engine.commands import REGISTRY
+REGISTRY['script_test_saved_mpfb'] = REGISTRY['mpfb_assets']
+def script_missing_mpfb():
+    raise RuntimeError('MPFB is not installed (test)')
+REGISTRY['mpfb_assets'] = script_missing_mpfb
+""")
+    try:
+        fallback = await data("script_to_scene", subtitles=False, script={
+            "characters": [{"id": "Fallback"}, {"id": "Listener"}], "beats": [
+                {"say": "Fallback", "text": "Hello."},
+                {"do": "hold", "who": "Fallback", "prop": "cup", "hand": "right"},
+                {"do": "gesture", "who": "Fallback", "name": "wave"},
+                {"do": "look", "who": "Fallback", "at": [1, -1, 1.5]},
+                {"do": "pose", "who": "Fallback", "name": "thinking"},
+                {"do": "walk", "who": "Fallback", "to": [1, 0]},
+                {"do": "sit", "who": "Fallback", "on": "chair"},
+                {"say": "Fallback", "text": "I can sit."},
+                {"do": "sit", "who": "Listener", "on": "chair"},
+                {"do": "stand", "who": "Fallback"},
+                {"do": "sit", "who": "Fallback", "on": "chair"},
+                {"do": "pause", "seconds": 0.25},
+                {"title": "Done", "subtitle": "Fallback", "seconds": 0.5}]})
+        assert not fallback["characters"]["Fallback"]["realistic"]
+        assert fallback["lines"][0]["end"] > 5 and fallback["shots"]
+        assert any("MPFB unavailable" in w for w in fallback["warnings"])
+        fb = fallback["plan"]["beats"]
+        assert all(b["frames"][0] > a["frames"][1] for a, b in zip(fb, fb[1:]))
+        assert fb[4]["frames"][1] > fb[4]["frames"][0]
+        assert abs(next(b for b in fb if b.get("do") == "sit")["result"]["seat_center"][0] - 1) < 0.02
+        assert next(b for b in fb if b.get("do") == "stand")["result"]["standing_pelvis_z"] > 0
+        assert len({b["result"]["seat"] for b in fb if b.get("do") == "sit" and b["who"] == "Fallback"}) == 1
+        assert len({b["result"]["seat"] for b in fb if b.get("do") == "sit"}) == 2
+        await call("render_frames", frames=[8], objects=[fallback["characters"]["Fallback"]["rig"]], size=256)
+    finally:
+        await call("run_blender_python", code="from engine.commands import REGISTRY\nREGISTRY['mpfb_assets'] = REGISTRY.pop('script_test_saved_mpfb')")
+
+    await call("new_scene")
+    fixture = {"title": "Studio morning", "environment": "office", "characters": [
+        {"id": "ScriptAna", "gender": 0, "hair": "bob01", "clothes": ["female_casualsuit01", "shoes01"]},
+        {"id": "ScriptBudi", "gender": 1, "hair": "short01", "clothes": ["male_casualsuit01", "shoes01"]}],
+        "beats": [{"say": "ScriptAna", "text": "Selamat pagi!", "emotion": "happy"},
+                  {"say": "ScriptBudi", "text": "Terima kasih."},
+                  {"do": "walk", "who": "ScriptBudi", "to": [0.85, 0.0]},
+                  {"do": "sit", "who": "ScriptBudi", "on": "chair"},
+                  {"say": "ScriptAna", "text": "Apa kabar hari ini?"},
+                  {"say": "ScriptBudi", "text": "Senang sekali!"}]}
+    t = time.perf_counter()
+    built = await data("script_to_scene", script=fixture, language="id", seed=2)
+    elapsed = time.perf_counter() - t
+    assert len(built["characters"]) == 2 and len(built["lines"]) == 4, built
+    beats = built["plan"]["beats"]
+    assert beats[4]["frames"][0] > beats[3]["frames"][1] >= beats[2]["frames"][1]
+    assert built["frames"][1] >= built["lines"][-1]["end"]
+    assert len(built["shots"]) >= 3
+    info = await data("scene_info")
+    names = {o["name"] for o in info["objects"]}
+    assert all(c["rig"] in names and c["mesh"] in names for c in built["characters"].values())
+    assert info["frame_range"] == built["frames"]
+    checked = await data("run_blender_python", code=f"""
+import json
+from engine.commands.semantic import load_words
+sc = bpy.context.scene
+words = {{n: load_words(bpy.data.objects[c['mesh']]) for n,c in {built['characters']!r}.items()}}
+assert all(len(w) >= 4 for w in words.values()), words
+assert [w[0] for w in words['ScriptAna']] == ['Selamat', 'pagi!', 'Apa', 'kabar', 'hari', 'ini?'], words
+assert [w[0] for w in words['ScriptBudi']] == ['Terima', 'kasih.', 'Senang', 'sekali!'], words
+assert all(1 <= w[1] <= w[2] <= sc.frame_end for ws in words.values() for w in ws), words
+assert len([m for m in sc.timeline_markers if m.camera]) >= 3
+assert sc.get('char3d_subtitles'), list(sc.keys())
+result = {{'word_counts': {{n: len(w) for n,w in words.items()}}, 'markers': len(sc.timeline_markers)}}
+""")
+    frames = [built["lines"][i]["start"] + 5 for i in (0, 2, 3)]
+    await call("save_project", path="e2e_script_scene.blend")
+    preview_frames = sorted({t["start"] + 5 for t in built["lines"]} | {
+        (b["frames"][0] + b["frames"][1]) // 2 for b in beats if b.get("do") in ("walk", "sit")})
+    quick = await call("render_frames", frames=preview_frames, camera="scene", engine_name="workbench", size=256)
+    workbench = [json.loads(t) for t in text_of(quick)]
+    for item in workbench:
+        target = os.path.join(ROOT, "output", "renders", f"script_scene_workbench_{item['frame']:04d}.png")
+        shutil.copyfile(item["path"], target)
+        item["path"] = target
+    with open(os.path.join(ROOT, "output", "script_scene_workbench.json"), "w") as f:
+        json.dump(workbench, f, indent=2)
+    rendered = await call("render_frames", frames=frames, camera="scene", engine_name="eevee", size=512)
+    stills = [json.loads(t) for t in text_of(rendered)]
+    assert len(stills) == 3
+    movie = await data("render_video", path="e2e_script_scene.mp4", quality="draft", width=384, height=216,
+                       frame_start=1, frame_end=built["frames"][1], wait=True)
+    assert movie["status"] == "done" and os.path.getsize(movie["path"]) > 1000, movie
+    import av
+    with av.open(movie["path"]) as clip:
+        assert clip.streams.video[0].frames == built["frames"][1]
+    with open(os.path.join(ROOT, "output", "script_scene_results.json"), "w") as f:
+        json.dump({"build": built, "stills": stills, "workbench": workbench, "video": movie, "elapsed_s": elapsed}, f, indent=2)
+
+    # Performance acceptance: a fresh two-character, six-line build, including hair.
+    await call("new_scene")
+    fixture["beats"] = [{"say": "ScriptAna" if i % 2 == 0 else "ScriptBudi", "text": text}
+                        for i, text in enumerate(["Halo semuanya!", "Selamat pagi.", "Apa kabar hari ini?",
+                                                  "Senang sekali!", "Terima kasih.", "Sampai jumpa!"])]
+    t = time.perf_counter()
+    six = await data("script_to_scene", script=fixture, language="id")
+    benchmark = time.perf_counter() - t
+    assert len(six["lines"]) == 6 and benchmark < 180, (benchmark, six["timings"])
+    angles = (await data("run_blender_python", code=f"""
+import math
+from engine.commands.anim import semantic_map
+angles = {{}}
+for name, char in {six['characters']!r}.items():
+    rig = bpy.data.objects[char['rig']]
+    head = semantic_map(rig)['head']
+    rest = (rig.matrix_world @ rig.data.bones[head].matrix_local).to_quaternion()
+    samples = []
+    for line in {six['lines']!r}:
+        bpy.context.scene.frame_set(line['end'])
+        q = (rig.matrix_world @ rig.pose.bones[head].matrix).to_quaternion()
+        samples.append(math.degrees(rest.rotation_difference(q).angle))
+    angles[name] = max(samples)
+assert max(angles.values()) < 70, angles  # held turn keys must not accumulate into the next turn
+result = angles
+"""))["result"]
+    with open(os.path.join(ROOT, "output", "script_scene_benchmark.json"), "w") as f:
+        json.dump({"elapsed_s": benchmark, "timings": six["timings"], "head_angles_deg": angles}, f, indent=2)
+    # A silent cast member/body-only scene has no word times to drive emotion/captions.
+    await call("new_scene")
+    silent = await data("script_to_scene", script={"characters": [{"id": "Silent"}],
+                          "beats": [{"do": "pause", "seconds": 0.5}]})
+    assert silent["frames"] == [1, 12] and len(silent["shots"]) == 1, silent
+    assert "No word times available; subtitles disabled" in silent["warnings"], silent
+    print(f"script_to_scene: bilingual parse + fallback OK | 4 lines/walk/sit {elapsed:.2f}s | "
+          f"{checked['result']['word_counts']} | 3 Eevee shots + draft OK | six lines {benchmark:.2f}s | silent actor OK")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -1204,6 +1398,8 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
+        assert "script_to_scene" in tools
+        await _script_scene_checks(call)
         await _lighting_checks(call)
         await call("new_scene")
         await call("add_primitive", kind="monkey", name="Hero", location=[0, 0, 1])

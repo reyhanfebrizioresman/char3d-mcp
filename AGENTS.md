@@ -38,7 +38,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
-- Dialog: `dialog`, `stage_dialog`
+- Dialog: `dialog`, `stage_dialog`, `script_to_scene`
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
@@ -246,6 +246,72 @@ listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
 `render_frames([...], camera="scene", engine_name="eevee")` at a frame inside each line.
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
+
+## Script → scene
+`script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
+subtitles=True, language="auto", seed=0, build=True)` composes the existing tools into
+a complete scene for 1–4 characters. `build=False` returns a deterministic normalized
+`plan` (characters, beats with `estimated_frames`, warnings) without changing the scene,
+reading audio or transcribing it. Frame estimates use the current scene fps; walking
+and audio estimates are approximate. `seed` selects default outfits and procedural motion.
+
+The text format accepts Indonesian and English:
+```text
+JUDUL: Pagi di Studio
+LOKASI: podcast_studio
+ANA (perempuan, 28, rambut bob): Halo semuanya, selamat datang!
+BUDI (laki-laki, 35, rambut pendek, kasual): Terima kasih, Ana.
+[Budi duduk di kursi]
+[Ana melambai]
+ANA: Apa kabar hari ini?
+```
+`TITLE`/`LOCATION` are aliases. Declare speakers with `NAME (descriptors): text`;
+later lines can use `NAME: text`. Names/references match without case sensitivity.
+Descriptors recognize gender, age, hair (bob, short/pendek, long/panjang, ponytail/ekor
+kuda, braid/kepang, afro), casual/formal/sport clothing, or exact MPFB catalog names.
+Unknown descriptor words and stage directions produce warnings, not guesses.
+Directions: `[Budi walks to 1, -1]`, `[Budi jalan ke kursi]`, `[Budi sits on the chair]`,
+`[Budi berdiri]`, `[Ana holds a cup in the left hand]`, `[Ana menunjuk]`,
+`[Ana melihat Budi]`, `[pause 1 second]` (or `[jeda 1 detik]`).
+
+For explicit control, use a dict:
+```python
+script = {"title": "Morning", "environment": "office",
+          "characters": [{"id": "Ana", "gender": 0, "age": 28, "hair": "bob01"},
+                         {"id": "Budi", "gender": 1, "race": {"asian": 1}}],
+          "beats": [{"say": "Ana", "text": "Selamat pagi!", "emotion": "happy"},
+                    {"do": "walk", "who": "Budi", "to": [0.85, 0]},
+                    {"do": "sit", "who": "Budi", "on": "chair"},
+                    {"say": "Budi", "text": "Terima kasih."}]}
+```
+Speech can include `audio="audio/line.wav"` (relative to imports/). The MCP process
+uses local Whisper when available; otherwise supplied text follows voiced intervals,
+or audio-only mouth motion is used. Text alone produces mouth motion without sound.
+Without word times, captions are disabled with a warning; silent cast members keep
+their base expression and listener motion without requiring their own speech.
+Other dict beats: `stand`, `hold` (`prop`, `hand`), `gesture`/`pose` (`name` from the
+clip/pose library), `look` (`at` character/object/camera or XY/XYZ), `pause` (`seconds`),
+and `{"title": "Later", "subtitle": "...", "seconds": 2}`.
+
+Body beats chain on one timeline before dialog, expressions and shot cameras; blinks,
+gaze/gestures follow, then lighting samples the final body motion and hair is baked last.
+Speech after a walk/sit waits for the action's end. Staging uses `stage_dialog`; generic
+seat names pick a free environment seat or add a chair. Other known prop kinds are
+created as needed. Exact scene object names also work. MPFB missing uses rigged
+mannequins, with timing/audio/captions and gestures but no face, hair or clothes.
+The result includes `characters` (id → `{rig, mesh, realistic}`), actual beat `frames`,
+`lines`, `shots`, `duration_s`, `warnings`, and `timings` in seconds. `camera="none"`
+creates one wide camera so the scene is still renderable, without dialog cuts.
+Existing objects are retained; character names are made unique. Environment selection
+replaces the managed set as usual. Nothing is saved, exported or rendered automatically.
+
+Recipe: `new_scene()` → `script_to_scene(script, build=False)` →
+`script_to_scene(script, language="id")` →
+`render_frames([line.start + 5, ...], camera="scene", engine_name="eevee", size=512)` →
+inspect the frames → `save_project("morning.blend")` → `render_video(quality="draft", wait=True)`.
+Limits inherit the component tools: no obstacle/desk/arm collision avoidance, static
+seats, one held prop per hand, rule-based text pronunciation, no automatic voice generation.
+Declare characters before using them; invalid references fail with a clear error.
 
 ## Rigging
 `auto_rig_humanoid(mesh, rig_type)`:

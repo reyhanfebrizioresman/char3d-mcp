@@ -47,6 +47,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera (dolly, orbit, crane, crash zoom, dolly zoom, tracking, drone reveal, dll.), 8 ukuran shot, multi-shot otomatis |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
 | `dialog`, `stage_dialog` | Percakapan 2–4 karakter dalam satu panggilan: posisi saling berhadapan, lip sync per baris (audio/teks), saling menatap, pendengar mengangguk, gestur per pembicara, kamera two-shot lalu single per pembicara |
+| `script_to_scene` | Naskah pendek Indonesia/Inggris atau dict → 1–4 karakter, set, aksi jalan/duduk/berdiri/pegang prop, dialog, ekspresi, kamera, subtitle, cahaya dan gerak rambut. `build=False` hanya membuat rencana tanpa mengubah adegan; hasil berisi frame, shot, warning dan waktu proses |
 | `set_environment`, `add_prop`, `clear_environment` | Set prosedural: podcast_studio, classroom, office, stage, living_room, news_desk; furnitur, bangku, stool, cup, phone, book, handheld_microphone + lampu praktis dalam koleksi char3d_env, variant/tema warna dan gambar lokal pada layar/papan; bersihkan tanpa menghapus karakter/kamera |
 | `sit_on`, `stand_up` | Duduk pada kursi/sofa/bangku/stool atau permukaan mesh: kontak bokong diukur, kaki IK menapak, arah mengikuti kursi, transisi halus dan pilihan posisi sofa; bisa dilapisi gerak bicara. Berdiri kembali di depan kursi; dudukan statis dan lantai datar |
 | `hold_prop`, `release_prop` | Tempel cup/phone/book/mic atau prop lain ke telapak kiri/kanan. `upright=None` otomatis menjaga cup tegak dan mic condong 12° ke telapak/mulut; `True`/`False` mengaktifkan/menonaktifkan koreksi pergelangan, yaw mengikuti tangan. Grip jari bertahan saat gestur ditambahkan; release memulihkan animasi pergelangan/jari di bawahnya. Phone/book tetap mengikuti rotasi tangan. Ekspor glTF menyimpan transform tiap frame; tanpa simulasi jatuh atau solver tabrakan lengan/prop. Pose ekstrem dapat menekuk pergelangan tajam; sesuaikan pose lengan |
@@ -67,6 +68,35 @@ ulangi jika geraknya berubah. `follow="auto"` mengikuti perpindahan horizontal d
 0,43 x tinggi berdiri (~0,75 m untuk manusia); `True` mengikuti setiap perpindahan,
 `False` mempertahankan lampu statis. Lampu SUN tetap statis. Hasil menyertakan `follow`,
 `travel_m`, dan `keys` (jumlah sampel posisi).
+
+## Dari naskah menjadi adegan
+
+```python
+script_to_scene(script="""JUDUL: Pagi di Studio
+LOKASI: office
+ANA (perempuan, 28, rambut bob): Selamat pagi!
+BUDI (laki-laki, 35, kasual): Terima kasih, Ana.
+[Budi duduk di kursi]
+ANA: Apa kabar hari ini?
+""", language="id", seed=0)
+```
+
+Gunakan `build=False` untuk memeriksa rencana terlebih dahulu. `TITLE/LOCATION`,
+`[Budi walks to 1, -1]`, `[Ana holds a cup]`, `[Ana looks at Budi]`, serta
+`[pause 1 second]` juga didukung. Format dict memberi kontrol atas karakter
+(`id`, `gender`, `age`, `hair`, `clothes`, `race`) dan beat (`say`/`text`/`audio`/`emotion`,
+atau `do`/`who` dengan `walk`, `sit`, `stand`, `hold`, `gesture`, `pose`, `look`, `pause`).
+Kata deskripsi/arah panggung yang tidak dikenali dilaporkan sebagai warning.
+
+Teks menghasilkan gerak mulut tanpa suara; rekaman audio memakai Whisper lokal jika
+tersedia dan ikut masuk ke video. MPFB tidak tersedia → manekin ber-rig dengan waktu
+kata, subtitle dan gestur, tanpa animasi wajah. Tanpa waktu kata, subtitle dimatikan
+dengan warning. Karakter yang diam tetap didukung. Aksi tubuh selesai sebelum baris
+berikutnya; cahaya dan gerak rambut dihitung setelah animasi. Tidak ada penghindaran tabrakan otomatis.
+Nama karakter dibuat unik; objek lama dipertahankan, set terkelola mengikuti perilaku
+`set_environment`. Tidak menyimpan atau merender otomatis. Periksa beberapa shot dengan
+`render_frames(camera="scene", engine_name="eevee", size=512)`, lalu simpan dan render
+draft. Format lengkap dan resep ada di [Script → scene](AGENTS.md#script--scene).
 
 ## Kebutuhan
 - Blender 5.2 LTS. Secara default dicari di `~/.local/opt/blender/blender`,

@@ -1018,6 +1018,55 @@ async def talk_gestures(character: str, frame_start: int | None = None,
 
 # --- dialog --------------------------------------------------------------------------
 @mcp.tool()
+async def script_to_scene(script: dict | str, name: str | None = None,
+                          environment: str | None = None, lighting: str = "studio",
+                          camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
+                          subtitles: bool = True, language: str = "auto", seed: int = 0,
+                          build: bool = True) -> dict:
+    """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
+
+    Text: JUDUL/TITLE: ..., LOKASI/LOCATION: podcast_studio, then
+    ANA (perempuan, 28, rambut bob): Halo! and [Ana duduk di kursi].
+    Dict: {title, environment, characters: [{id, gender, age, hair, clothes, race}],
+    beats: [{say: id, text, audio?, emotion?}, {do: walk, who: id, to: [x,y]},
+    {do: sit, who: id, on: chair}, {do: stand/hold/gesture/pose/look/pause, ...}]}.
+    build=False returns a deterministic normalized plan and estimated frames with NO
+    scene changes or audio transcription. Builds use existing body/dialog/camera tools,
+    captions and hair motion; text is mouth-only, audio is placed on the timeline.
+    MPFB missing: rigged mannequins retain word times, audio, gestures and captions,
+    without facial animation. Returns plan, character rig/mesh map, frames, shots,
+    duration_s, warnings and per-stage timings. Nothing is saved automatically.
+    """
+    prepared = script
+    audio_started = None
+    audio_seconds = 0
+    if build and isinstance(script, dict):
+        import copy
+        import time
+        from engine.script_plan import parse_script
+        parse_script(script, name=name, environment=environment, seed=seed)
+        prepared = copy.deepcopy(script)
+        audio_started = time.perf_counter()
+        for beat in prepared.get("beats", []):
+            if beat.get("audio") and "say" in beat:
+                beat["audio"] = _workspace_path(beat["audio"])
+                if speech.available():
+                    asr_language = None if language == "auto" else language
+                    tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(beat["audio"], asr_language))
+                    beat["words"] = tr["words"]
+                    beat["text"] = tr["text"] or beat.get("text", "")
+        audio_seconds = time.perf_counter() - audio_started
+    r = await run("script_to_scene", script=prepared, name=name, environment=environment,
+                  lighting=lighting, camera=camera, subtitles=subtitles,
+                  language=language, seed=seed, build=build)
+    if audio_started is not None:
+        # The total exposed to callers includes preparation in the MCP process.
+        r["timings"]["total"] = round(time.perf_counter() - audio_started, 4)
+        r["timings"]["audio_prepare"] = round(audio_seconds, 4)
+    return r
+
+
+@mcp.tool()
 async def stage_dialog(characters: list[str], layout: Literal["angled", "face_to_face",
                        "side_by_side"] = "angled", distance: float = 1.3,
                        cheat_deg: float = 35.0, center: list[float] | None = None) -> dict:
