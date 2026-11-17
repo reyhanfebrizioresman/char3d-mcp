@@ -240,6 +240,8 @@ def _repair_missing_files():
 
 @command("save_project")
 def save_project(path="scene.blend"):
+    from .weather import refresh_weather
+    refresh_weather()
     path = context.resolve(path, "projects")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     _absolute_external_paths()

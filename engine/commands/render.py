@@ -74,6 +74,8 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
     if engine not in ENGINES:
         raise ValueError(f"engine must be one of {sorted(ENGINES)}")
     sc = bpy.context.scene
+    from .weather import refresh_weather
+    refresh_weather()
     if frame is not None:
         sc.frame_set(int(frame))
 

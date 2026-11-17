@@ -275,6 +275,7 @@ async def secondary_motion(character: str, parts: list[str] = ['hair'],
     tight trousers/shirts skip with reasons. Original weights blend at the waist.
     Reuses bones and replaces owned keys in the inclusive range; clear=True removes
     them. stiffness/damping: 0..1; gravity >= 0; wind: world XYZ acceleration.
+    Omitted wind uses set_weather wind; rebake after changing weather.
     Conservative leg capsules and neighbouring tips constrain cloth; hair uses
     head/neck/shoulder/back capsules. Not per-vertex or full fabric physics. Returns
     per-garment chains, tip lag, clearance, skipped reasons and total bake_seconds."""
@@ -514,6 +515,8 @@ async def set_lighting(preset: Light = "studio", subject: list[str] | None = Non
     studio, soft, dramatic, sunset, noon, overcast, night, neon, silhouette, horror.
     rotate spins all lights around the subject (degrees). background overrides the sky
     color (RGB 0..1). ground adds a large floor at the subject's feet.
+    On outdoor sets, noon/sunset/overcast/night drive sky/sun, retain character
+    key/fill lights and suppress this extra ground plane.
     follow='auto' follows travel > 0.43 x standing height (~0.75 m); True follows
     any motion, False keeps lights static. SUN lights stay static. Call AFTER body
     animation (walk_path, animate, sit_on); rerun after motion changes. The smoothed
@@ -524,7 +527,8 @@ async def set_lighting(preset: Light = "studio", subject: list[str] | None = Non
                      ground_color=ground_color, follow=follow)
 
 
-Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk"]
+Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk",
+                      "city_street", "park", "cafe_terrace", "beach"]
 Prop = Literal["chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
                "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
                "handheld_microphone"]
@@ -546,9 +550,27 @@ async def set_environment(preset: Environment, subject: list[str] | None = None,
     across screens/whiteboards (stretched to fit). All objects are in char3d_env; returns
     object names and a transformable root. Set lighting and camera_shot separately with
     the character as subject. Replaces add_prop objects too; preserves characters/cameras
-    and set_lighting lights. Use sit_on for seating; no general collision avoidance."""
+    and set_lighting lights. Outdoor city_street/park/cafe_terrace/beach have walkable
+    ground, seat metadata, distant backdrops and a procedural sky/sun. Outdoor lighting
+    suppresses the extra ground plane; walk_path routes around static furniture.
+    Use sit_on for benches, cafe chairs and the beach deck chair."""
     return await run("set_environment", preset=preset, subject=subject, scale=scale,
                      variant=variant, color_theme=color_theme, screen_image=screen_image)
+
+
+@mcp.tool()
+async def set_weather(kind: Literal["clear", "rain", "snow", "fog", "wind"] = "clear",
+                      intensity: float = 0.5, wind: list[float] | None = None,
+                      seed: int = 0) -> dict:
+    """Replace procedural weather: clear, rain, snow, fog or wind (intensity 0..1).
+    Seeded falling geometry renders in Eevee/workbench and survives video snapshots.
+    Coverage follows all shot cameras' near frusta (24 m depth), refreshed on render/save.
+    Fog uses bounded distance attenuation in Eevee; rain darkens the outdoor sky and
+    lowers ground roughness. wind is world XYZ acceleration, reused by secondary_motion
+    when its wind argument is omitted; rebake secondary motion after changing weather.
+    clear restores owned ground/sky settings and removes all owned weather data.
+    Set cameras before weather for predictable initial coverage. No external assets."""
+    return await run("set_weather", kind=kind, intensity=intensity, wind=wind, seed=seed)
 
 
 @mcp.tool()

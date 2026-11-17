@@ -83,7 +83,7 @@ def footprints(rig, ignored, ground, frame):
     deps = bpy.context.evaluated_depsgraph_get()
     for obj in bpy.context.scene.objects:
         if (obj.type != "MESH" or obj.hide_render or not obj.visible_get() or is_helper(obj)
-                or obj.get("char3d_walkable") or obj.get("c3d_role") == "ground"
+                or obj.get("char3d_walkable") or obj.get("c3d_role") in {"ground", "weather"}
                 or obj.name == "c3d_ground" or _excluded(obj, rig, ignored, frame)):
             continue
         ev = obj.evaluated_get(deps)

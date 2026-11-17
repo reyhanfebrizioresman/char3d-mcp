@@ -459,6 +459,8 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     try:
         size = _output_size(sc, quality, width, height, resolution, vertical)
         _apply_settings(sc, quality, size, fps, start, end, base)
+        from .weather import refresh_weather
+        refresh_weather()
         bpy.ops.wm.save_as_mainfile(filepath=blend, copy=True)
     finally:
         r.engine, r.resolution_x, r.resolution_y = saved["engine"], saved["rx"], saved["ry"]
