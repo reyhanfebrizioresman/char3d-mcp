@@ -77,6 +77,10 @@ def chains_for_garment(obj, rig, smap, colliders, index):
                for s in 'LR'), Vector()) / 2
     height = rig.data.bones[smap['head']].length * 7.5
     root_z = hip.z + height * .065
+    if len(pts) and float(pts[:, 2].max()) < hip.z - height * .12:
+        # Shoes, boots and socks sit entirely on the leg/foot: their toes clear the
+        # leg capsules, but they must keep following the foot bones.
+        return [], None, 'Footwear or lower-leg item: no waist attachment.'
     below = pts[:, 2] < hip.z - height * .045
     if below.sum() < 16:
         return [], None, 'No hem below the hips (tight shirt, accessory or short garment).'

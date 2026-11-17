@@ -262,6 +262,13 @@ def _approach(rigs, heights, kind, side, start):
         goal = math.atan2(face.x-pos.x, -(face.y-pos.y))
         angle = abs((goal-yaw+math.pi) % (2*math.pi)-math.pi)
         travel = (target.xy-pos.xy).length
+        if i and kind not in ("hug", "pat_shoulder"):
+            # Already closer than the comfortable distance (e.g. right after a hug):
+            # backing away would need a full turn-walk-turn. Arm IK reaches anyway.
+            cur = (pos.xy - positions[0].xy).length
+            want = (target.xy - positions[0].xy).length
+            if 0.25 * scale <= cur < want:
+                travel = 0.0
         params = dict(armature=rig.name, start_frame=start, ignore=[rigs[1-i].name],
                       _world_route=True)
         if i and travel > 0.035:
@@ -274,7 +281,7 @@ def _approach(rigs, heights, kind, side, start):
             gap = (pos.xy + seg * u - partner).length
             away = target.xy - partner
             first = None
-            if (gap < 0.45 * scale / 0.94 and u < 0.85 and away.length > 1e-6
+            if (gap < 0.45 * scale / 0.94 and 0.15 < u < 0.85 and away.length > 1e-6
                     and (pos.xy - target.xy).length > 0.3):
                 pre = partner + away.normalized() * 0.95
                 first = walk_path(points=[list(pre)], armature=rig.name, start_frame=start,
@@ -328,6 +335,39 @@ def _penetration(rigs, heights):
                     distance = (scaled.length-1) * min(radii)
                     worst = max(worst, 0.022-distance)
     return max(0.0, worst)
+
+
+def _step_back(rigs, maps, heights, end, fps):
+    """After a hug both partners take a short two-step shuffle back to talking
+    distance instead of staying chest to chest. The pelvis eases back along the
+    line between them; forced foot contacts let foot lock plant, swing and replant
+    each foot in turn (left, then right)."""
+    from .footlock import lock_feet
+    sc = bpy.context.scene
+    steps = max(12, round(fps * 0.75))
+    sc.frame_set(end)
+    centers = [_position(r).copy() for r in rigs]
+    for i, (rig, smap) in enumerate(zip(rigs, maps)):
+        away = centers[i] - centers[1-i]
+        away.z = 0
+        if away.length < 1e-6:
+            continue
+        away = away.normalized() * 0.2 * heights[i] / 1.7
+        pb = rig.pose.bones[smap["hips"]]
+        sc.frame_set(end)
+        origin = (rig.matrix_world @ pb.matrix).translation.copy()
+        for f in range(end, end + steps + 1):
+            sc.frame_set(f)
+            world = rig.matrix_world @ pb.matrix
+            u = (f - end) / steps
+            anim._set_world_rot(rig, pb, world.to_quaternion(), loc=origin + away * _smoothstep(u))
+            pb.keyframe_insert("location", frame=f, group=pb.name)
+        third = steps // 3
+        last = end + steps + 4
+        lock_feet(rig.name, frame_start=end - 2, frame_end=last,
+                  contacts={"L": [[end - 2, end + 2], [end + third + 2, last]],
+                            "R": [[end - 2, end + third + 2], [end + 2 * third + 3, last]]})
+    return [end + 1, end + steps]
 
 
 @command("interact")
@@ -537,13 +577,18 @@ def interact(a, b, kind, start_frame=None, prop=None, approach=True, hold_second
                         for key in fc.keyframe_points:
                             if reach <= key.co.x <= end:
                                 key.interpolation = "LINEAR"
+            step_back = None
+            if kind == "hug":
+                step_back = _step_back(rigs, maps, heights, end, fps)
+                end = step_back[1]
             anim._extend_range(end)
         transfer = None
         if held:
             transfer = transfer_prop(rigs[0], rigs[1], held, side, contact)
         return {"a": rigs[0].name, "b": rigs[1].name, "kind": kind,
                 "frames": {"approach": [start, reach-1] if reach > start else None,
-                           "reach": reach, "contact": contact, "release": release, "end": end},
+                           "reach": reach, "contact": contact, "release": release, "end": end,
+                           "step_back": step_back},
                 "next_start_frame": end+1,
                 "contact_error_m": round(max(errors or site_errors, default=0), 6),
                 "max_site_error_m": round(max(site_errors, default=0), 6),

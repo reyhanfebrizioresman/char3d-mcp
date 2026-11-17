@@ -463,6 +463,45 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     "start_frame": 1, "end_frame": final, "name": prefix + "Wide"})
                 shots.append(shot)
 
+    def interaction_shots():
+        """Contact beats get a side-on two-shot: a speaker single would show the
+        partner's back. Cuts back to the dialog coverage at its next shot."""
+        from .gaze import head_frame
+        for i, beat in enumerate(plan["beats"]):
+            if beat.get("do") != "interact" or "frames" not in beat:
+                continue
+            lo, hi = beat["frames"]
+            later = [s["frames"][0] for s in shots if s.get("frames") and s["frames"][0] > lo]
+            hi = min([hi] + [f - 1 for f in later])
+            if hi - lo < 12:
+                continue
+            pair = [characters[beat["who"]]["rig"], characters[beat["with"]]["rig"]]
+            sc.frame_set((lo + hi) // 2)
+            heads = [head_frame(bpy.data.objects[r])[0] for r in pair]
+            axis = heads[1] - heads[0]
+            normal = Vector((axis.y, -axis.x, 0))
+            if normal.length < 1e-6:
+                normal = Vector((0, -1, 0))
+            normal.normalize()
+            # Stay on the side of the coverage camera active at the beat (180 deg rule).
+            cover = next((s for s in reversed(shots) if s.get("frames") and s["frames"][0] <= lo), None)
+            cam = bpy.data.objects.get(cover["camera"]) if cover else None
+            mid = (heads[0] + heads[1]) / 2
+            ref = (cam.matrix_world.translation - mid) if cam else Vector((0, -1, 0))
+            if normal.dot(Vector((ref.x, ref.y, 0))) < 0:
+                normal = -normal
+            angle = math.degrees(math.atan2(normal.x, -normal.y))
+            shot = dispatch("camera_shot", {"subject": pair,
+                "shot": "full",
+                "angle": angle, "elevation": 6.0, "start_frame": lo, "end_frame": hi,
+                "name": prefix + f"Interact{i:02d}"})
+            shots.append(shot)
+            back = hi + 1
+            if cam is not None and back <= sc.frame_end and not any(m.frame == back for m in sc.timeline_markers):
+                marker = sc.timeline_markers.new(f"{cam.name}_after{i:02d}", frame=back)
+                marker.camera = cam
+        shots.sort(key=lambda s: (s.get("frames") or [0])[0])
+
     if len(cast) == 1 or any(cue["target"] == "camera" for cue in looks):
         make_cameras()
         if len(cast) > 1:
@@ -504,6 +543,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     warnings.append(f"{ident}: no speech signal; gestures skipped")
     if len(cast) > 1:
         make_cameras()
+        if camera != "none":
+            with timed("cameras"):
+                interaction_shots()
     with timed("lighting"):
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
     if "weather" in plan:

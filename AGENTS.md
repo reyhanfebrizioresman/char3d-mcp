@@ -152,7 +152,14 @@ heads looking toward the partner.
   turns both partners, using static obstacle avoidance. Only the partner is excluded
   from route obstacles to permit contact. Shoulder pats stage side by side. The first
   partner waits as needed. `moved` lists walks/turns and frames. `approach=False`
-  keeps placement and rejects unreachable contact before keying.
+  keeps placement and rejects unreachable contact before keying. A direct route that
+  would pass through the partner first walks around them (partner as an obstacle)
+  before the final close step. Partners already closer than the comfortable distance
+  (>= 25 cm, e.g. right after a hug) stay put instead of turning to walk away.
+- Heads turn toward the partner as yaw (<= 55°, pats 70°) then pitch (-30..+22°),
+  never rolled; eyes cover larger gaps. Hugs look past the partner's shoulder, and
+  after a hug both take a short two-step shuffle back (~0.2 m each, 0.75 s, foot lock
+  with forced contacts) to talking distance; `frames.step_back` reports it.
 - For handover, first `hold_prop(a, cup, hand="right")`, then
   `interact(a, b, "handover", prop=cup)`. At contact the stepped live attachment
   switches to a bone-parented palm helper on b, preserving the prop world transform.
@@ -173,7 +180,9 @@ heads looking toward the partner.
   requires exactly two declared characters. Dict: `{"do":"interact", "who":"Sari",
   "with":"Dimas", "kind":"handshake"}`; optional prop/approach/hold_seconds/side.
   Script handovers create/pick up known procedural props as needed. Contacts survive
-  the later speaking gesture pass.
+  the later speaking gesture pass. Each contact beat gets a side-on `full` two-shot
+  (`<prefix>InteractNN`), same side as the active dialog camera, cutting back to the
+  dialog coverage at its next shot.
 - Inspect Eevee front three-quarter and side views at contact and during reach.
   Extreme proportions, tight clothing and nearby furniture may intersect; there is
   no dynamic collision, cloth or full-body contact solver.
@@ -587,7 +596,8 @@ rerun after changing those animations. Range defaults to the scene (inclusive); 
 - `parts=["hair", "clothes"]` adds eligible garments; use a garment's exact object or
   asset name to bake/clear only that garment. Geometry below the hips and farther
   than the tight-fit threshold from the legs identifies loose hems. Tight trousers,
-  shirts and short/missing loose regions are reported in `skipped` without chains.
+  shirts, footwear (nothing near the waist) and short/missing loose regions are
+  reported in `skipped` without chains.
 - Skirts, dresses and below-waist jacket/coat tails get up to 12 angular chains of
   four `cloth_XX_YY` bones. Only connected loose garment regions are reweighted;
   the top blends from the original hip/thigh weights, and body/other garments stay
