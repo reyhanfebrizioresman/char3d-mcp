@@ -335,6 +335,8 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
         bpy.context.view_layer.update()
     target = _world(rig, smap)
     info = _bake(rig, smap, initial, target, feet, front, f0, transition_frames)
+    from .sfx import record_seat_event
+    record_seat_event(rig, "sit", seat, f0, info["transition_end"])
     rig["c3d_seated"] = json.dumps({"seat": seat, "front": list(front), "floor": floor,
                                     "center": list(center), "seat_index": seat_index})
     contact = _contact_height(rig, center, front, samples)
@@ -372,5 +374,7 @@ def stand_up(character, start_frame=None, transition_frames=20):
         target[b] = m2
     feet = {s: (target[f"foot.{s}"].translation, target[f"foot.{s}"].to_quaternion()) for s in "LR"}
     info = _bake(rig, smap, initial, target, feet, front, f0, transition_frames, True)
+    from .sfx import record_seat_event
+    record_seat_event(rig, "stand", seat["seat"], f0, info["transition_end"])
     return {"character": rig.name, "standing_pelvis_z": round(hip.z, 5), **info,
             "bake_seconds": round(time.perf_counter()-started, 3)}

@@ -1837,6 +1837,7 @@ REGISTRY['mpfb_assets'] = script_missing_mpfb
                   {"say": "ScriptBudi", "text": "Senang sekali!"}]}
     t = time.perf_counter()
     built = await data("script_to_scene", script=fixture, language="id", seed=2)
+    assert built["sfx"]["counts"]["ambience"] >= 1 and built["sfx"]["counts"]["sit"] >= 1, built["sfx"]
     elapsed = time.perf_counter() - t
     assert len(built["characters"]) == 2 and len(built["lines"]) == 4, built
     beats = built["plan"]["beats"]
@@ -1914,8 +1915,9 @@ result = angles
         json.dump({"elapsed_s": benchmark, "timings": six["timings"], "head_angles_deg": angles}, f, indent=2)
     # A silent cast member/body-only scene has no word times to drive emotion/captions.
     await call("new_scene")
-    silent = await data("script_to_scene", script={"characters": [{"id": "Silent"}],
+    silent = await data("script_to_scene", sound=False, script={"characters": [{"id": "Silent"}],
                           "beats": [{"do": "pause", "seconds": 0.5}]})
+    assert silent["sfx"] == {"strips": [], "counts": {}} and not (await data("list_audio"))["strips"]
     assert silent["frames"] == [1, 12] and len(silent["shots"]) == 1, silent
     assert "No word times available; subtitles disabled" in silent["warnings"], silent
     print(f"script_to_scene: bilingual parse + fallback OK | 4 lines/walk/sit {elapsed:.2f}s | "
@@ -2654,6 +2656,161 @@ async def _render_style_checks(call):
     print('render styles: 5 lit looks | exact reset pixels/settings | draft unchanged | save/open | anime+film 4-frame MP4 OK')
 
 
+async def _auto_sfx_checks(call):
+    """Evaluated MPFB contacts → deterministic Foley → actual AAC mix timing."""
+    import hashlib
+    import shutil
+    import wave
+    import av
+    import numpy as np
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[-1])
+
+    def png(path, pixels):
+        with av.open(path, "w", format="image2") as image:
+            stream = image.add_stream("png", rate=1)
+            stream.width, stream.height = pixels.shape[1], pixels.shape[0]
+            stream.pix_fmt = "rgb24"
+            for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
+                image.mux(packet)
+            for packet in stream.encode():
+                image.mux(packet)
+
+    await call("new_scene", frame_end=1)
+    await data("scene_info")
+    await call("create_realistic_human", name="Foley", hair="short02",
+               clothes=["male_casualsuit01", "shoes01"])
+    await call("set_environment", preset="office", subject=["Foley_rig"])
+    route = await data("walk_path", armature="Foley_rig", points=[[0, -.8], [.8, -.8], [.8, 0]], avoid=False)
+    chair = await data("add_prop", kind="chair", location=[.8, .40, 0])
+    seated = await data("sit_on", character="Foley_rig", seat=chair["root"],
+                        start_frame=route["next_start_frame"]+5)
+    stood = await data("stand_up", character="Foley_rig", start_frame=seated["transition_end"]+20)
+    final = stood["transition_end"]+12
+    await call("set_timeline", frame_end=final)
+    result = await data("auto_sfx", seed=18)
+    steps = [s for s in result["strips"] if s["kind"] == "footsteps"]
+    # Compare against independent animation-planner contacts, not auto_sfx's own output.
+    expected = sorted(a for side in route["foot_lock"]["contacts"].values() for a, _b in side if a > 1)
+    walked = [s for s in steps if s["frame"] <= route["frames"][1]]
+    assert abs(len(walked)-len(expected)) <= 1, (walked, expected)
+    assert all(min(abs(s["frame"]-f) for f in expected) <= 1 for s in walked), (walked, expected)
+    assert len(steps) >= 6 and {s["surface"] for s in steps} == {"carpet"}, steps
+    assert result["counts"]["sit"] == result["counts"]["stand"] == 1, result
+    beds = sorted((s["frame"], s["end"]) for s in result["strips"] if s["kind"] == "ambience")
+    assert beds[0][0] == 1 and beds[-1][1] == final, beds
+    assert all(a[1]+1 == b[0] for a, b in zip(beds, beds[1:])), beds
+    assert all(a["hash"] != b["hash"] for a, b in zip(steps, steps[1:])), steps
+    hashes = {s["path"]: hashlib.sha256(open(s["path"], "rb").read()).hexdigest() for s in result["strips"]}
+    again = await data("auto_sfx", seed=18)
+    assert again["counts"] == result["counts"], (again, result)
+    assert [(s["frame"], s["hash"]) for s in again["strips"]] == [(s["frame"], s["hash"]) for s in result["strips"]]
+    assert hashes == {p: hashlib.sha256(open(p, "rb").read()).hexdigest() for p in hashes}
+    assert (await data("scene_info"))["frame_range"] == [1, final]
+    # Existing voice/music/manual sfx survive clear and do not turn Foley into speech.
+    fixture = _tone(os.path.join(ROOT, "output", "imports", "sfx_preserve.wav"))
+    music = await data("add_audio", path=fixture, start_frame=1, kind="music", volume=.2)
+    manual = await data("add_audio", path=fixture, start_frame=2, kind="sfx")
+    assert not (await data("duck_music"))["speech_ranges"]
+    voice = await data("add_audio", path=fixture, start_frame=5, kind="voice")
+    speech = (await data("duck_music"))["speech_ranges"]
+    assert len(speech) == 1 and speech[0][0] == 5, speech
+    cloth = await data("auto_sfx", kinds=["cloth"], seed=18)
+    assert cloth["counts"]["cloth"] >= 6, cloth
+    cleared = await data("auto_sfx", clear=True)
+    assert len(cleared["removed"]) == sum(result["counts"].values()) + cloth["counts"]["cloth"]
+    assert {s["name"] for s in (await data("list_audio"))["strips"]} == {
+        music["strip"], manual["strip"], voice["strip"]}
+    for item in (music, manual, voice):
+        await call("remove_audio", name=item["strip"])
+    await call("auto_sfx", seed=18)
+    # Cropped clear/rerun preserves ambience on both sides and does not accumulate strips.
+    await call("auto_sfx", kinds=["ambience"], frame_start=40, frame_end=70, clear=True)
+    assert not any(s["frames"][0] <= 55 <= s["frames"][1]
+                   for s in (await data("list_audio"))["strips"] if "ambience" in s["name"])
+    await call("auto_sfx", kinds=["ambience"], frame_start=40, frame_end=70, seed=18)
+    await call("auto_sfx", seed=18)
+    assert len((await data("list_audio"))["strips"]) == len(result["strips"])
+    # Inspectable stills: touchdown, corner, seat contact, standing hold.
+    await call("set_lighting", preset="studio", subject=["Foley_rig"])
+    await call("camera_shot", subject=["Foley_rig"], shot="full", angle=10,
+               start_frame=1, end_frame=final, name="auto_sfx_office")
+    frames = [steps[0]["frame"], 66, seated["transition_end"], stood["transition_end"]]
+    rendered = await call("render_frames", frames=frames, camera="scene", engine_name="eevee", size=512)
+    stills = [json.loads(t) for t in text_of(rendered)]
+    tiles = []
+    for i, item in enumerate(stills):
+        path = os.path.join(ROOT, "output", "renders", f"auto_sfx_{i+1}.png")
+        shutil.copyfile(item["path"], path)
+        with av.open(path) as image:
+            tiles.append(next(image.decode(video=0)).to_ndarray(format="rgb24"))
+    png(os.path.join(ROOT, "output", "auto_sound_contact_sheet.png"),
+        np.concatenate([np.concatenate(tiles[:2], axis=1), np.concatenate(tiles[2:], axis=1)], axis=0))
+    await call("save_project", path="auto_sfx_office.blend")
+    clip_first, clip_last = max(1, steps[0]["frame"]-5), min(route["frames"][1], steps[0]["frame"]+47)
+    movie = await data("render_video", path="auto_sfx_steps.mp4", quality="draft", width=320, height=180,
+                       frame_start=clip_first, frame_end=clip_last, wait=True)
+    assert movie["status"] == "done", movie
+    with av.open(movie["path"]) as video:
+        assert video.streams.audio, movie
+        rate = video.streams.audio[0].rate
+        audio = np.concatenate([f.to_ndarray().mean(axis=0) for f in video.decode(audio=0)])
+    errors = []
+    for step in steps:
+        if not clip_first <= step["frame"] <= clip_last-3:
+            continue
+        at = (step["frame"]-clip_first)/24
+        lo, hi = max(0, round((at-.07)*rate)), min(len(audio), round((at+.11)*rate))
+        hop = round(rate*.005)
+        energy = [float(np.mean(audio[i:i+hop]**2)) for i in range(lo, hi-hop, hop)]
+        peak = (lo + (np.argmax(energy)+.5)*hop) / rate
+        errors.append(abs(float(peak)-at))
+    assert len(errors) >= 2 and max(errors) <= 1/24, errors
+    # Surface samples/metrics plus one small spectrogram PNG per surface.
+    fixtures = (await data("run_blender_python", code='''
+from engine import sfx_synthesis as s
+from engine import context
+result = {name: s.write_cached(s.footstep(name, s.rng_for(77, name)),
+          context.resolve('sfx/generated', 'imports'))[0] for name in s.SURFACES}
+'''))["result"]
+    metrics = {}
+    for name, path in fixtures.items():
+        with wave.open(path, "rb") as wav:
+            assert wav.getframerate() == 48000 and wav.getsampwidth() == 2 and wav.getnchannels() == 1
+            samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(float) / 32768
+        windows = np.array([np.abs(np.fft.rfft(samples[i:i+1024]*np.hanning(1024)))
+                            for i in range(0, len(samples)-1024, 128)])
+        frequencies = np.fft.rfftfreq(1024, 1/48000)
+        power = windows ** 2
+        centroid = float(np.sum(power * frequencies) / np.sum(power))
+        cumulative = np.cumsum(samples ** 2)
+        decay = float(np.searchsorted(cumulative, cumulative[-1]*.90) / 48000)
+        metrics[name] = {"spectral_centroid_hz": round(centroid, 1), "energy_90_ms": round(decay*1000, 1), "path": path}
+        db = 20*np.log10(windows[:, :257].T + 1e-7)
+        level = np.clip((db-db.max()+65)/65, 0, 1)[::-1]
+        pixels = np.stack([level**.6, level**1.6, level**3], axis=-1)
+        png(os.path.join(ROOT, "output", f"auto_sfx_{name}_spectrogram.png"), (pixels*255).astype("uint8"))
+    assert metrics["gravel"]["spectral_centroid_hz"] > metrics["carpet"]["spectral_centroid_hz"]*2, metrics
+    assert metrics["sand"]["energy_90_ms"] > metrics["concrete"]["energy_90_ms"], metrics
+    with open(os.path.join(ROOT, "output", "auto_sfx_metrics.json"), "w") as stream:
+        json.dump({"surfaces": metrics, "counts": result["counts"], "expected_touchdowns": expected,
+                   "measured_touchdowns": [s["frame"] for s in walked], "aac_peak_error_seconds": errors,
+                   "video": movie["path"], "stills": frames}, stream, indent=2)
+    # Verify in-place clips and imported BVH use the same evaluated-foot path too.
+    await call("new_scene", frame_end=1)
+    await call("create_human", name="ClipFoley")
+    await call("auto_rig_humanoid", mesh="ClipFoley")
+    await call("animate", armature="ClipFoley_rig", clip="walk", cycles=2, in_place=True)
+    assert (await data("auto_sfx", kinds=["footsteps"]))["counts"]["footsteps"] >= 2
+    bvh = await data("export_asset", path="auto_sfx_walk.bvh", objects=["ClipFoley_rig"])
+    await call("clear_animation", armature="ClipFoley_rig")
+    await call("import_mocap", path=bvh["path"], armature="ClipFoley_rig")
+    assert (await data("auto_sfx", kinds=["footsteps"]))["counts"]["footsteps"] >= 2
+    print("auto sfx:", result["counts"], "| contacts", len(walked), "/", len(expected),
+          "| AAC peak error", round(max(errors)*1000, 1), "ms | 6 surface spectra | idempotent/clear OK", flush=True)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -2673,6 +2830,8 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
+        assert "auto_sfx" in tools
+        await _auto_sfx_checks(call)
         assert "script_to_scene" in tools
         await _render_style_checks(call)
         await _script_scene_checks(call)

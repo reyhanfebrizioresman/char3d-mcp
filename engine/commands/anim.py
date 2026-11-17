@@ -853,6 +853,8 @@ def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
 def clear_animation(armature, reset_pose=True):
     rig = _target(armature)
     rig.animation_data_clear()
+    if "c3d_seat_events" in rig:
+        del rig["c3d_seat_events"]
     if reset_pose:
         for pb in rig.pose.bones:
             pb.location = (0, 0, 0)

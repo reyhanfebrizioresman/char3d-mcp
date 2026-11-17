@@ -952,6 +952,28 @@ async def add_audio(path: str, start_frame: int = 1, volume: float = 1.0,
 
 
 @mcp.tool()
+async def auto_sfx(characters: list[str] | None = None, kinds: list[str] | None = None,
+                    surface: str = "auto", volume: float = 1.0, seed: int = 0,
+                    frame_start: int | None = None, frame_end: int | None = None,
+                    clear: bool = False) -> dict:
+    """Add original procedural footsteps, sit/stand, optional cloth, and quiet ambience.
+    Run after body animation. Defaults: kinds=['footsteps','sit','ambience']; sit includes
+    standing up. characters=None selects visible humanoid rigs. Footsteps use evaluated
+    heel/ball/toe contacts shared with lock_feet; initial planted feet stay silent.
+    surface='auto' checks ground tags/materials and the environment preset, or choose
+    wood, concrete/tile, carpet, grass, gravel, sand. Seeded 48 kHz 16-bit WAVs are cached
+    by content under imports/sfx/generated/. Reruns replace owned sounds in the selected
+    scene range; clear=True only removes owned sounds (all kinds when kinds is omitted).
+    Voice/music/manual sfx are preserved. Ambience loops with global fades at -30 dBFS RMS.
+    Returns counts, strip paths/hashes/frames, and detected touchdowns. No samples/network.
+    Detection is heuristic for imported motion; generic deep hip drops can resemble sitting.
+    """
+    return await run("auto_sfx", characters=characters, kinds=kinds, surface=surface,
+                     volume=volume, seed=seed, frame_start=frame_start,
+                     frame_end=frame_end, clear=clear)
+
+
+@mcp.tool()
 async def duck_music(music_strip: str | None = None, amount_db: float = -12,
                      attack: float = 0.15, release: float = 0.4) -> dict:
     """Lower music during speech using volume keys. music_strip=None selects all music;
@@ -1082,7 +1104,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           environment: str | None = None, lighting: str = "studio",
                           camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
                           subtitles: bool = True, language: str = "auto", seed: int = 0,
-                          build: bool = True) -> dict:
+                          build: bool = True, sound: bool = True) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     Text: JUDUL/TITLE: ..., LOKASI/LOCATION: podcast_studio, then
@@ -1094,6 +1116,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     build=False returns a deterministic normalized plan and estimated frames with NO
     scene changes or audio transcription. Builds use existing body/dialog/camera tools,
     captions and hair/loose-cloth motion; text is mouth-only, audio is placed on the timeline.
+    sound=True adds procedural footsteps, sit/stand and ambience after animation;
+    sound=False disables generation. Results include sfx strip counts and paths.
     Outfit: casual/formal/sport/summer/winter (explicit clothes overrides it).
     Beard: catalog name or True for a seeded installed choice. Text also recognizes
     gaun/dress/rok/skirt, jenggot/beard/kumis/moustache, kacamata/glasses and topi/hat;
@@ -1127,7 +1151,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
         audio_seconds = time.perf_counter() - audio_started
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
-                  language=language, seed=seed, build=build)
+                  language=language, seed=seed, build=build, sound=sound)
     if audio_started is not None:
         # The total exposed to callers includes preparation in the MCP process.
         r["timings"]["total"] = round(time.perf_counter() - audio_started, 4)
