@@ -103,7 +103,7 @@ def _skeleton(command_name, params):
 
 @command("script_to_scene")
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
-                    subtitles=True, language="auto", seed=0, build=True):
+                    subtitles=True, language="auto", seed=0, build=True, sound=True):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -512,6 +512,11 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             dispatch("secondary_motion", {"character": char["rig"], "parts": ["hair", "clothes"],
                                           "frame_start": 1, "frame_end": final})
     dispatch("set_timeline", {"frame_start": 1, "frame_end": final})
+    if sound:
+        with timed("sound"):
+            result["sfx"] = dispatch("auto_sfx", {"characters": cast, "seed": seed})
+    else:
+        result["sfx"] = {"strips": [], "counts": {}}
     sc.frame_set(1)
     warnings[:] = list(dict.fromkeys(warnings))
     timings["total"] = round(time.perf_counter() - started, 4)

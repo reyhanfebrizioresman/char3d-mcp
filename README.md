@@ -32,6 +32,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `talk_gestures` | Gerak tangan saat bicara: postur bicara + beat, buka telapak, sapuan, menunjuk (lengkap dengan jari); mengikuti penekanan kata, plus gesture sesuai makna kata ("dua" → dua jari, "saya" → tangan di dada, "besar" → tangan melebar, "tidak" → telapak menyapu, ...) atau `cues` manual |
 | `set_hand_pose` | Pose jari: rileks, terbuka, kepal, menunjuk, jempol, peace, tiga, empat, OK, dll. (rig MPFB, Mixamo, Rigify) |
 | `add_audio`, `duck_music`, `list_audio`, `remove_audio` | Suara `kind="voice"/"music"/"sfx"`; musik `loop=True` sampai akhir adegan + `fade_in`/`fade_out` (detik); `duck_music(amount_db=-12)` menurunkan musik saat dialog; video otomatis bersuara AAC |
+| `auto_sfx` | Foley prosedural tersinkron: langkah dari kontak kaki, duduk/berdiri, rustle kain opsional, ambience sesuai set; WAV 48 kHz/16-bit dengan seed dan cache hash, tanpa sampel unduhan |
 | `ai_text_to_speech` | Teks → suara (gratis, Chatterbox di Hugging Face, 23 bahasa) |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
@@ -124,7 +125,7 @@ menandainya unverified dan build memeriksa katalog terpasang. Nama paket dalam t
 disimpan di `assets` sampai jenisnya diketahui. Paket tidak tersedia → warning dan
 outfit memakai setelan sistem; aksesori/jenggot yang tidak tersedia dilewati.
 
-Teks menghasilkan gerak mulut tanpa suara; rekaman audio memakai Whisper lokal jika
+Teks menghasilkan gerak mulut tanpa suara ucapan; rekaman audio memakai Whisper lokal jika
 tersedia dan ikut masuk ke video. MPFB tidak tersedia → manekin ber-rig dengan waktu
 kata, subtitle dan gestur, tanpa animasi wajah. Tanpa waktu kata, subtitle dimatikan
 dengan warning. Karakter yang diam tetap didukung. Aksi tubuh selesai sebelum baris
@@ -132,6 +133,8 @@ berikutnya; cahaya, gerak rambut serta kain longgar dihitung setelah animasi.
 Rok/gaun mendapat gerak kain otomatis; baju ketat, rambut pendek dan karakter tanpa
 bagian longgar dilewati. Pemilihan outfit belum menyelesaikan clipping baju/rambut/kursi;
 periksa pose berjalan dan duduk di Eevee.
+`sound=True` (default) menambahkan langkah, duduk/berdiri dan ambience setelah animasi;
+gunakan `sound=False` untuk melewatinya. Hasil mencantumkan `sfx.counts` dan strip suara.
 Nama karakter dibuat unik; objek lama dipertahankan, set terkelola mengikuti perilaku
 `set_environment`. Tidak menyimpan atau merender otomatis. Periksa beberapa shot dengan
 `render_frames(camera="scene", engine_name="eevee", size=512)`, lalu simpan dan render
@@ -273,6 +276,25 @@ Lisensi: kode MPFB GPL-3.0 (tidak disalin ke repo ini, hanya dipanggil saat runt
 aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersial.
 
 ## Suara dan lip sync dari audio
+
+`auto_sfx(characters=["Maya_rig"], seed=7)` dijalankan setelah `walk_path`, `animate`,
+mocap dan aksi duduk/berdiri. Default `kinds=["footsteps", "sit", "ambience"]`; sit
+mencakup berdiri, dan `"cloth"` menambah rustle gerak. `surface="auto"` membaca tanah
+di bawah kaki (tag `char3d_surface`/`c3d_surface`, nama material/objek, lalu preset set).
+Pilihan eksplisit: wood, concrete/tile, carpet, grass, gravel, sand. Langkah memakai
+heel transient, resonansi badan, toe/scuff dan variasi per langkah; sofa lebih lembut.
+Ambience set mencakup office, studio, classroom, living_room serta city_street, park,
+cafe_terrace dan beach jika preset tersebut tersedia. Bed berulang mulus pada sekitar
+-30 dBFS RMS sebelum fade dan pengali `volume`.
+
+WAV asli 48 kHz mono 16-bit disimpan di `output/imports/sfx/generated/` dengan hash
+konten; seed yang sama memakai file yang sama. Hasil memberi kontak `touchdowns`,
+`counts`, frame/path/hash/surface tiap strip. Panggilan ulang mengganti sfx miliknya
+dalam `frame_start`/`frame_end`; `clear=True` hanya menghapus sfx otomatis (semua kind
+jika `kinds` tidak diisi). Suara voice/music/sfx manual tetap ada, dan sfx tidak memicu
+`duck_music`. Tidak mengubah animasi atau panjang adegan. Kontak awal kaki yang sudah
+menapak tidak berbunyi. Deteksi mocap/hip-drop bersifat heuristik; jongkok dapat terbaca
+sebagai duduk. Belum ada simulasi akustik/sepatu, occlusion audio atau tanah bergerak.
 - **Whisper** (faster-whisper, MIT) berjalan lokal di CPU dan mendeteksi waktu setiap kata
   dalam rekaman. Modelnya (`tiny`, ±75 MB) diunduh sekali saat pertama dipakai. Model yang
   lebih akurat bisa dipilih dengan `CHAR3D_WHISPER_MODEL=base` (±145 MB) atau `small`.

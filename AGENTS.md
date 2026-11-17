@@ -37,7 +37,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Realistic humans (MPFB): `mpfb_assets` (categories + installed packs),
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
-- Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
+- Audio & voice: `add_audio`, `auto_sfx`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
 - Dialog: `dialog`, `stage_dialog`, `script_to_scene` (live dialog coverage, guest seating, outfits + hair/cloth motion)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
@@ -191,6 +191,30 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
 - Expressions and lip sync are shape keys: they export to glTF as morph targets.
 
 ## Voice & audio lip sync
+- `auto_sfx(characters=None, kinds=None, surface="auto", volume=1.0, seed=0,
+  frame_start=None, frame_end=None, clear=False)` adds original procedural Foley after
+  body animation. Defaults to footsteps, sit (including stand) and ambience; add `"cloth"`
+  for movement rustles, or request individual kinds. None characters selects visible rigs.
+  Footsteps sample evaluated heel/ball/toe bones using `lock_feet`'s contact detector;
+  already-planted feet stay silent. Step gain follows measured gait/swing speed. Sit/stand
+  use saved seat-transition events, with a sustained hip-drop fallback for imported motion.
+  Seat sounds include cloth and chair creak/thump; sofas are softer.
+  `surface`: wood, concrete (tile alias), carpet, grass, gravel, sand, or auto (downward
+  ground ray → `char3d_surface`/`c3d_surface`, material/object name → environment fallback).
+  Stored environment presets choose quiet office/studio/classroom/living-room beds, street
+  rumble, park chirps, cafe murmur or beach waves. Ambience loops seamlessly at about
+  -30 dBFS RMS before global fades and the volume multiplier, covering the requested range.
+  WAVs are deterministic 48 kHz mono 16-bit PCM, cached by SHA-256 content under
+  `imports/sfx/generated/`; no external samples, downloads or network. Each step varies
+  pitch, level, grain texture and onset by up to 10 ms; strip frames match touchdowns.
+  Results list `counts`, `touchdowns`, and `strips` with kind, character, frame/end, path,
+  hash, gain and surface. Reruns replace owned strips for selected characters/kinds in
+  range; `clear=True` only removes them (all kinds if omitted). Cropped ambience edits
+  retain the portions outside the range. Voice/music/manual sfx are preserved; `duck_music`
+  ignores generated sfx. Scene range/current frame and character animation are preserved.
+  Imported contacts and hip-drop inference are heuristic: crouches can resemble sitting;
+  initial contacts are intentionally silent. Static walkable geometry only; no acoustic
+  propagation, shoe/material simulation or collision solver. Rerun after editing motion.
 - Background music: set the timeline first, then
   `add_audio("audio/music.wav", kind="music", volume=0.4, loop=True, fade_in=0.5, fade_out=1)`.
   `kind` is voice (default), music or sfx; it is saved on each sound strip. Music loops
@@ -289,7 +313,7 @@ listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
 
 ## Script → scene
 `script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
-subtitles=True, language="auto", seed=0, build=True)` composes the existing tools into
+subtitles=True, language="auto", seed=0, build=True, sound=True)` composes the existing tools into
 a complete scene for 1–4 characters. `build=False` returns a deterministic normalized
 `plan` (characters, beats with `estimated_frames`, warnings) without changing the scene,
 reading audio or transcribing it. Frame estimates use the current scene fps; walking
@@ -339,7 +363,8 @@ script = {"title": "Morning", "environment": "office",
 ```
 Speech can include `audio="audio/line.wav"` (relative to imports/). The MCP process
 uses local Whisper when available; otherwise supplied text follows voiced intervals,
-or audio-only mouth motion is used. Text alone produces mouth motion without sound.
+or audio-only mouth motion is used. Text alone produces mouth motion without a voice;
+`sound=True` can still add procedural effects and ambience.
 Without word times, captions are disabled with a warning; silent cast members keep
 their base expression and listener motion without requiring their own speech.
 Other dict beats: `stand`, `hold` (`prop`, `hand`), `gesture`/`pose` (`name` from the
@@ -366,6 +391,9 @@ The result includes `characters` (id → `{rig, mesh, realistic}`), actual beat 
 creates one wide camera so the scene is still renderable, without dialog cuts.
 Existing objects are retained; character names are made unique. Environment selection
 replaces the managed set as usual. Nothing is saved, exported or rendered automatically.
+`sound=True` runs `auto_sfx` for this cast after animation, adding footsteps, sit/stand
+and ambience; `sound=False` skips generation. Results include `sfx.counts` and strip
+paths/times/hashes. Parse-only mode never writes sound files or changes the timeline.
 
 Recipe: `new_scene()` → `script_to_scene(script, build=False)` →
 `script_to_scene(script, language="id")` →

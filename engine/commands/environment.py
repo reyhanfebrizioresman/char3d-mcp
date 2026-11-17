@@ -502,6 +502,7 @@ def set_environment(preset, subject=None, scale=1.0, variant=0, color_theme=None
     try:
         cleared = clear_environment()
         b = _Builder(preset, origin, unit, colors=colors, image=image, seed=variant)
+        b.root["c3d_environment_preset"] = preset
         _build_set(b, preset, variant)
         bpy.context.view_layer.update()
         _sync_ground()

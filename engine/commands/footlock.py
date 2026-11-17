@@ -116,6 +116,39 @@ def _intervals(mask, fill=2, min_len=3):
     return out
 
 
+def _detect_contacts(pts, body_vel, fps, floor, height_tolerance, ground=None,
+                     speed_tolerance=None):
+    """Shared rolling-sole contact detector for foot IK and procedural Foley.
+
+    Returns inclusive sample-index intervals, sole speeds in meters/frame, and pivots.
+    """
+    n = len(pts)
+    v_min = (0.3 if speed_tolerance is None else float(speed_tolerance)) / fps
+    low = [min(range(3), key=lambda k: pts[i][k].z -
+               (ground.sample(pts[i][k].x, pts[i][k].y)[0] if ground else floor))
+           for i in range(n)]
+    speed, mask = [], []
+    for i in range(n):
+        a, b = max(0, i - 1), min(n - 1, i + 1)
+        k = low[i]
+        d = (pts[b][k] - pts[a][k]) / max(1, b - a)
+        vel = Vector((d.x, d.y, 0.0))
+        speed.append(vel.length)
+        V = body_vel[i]
+        vb = V.length
+        if vb > 1e-4:
+            u = V / vb
+            along = vel.dot(u)
+            side = (vel - u * along).length
+            slow = along < 0.5 * vb + v_min and side < 0.5 * vb + 2 * v_min
+        else:
+            slow = speed[-1] < v_min
+        p = pts[i][k]
+        height = p.z - (ground.sample(p.x, p.y)[0] if ground else floor)
+        mask.append(height < height_tolerance and (speed[-1] < v_min or slow))
+    return _intervals(mask), speed, low
+
+
 def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
               speed_tolerance=None, blend_frames=None, adjust_hips=True, key=True,
               contacts=None, foot_targets=None, terrain=True, ground=None):
@@ -176,7 +209,7 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
             S[s]["pts"].append([fw @ p for p in sole[s]])
 
     # body (hips) horizontal velocity per frame, lightly smoothed
-    v_min = (0.3 if speed_tolerance is None else float(speed_tolerance)) / fps   # m/frame
+    v_min = (0.3 if speed_tolerance is None else float(speed_tolerance)) / fps
     raw = []
     for i in range(n):
         a, b = max(0, i - 1), min(n - 1, i + 1)
@@ -199,18 +232,7 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
             report[s] = {"contacts": contacts[s], "slide_removed_m": 0.0}
             continue
         pts = S[s]["pts"]
-        low = [min(range(3), key=lambda k: pts[i][k].z -
-                   (ground.sample(pts[i][k].x, pts[i][k].y)[0] if ground else floor))
-               for i in range(n)]
-        height = [pts[i][low[i]].z - (ground.sample(pts[i][low[i]].x, pts[i][low[i]].y)[0]
-                                    if ground else floor) for i in range(n)]
-        speed, vel = [], []
-        for i in range(n):
-            a, b = max(0, i - 1), min(n - 1, i + 1)
-            k = low[i]
-            d = (pts[b][k] - pts[a][k]) / max(1, b - a)
-            vel.append(Vector((d.x, d.y, 0.0)))
-            speed.append(vel[-1].length)
+        detected, speed, low = _detect_contacts(pts, body_vel, fps, floor, h_tol, ground, speed_tolerance)
         if contacts is not None:
             ivs = []
             for a, b in contacts.get(s, []):
@@ -218,22 +240,7 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
                 if b >= a:
                     ivs.append((a, b))
         else:
-            # planted = near the floor and not travelling ahead of the body: a swinging
-            # foot moves faster than the hips along the travel direction, a planted (even
-            # badly sliding) foot does not
-            mask = []
-            for i in range(n):
-                V = body_vel[i]
-                vb = V.length
-                if vb > 1e-4:
-                    u = V / vb
-                    along = vel[i].dot(u)
-                    side = (vel[i] - u * along).length
-                    slow = along < 0.5 * vb + v_min and side < 0.5 * vb + 2 * v_min
-                else:
-                    slow = speed[i] < v_min
-                mask.append(height[i] < h_tol and (speed[i] < v_min or slow))
-            ivs = _intervals(mask)
+            ivs = detected
         A, R = S[s]["A"], S[s]["R"]
         c = [Vector((0.0, 0.0, 0.0)) for _ in range(n)]
         lsole = sole[s]
