@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="char3d Studio — dari naskah menjadi adegan 3D, sepenuhnya di studio lokal Anda."
+    />
+    <title>char3d — Studio lokal</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/tokens.css" />
+    <link rel="stylesheet" href="/static/studio.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Langsung ke konten</a>
+    <aside class="sidebar" id="sidebar" aria-label="Navigasi studio">
+      <a class="brand" href="#naskah" aria-label="char3d Studio"
+        ><span class="brand-mark">c<span>3</span></span
+        ><span>char3d<span class="brand-sub">STUDIO LOKAL</span></span></a
+      >
+      <div class="workspace-tag">
+        <span class="dot"></span> Ruang kerja pribadi
+        <span class="key">01</span>
+      </div>
+      <div class="nav-label">RUANG KREASI</div>
+      <nav id="navigation"></nav>
+      <div class="sidebar-bottom">
+        <div class="local-card">
+          <span class="tiny-orbit">◎</span>
+          <div>
+            <strong>Kreasi tetap di sini.</strong>
+            <p>Engine lokal. Kendali penuh.</p>
+          </div>
+        </div>
+        <button
+          class="theme-button"
+          id="theme-toggle"
+          aria-label="Ganti tema"
+        ></button>
+        <div class="version">CHAR3D STUDIO <span>v1.0 · LOCAL</span></div>
+      </div>
+    </aside>
+    <button
+      class="sidebar-scrim"
+      id="sidebar-scrim"
+      aria-label="Tutup navigasi"
+      hidden
+    ></button>
+    <div class="shell">
+      <header class="topbar">
+        <div class="breadcrumb">
+          <button
+            class="icon-button mobile-menu"
+            id="mobile-menu"
+            aria-label="Buka navigasi"
+            aria-expanded="false"
+          ></button
+          ><span>Studio</span><span class="slash">/</span
+          ><strong id="current-page">Naskah ke adegan</strong>
+        </div>
+        <div class="topbar-actions">
+          <span id="engine-state" class="engine-state"
+            ><span class="dot pulse"></span><span>Menghubungkan</span></span
+          ><button class="button subtle small" id="jobs-toggle"></button>
+        </div>
+      </header>
+      <main id="main" tabindex="-1"></main>
+      <footer class="statusbar">
+        <span id="live-status" role="status" aria-live="polite"
+          >Menyiapkan studio lokal…</span
+        ><span class="footer-note"
+          >Dibuat dengan char3d <span class="accent">✦</span></span
+        >
+      </footer>
+    </div>
+    <aside
+      id="jobs-panel"
+      class="jobs-panel"
+      aria-label="Antrean pekerjaan"
+      hidden
+    ></aside>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <dialog id="modal"><div id="modal-content"></div></dialog>
+  </body>
+</html>

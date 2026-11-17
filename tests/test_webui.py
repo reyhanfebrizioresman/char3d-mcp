@@ -1,0 +1,103 @@
+"""Queue concurrency and workspace boundaries, without Blender or network providers."""
+import asyncio
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from webui.jobs import JobQueue  # noqa: E402
+from webui.security import Workspace, redact  # noqa: E402
+
+
+class FakeMCP:
+    def __init__(self):
+        self.calls = []
+        self.active = 0
+        self.peak = 0
+        self.done = False
+
+    async def call_tool(self, name, arguments):
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        self.calls.append(name)
+        await asyncio.sleep(.01)
+        if name == "render_video":
+            result = {"job_id": "video-1", "status": "running"}
+        elif name == "render_status":
+            result = {"job_id": "video-1", "status": "done" if self.done else "running"}
+        else:
+            result = {"name": name}
+        self.active -= 1
+        return [SimpleNamespace(type="text", text=json.dumps(result))]
+
+
+class QueueTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.mcp = FakeMCP()
+        self.queue = JobQueue(self.mcp, Workspace(self.temp.name))
+        self.worker = asyncio.create_task(self.queue.worker())
+
+    async def asyncTearDown(self):
+        tasks = [self.worker, *self.queue.monitors]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.temp.cleanup()
+
+    async def test_fifo_and_one_command_at_a_time(self):
+        jobs = [self.queue.submit(name, {}) for name in ("first", "second", "third")]
+        self.assertEqual(self.queue.public(jobs[-1])["queue_position"], 3)
+        await asyncio.wait_for(self.queue.queue.join(), 2)
+        self.assertEqual(self.mcp.calls, ["first", "second", "third"])
+        self.assertEqual(self.mcp.peak, 1)
+        self.assertTrue(all(job.status == "completed" for job in jobs))
+
+    async def test_background_render_releases_queue_and_tracks_completion(self):
+        video = self.queue.submit("render_video", {})
+        other = self.queue.submit("scene_info", {})
+        await asyncio.wait_for(self.queue.queue.join(), 2)
+        self.assertEqual(video.status, "rendering")
+        self.assertEqual(other.status, "completed")
+        self.mcp.done = True
+        await asyncio.wait_for(asyncio.gather(*self.queue.monitors), 3)
+        self.assertEqual(video.status, "completed")
+        self.assertEqual(video.result["data"]["status"], "done")
+        self.assertEqual(self.mcp.peak, 1)
+
+    async def test_cancel_has_a_terminal_state(self):
+        video = self.queue.submit("render_video", {})
+        await self.queue.queue.join()
+        self.queue.submit("cancel_render", {"job_id": "video-1"})
+        await self.queue.queue.join()
+        self.assertEqual(video.status, "cancelled")
+        self.assertIsNotNone(video.finished)
+
+
+class SecurityTests(unittest.TestCase):
+    def test_traversal_absolute_path_and_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            workspace = Workspace(root)
+            (Path(root) / "escape").symlink_to(outside)
+            for path in ("../escape", "/etc/passwd", "escape/file.wav"):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    workspace.resolve(path)
+            self.assertEqual(workspace.resolve("audio/line.wav", "imports"), Path(root) / "imports/audio/line.wav")
+
+    def test_nested_audio_cannot_escape_and_secrets_are_redacted(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError):
+                Workspace(root).validate_arguments("script_to_scene", {"script": {"beats": [{"audio": "/etc/passwd"}]}})
+        with patch.dict(os.environ, {"FAL_KEY": "private-fal", "HF_TOKEN": "private-hf"}):
+            self.assertEqual(redact({"error": "private-fal private-hf", "HF_TOKEN": "anything"}),
+                             {"error": "[RAHASIA] [RAHASIA]", "HF_TOKEN": "[RAHASIA]"})
+
+
+if __name__ == "__main__":
+    unittest.main()

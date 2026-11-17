@@ -210,6 +210,52 @@ perkiraan; objek tipis, gerakan di antara sampel, rambut sendiri dan animasi yan
 diubah sesudahnya tetap perlu diperiksa dengan render Eevee.
 Lihat [Shots](AGENTS.md#film-cameras-lighting-video).
 
+## Web UI — studio lokal
+
+Gunakan char3d langsung dari browser, tanpa build frontend atau Node saat runtime:
+
+```bash
+./run_webui.sh
+# http://127.0.0.1:8765
+./run_webui.sh --port 8781
+```
+
+`CHAR3D_WEBUI_PORT` mengubah port UI; `CHAR3D_PORT` dan `CHAR3D_WORKSPACE`
+memilih engine/workspace yang sama dengan MCP. Launcher membaca env opsional
+`~/.config/char3d/env` (atau `CHAR3D_ENV_FILE`) dan memakai `.venv`.
+Starlette dan uvicorn sudah tersedia melalui dependensi MCP.
+
+Enam layar: **Naskah ke adegan** (rencana sebelum build), **Adegan** (objek, shot,
+frame, simpan/buka proyek), **Karakter** (katalog MPFB atau manekin), **Render**
+(draft, pilihan resolusi dan estimasi, progres/ETA/batal), **Galeri output**
+(gambar, MP4, GLB interaktif, unduhan), serta **Semua tool** (formulir otomatis
+dari skema MCP dan unggahan audio/gambar/model). Label berbahasa Indonesia,
+tema gelap/terang, dan tata letak mobile tersedia. Hasil pekerjaan muncul otomatis;
+Anda dapat berpindah layar selama engine bekerja. Teks naskah menghasilkan gerak
+mulut; suara ucapan membutuhkan rekaman atau generasi suara yang dikonfirmasi.
+
+UI hanya mendengarkan `127.0.0.1`. Host/origin asing ditolak, file dibatasi ke
+workspace setelah resolusi symlink, dan unggahan maksimal 100 MB masuk ke
+`imports/`. Tool `run_blender_python` tidak tersedia. Generasi AI meminta konfirmasi
+sebelum mengirim prompt/gambar/audio ke fal.ai atau Hugging Face. Tidak ada CDN,
+telemetri, atau permintaan font eksternal. Jangan menaruh UI ini di reverse proxy
+publik; UI dirancang untuk pemakaian lokal oleh pemilik komputer.
+
+Antrean menyimpan 100 hasil terakhir di memori server; restart UI menghapus riwayat,
+sementara file hasil dan proyek tetap ada. Simpan proyek `.blend` sebelum menutup
+studio. Viewer GLB lokal mendukung aset standar; kompresi Draco/Meshopt/KTX2 belum
+didukung. File glTF terpisah memerlukan resource pendamping yang dapat diakses;
+gunakan GLB untuk impor/ekspor satu file.
+
+Verifikasi pada port engine terpisah (jangan gunakan 9876):
+
+```bash
+CHAR3D_PORT=9981 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/webui_smoke.py
+.venv/bin/python tests/test_webui.py
+# Dengan UI berjalan di 8781:
+.venv/bin/python tests/webui_e2e.py
+```
+
 ## Kebutuhan
 - Blender 5.2 LTS. Secara default dicari di `~/.local/opt/blender/blender`,
   bisa juga diatur lewat `CHAR3D_BLENDER`.

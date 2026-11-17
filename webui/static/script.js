@@ -1,0 +1,232 @@
+import { screenRoot } from "./ui.js";
+import { run, state, scene } from "./api.js";
+import {
+  icon,
+  esc,
+  $,
+  $$,
+  head,
+  field,
+  select,
+  input,
+  check,
+  button,
+  json,
+  warnings,
+  errorHTML,
+  action,
+  filmstrip,
+  seconds,
+  toast,
+} from "./ui.js";
+export const TEMPLATE = `JUDUL: Sebuah Awal
+LOKASI: park
+
+ANA (perempuan, 28, rambut bob):
+Halo, Budi! Siap untuk ide baru?
+
+BUDI (laki-laki, 30, rambut pendek):
+Tentu. Mari kita mulai!
+
+[Ana melambai]`;
+// Speech belongs on the same line as its speaker in char3d's text grammar.
+const example = TEMPLATE.replace(/:\n(?=[^\n\[])/g, ": ");
+const locations = [
+  ["", "Ikuti naskah"],
+  ["podcast_studio", "Studio podcast"],
+  ["office", "Kantor"],
+  ["classroom", "Ruang kelas"],
+  ["stage", "Panggung"],
+  ["living_room", "Ruang keluarga"],
+  ["news_desk", "Studio berita"],
+  ["city_street", "Jalan kota"],
+  ["park", "Taman"],
+  ["cafe_terrace", "Teras kafe"],
+  ["beach", "Pantai"],
+];
+export function mount(root) {
+  root = screenRoot(root);
+  root.innerHTML =
+    head(
+      "DARI IMAJINASI KE LAYAR",
+      "Setiap adegan dimulai dari cerita.",
+      "Tulis percakapan. Atur suasana. Hidupkan dunia Anda.",
+      `<span class="chip">${icon("script")} Naskah → Adegan</span>`,
+    ) +
+    `
+ <div class="step-line"><span class="step active"><b>01</b> Tulis cerita <span class="step-arrow">→</span></span><span class="step"><b>02</b> Periksa rencana <span class="step-arrow">→</span></span><span class="step"><b>03</b> Hidupkan adegan</span></div>
+ <div class="script-layout"><div><section class="panel"><div class="editor-bar"><div class="editor-tab">${icon("script")} naskah.char3d <span class="dot"></span></div>${button("example", "Pakai contoh", "", "small subtle")}</div><div class="script-editor"><div class="line-numbers" aria-hidden="true">01<br>02<br>03<br>04<br>05<br>06<br>07<br>08<br>09<br>10</div><textarea id="script-text" class="screenplay" aria-label="Editor naskah" spellcheck="false" wrap="off"></textarea></div><div class="editor-footer"><span>BAHASA NASKAH · INDONESIA / ENGLISH</span><span id="script-count"></span></div><div class="editor-actions"><span class="help">Periksa rencana sebelum<br>membangun adegan Anda.</span><div class="row">${button("plan", "Lihat rencana", "eye", "subtle")}${button("build", "Bangun adegan", "spark", "primary")}</div></div></section>
+ <div class="script-hint">${icon("bulb")}<div><h3>Sutradara ada di tangan Anda.</h3><p>Tulis <code>[Budi duduk di kursi]</code> untuk aksi, atau <code>[Ana melambai]</code> untuk gestur. Deklarasikan karakter dengan <code>NAMA (deskripsi): dialog</code>.</p><details><summary>Panduan format naskah</summary><p><code>JUDUL:</code> memberi nama adegan. <code>LOKASI: park</code> memilih set. <code>CUACA: hujan</code> menambah cuaca. Satu dialog per baris; maksimal 4 karakter. Teks menggerakkan mulut tanpa menghasilkan suara ucapan. Untuk suara asli, gunakan format dict dengan audio melalui tool lanjutan.</p></details></div></div></div>
+ <aside class="panel script-settings"><div class="panel-head"><h2>${icon("settings")} Pengaturan adegan</h2><span class="mono muted">SCENE</span></div><div class="settings-body"><div class="form-grid">
+ ${field(
+   "Bahasa",
+   select(
+     "script-language",
+     [
+       ["id", "Indonesia"],
+       ["en", "English"],
+       ["ms", "Melayu"],
+       ["auto", "Otomatis"],
+     ],
+     "id",
+   ),
+ )}
+ ${field("Lokasi", select("script-location", locations))}
+ ${field(
+   "Pencahayaan",
+   select("script-lighting", [
+     ["studio", "Studio lembut"],
+     ["sunset", "Senja hangat"],
+     ["noon", "Siang hari"],
+     ["overcast", "Mendung"],
+     ["night", "Malam"],
+     ["neon", "Neon"],
+     ["horror", "Dramatis"],
+   ]),
+ )}
+ ${field(
+   "Cuaca",
+   select("script-weather", [
+     ["", "Ikuti naskah"],
+     ["clear", "Cerah"],
+     ["rain", "Hujan"],
+     ["snow", "Salju"],
+     ["fog", "Kabut"],
+     ["wind", "Berangin"],
+   ]),
+ )}
+ ${field(
+   "Kamera",
+   select("script-camera", [
+     ["mixed", "Campuran · sinematik"],
+     ["singles", "Per pembicara"],
+     ["two_shot", "Dua karakter"],
+     ["none", "Atur sendiri"],
+   ]),
+   "span-2",
+ )}
+ ${field("Seed variasi", input("script-seed", 0, "number", 'min="0" step="1"'), "span-2")}
+ </div><div class="divider"></div><div class="row between">${check("script-subtitles", "Subtitle", true)}${check("script-sound", "Efek suara", true)}</div></div><div class="settings-footer">${icon("shield")} Diproses lokal · tanpa generasi AI eksternal</div></aside></div>
+ <section class="result-section"><div class="section-label"><h2>Ruang pratinjau</h2><span id="script-stage">IDE → RENCANA → ADEGAN</span></div><div id="script-result"></div></section>`;
+  const editor = $("#script-text", root);
+  const numbers = $(".line-numbers", root);
+  editor.value = localStorage.getItem("char3d-script") || example;
+  const update = () => {
+    $("#script-count", root).textContent =
+      `${editor.value.length} karakter · tersimpan di browser`;
+    localStorage.setItem("char3d-script", editor.value);
+    numbers.innerHTML = `<div>${Array.from({ length: Math.max(10, editor.value.split("\n").length) }, (_, i) => String(i + 1).padStart(2, "0")).join("<br>")}</div>`;
+  };
+  editor.addEventListener(
+    "scroll",
+    () =>
+      (numbers.firstElementChild.style.transform = `translateY(${-editor.scrollTop}px)`),
+  );
+  const resize = new ResizeObserver(
+    () => (numbers.style.height = editor.clientHeight + "px"),
+  );
+  resize.observe(editor);
+  editor.addEventListener("input", update);
+  update();
+  $("#example", root).onclick = () => {
+    editor.value = example;
+    update();
+  };
+  const target = $("#script-result", root);
+  if (state.latestScript)
+    showResult(target, state.latestScript.data, state.latestScript.built);
+  else
+    target.innerHTML = `<div class="panel result-idle"><div><span class="eyebrow">DUNIA ANDA, SEBENTAR LAGI</span><h3 style="margin-top:9px">Sebuah cerita, banyak kemungkinan.</h3><p>Karakter, alur, dan shot Anda akan muncul di sini setelah rencana siap.</p></div><div class="storyboard" aria-hidden="true"><div class="story-frame"><i class="frame-corner"></i></div><div class="story-frame"><i class="frame-corner"></i></div><div class="story-frame"><i class="frame-corner"></i></div></div></div>`;
+  const args = (build) => {
+    let script = editor.value.trim();
+    if (!script) throw new Error("Tulis naskah terlebih dahulu.");
+    const weather = $("#script-weather", root).value;
+    if (weather) {
+      script = script.replace(/^(CUACA|WEATHER):.*$/gim, "");
+      script = `CUACA: ${weather}\n${script}`;
+    }
+    return {
+      script,
+      build,
+      language: $("#script-language", root).value,
+      environment: $("#script-location", root).value || null,
+      lighting: $("#script-lighting", root).value,
+      camera: $("#script-camera", root).value,
+      seed: Number($("#script-seed", root).value),
+      subtitles: $("#script-subtitles", root).checked,
+      sound: $("#script-sound", root).checked,
+    };
+  };
+  const perform = async (build) => {
+    const parameters = args(build);
+    await scene(true);
+    target.innerHTML =
+      '<div class="panel panel-body"><div class="row">' +
+      icon("clock") +
+      '<strong id="build-status">Menyiapkan ' +
+      (build ? "adegan" : "rencana") +
+      '…</strong></div><p class="help" style="margin:10px 0 15px">Anda tetap dapat menjelajahi studio. Hasil akan muncul saat selesai.</p><div class="skeleton"></div></div>';
+    const result = await run("script_to_scene", parameters, {
+      onUpdate: (job) => {
+        const el = $("#build-status", target);
+        if (el)
+          el.textContent =
+            (job.status === "queued"
+              ? `Dalam antrean · posisi ${job.queue_position}`
+              : build
+                ? "Membangun karakter, gerak, dan kamera"
+                : "Membaca alur naskah") + ` · ${seconds(job.elapsed_s)}`;
+      },
+    });
+    if (build) {
+      state.build = result.data;
+      state.scene = null;
+      state.shots = null;
+    } else state.plan = result.data;
+    showResult(target, result.data, build);
+    if (build) {
+      toast("Adegan siap. Menyiapkan pratinjau…");
+      try {
+        const frames = result.data.frames;
+        const r = await run("render_frames", {
+          frames: [frames?.[0] || 1],
+          camera: "scene",
+          engine_name: "workbench",
+          size: 512,
+        });
+        state.previews = r.images;
+        const el = $("#build-previews", target);
+        if (el) el.innerHTML = filmstrip(r.images, ["Kamera adegan · draft"]);
+      } catch (e) {
+        const el = $("#build-previews", target);
+        if (el) el.innerHTML = errorHTML(e);
+      }
+    }
+  };
+  for (const [id, build] of [
+    ["plan", false],
+    ["build", true],
+  ])
+    $(`#${id}`, root).onclick = () =>
+      action($(`#${id}`, root), () => perform(build), target);
+  return () => resize.disconnect();
+}
+export function refreshResult(target) {
+  if (target && state.latestScript)
+    showResult(target, state.latestScript.data, state.latestScript.built);
+}
+function showResult(target, data, built) {
+  const plan = data.plan || data;
+  const frames = data.frames || plan.estimated_frames || [1, 1];
+  const fps = plan.fps || 24;
+  target.innerHTML = `<div class="panel"><div class="panel-head"><h2>${icon(built ? "check" : "eye")} ${esc(plan.title || plan.name || "Rencana adegan")}</h2><span class="chip ${built ? "green" : "warm"}">${built ? "Adegan terbangun" : "Rencana siap"}</span></div><div class="stats"><div class="stat"><strong>${plan.characters?.length || 0}</strong><span>KARAKTER</span></div><div class="stat"><strong>${plan.beats?.length || 0}</strong><span>BEAT CERITA</span></div><div class="stat"><strong>${Number(data.duration_s || (frames[1] - frames[0] + 1) / fps).toFixed(1)}<small class="muted" style="font-size:11px"> dtk</small></strong><span>${built ? "DURASI" : "ESTIMASI DURASI"} · ${fps} FPS</span></div><div class="stat"><strong>${built ? data.shots?.length || 0 : "—"}</strong><span>SHOT KAMERA</span></div></div><div class="panel-body"><div class="cast-grid">${(plan.characters || []).map((c) => `<div class="cast-card"><div class="avatar">${esc(c.id?.slice(0, 1) || "?")}</div><div><h3>${esc(c.id)}</h3><p>${esc(c.age || 25)} tahun · ${c.gender === 0 ? "Perempuan" : c.gender === 1 ? "Laki-laki" : "Karakter"} · ${esc(c.hair || "tanpa rambut")}</p></div></div>`).join("")}</div><div class="beats">${(
+    plan.beats || []
+  )
+    .map((beat, i) => {
+      const f = beat.frames || beat.estimated_frames || [];
+      return `<div class="beat"><span class="beat-number">${String(i + 1).padStart(2, "0")}</span><div><small>${esc(beat.say || beat.who || "ADEGAN")} ${beat.do ? "· " + esc(beat.do) : ""}</small><p>${esc(beat.text || beat.title || `${beat.do || "Jeda"} ${beat.on || beat.prop || beat.seconds || ""}`)}</p></div><span class="beat-time">${f.join(" – ")} f<br>${((f[1] - f[0] + 1) / fps || 0).toFixed(1)} dtk</span></div>`;
+    })
+    .join(
+      "",
+    )}</div><div class="stack" style="gap:10px;margin-top:16px">${warnings(data)}</div>${built ? `<div class="row" style="margin-top:20px"><a class="button" href="#adegan">${icon("scene")} Periksa adegan</a><a class="button primary" href="#render">${icon("render")} Render draft</a></div><div id="build-previews">${state.previews.length ? filmstrip(state.previews) : '<p class="help" style="margin-top:14px">Menunggu pratinjau kamera…</p>'}</div>` : ""}${json({ frames, timings: data.timings, ...(built ? { shots: data.shots, characters: data.characters } : { plan }) })}</div></div>`;
+}

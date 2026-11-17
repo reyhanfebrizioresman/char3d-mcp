@@ -1051,6 +1051,18 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   supported yet.
 
 ## For agents editing this repo
+### Web UI
+- `./run_webui.sh` serves the local Starlette studio at 127.0.0.1:8765;
+  `--port` / `CHAR3D_WEBUI_PORT` overrides it. Source lives in `webui/`.
+- The UI discovers schemas with `mcp.list_tools()` and calls `mcp.call_tool()`;
+  reuse this adapter, never duplicate engine behavior or import `bpy` here.
+- Frontend is buildless vanilla ES modules; three.js r160 and its MIT license are
+  vendored. Runtime assets must remain offline. External AI generation needs consent.
+- Run `CHAR3D_PORT=9981 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python
+  tests/webui_smoke.py` (starts UI on 8781), `tests/test_webui.py`, and the existing
+  `tests/test_phonemes.py`. `tests/webui_e2e.py` exercises a running UI on 8781.
+  Keep 9876 untouched; shut down the isolated test engine when finished.
+
 - `engine/` runs inside Blender's bundled Python (has `bpy`); never import `bpy` in
   `mcp_server/`. Add an engine command with `@command("name")` in
   `engine/commands/*.py`, then a matching tool in `mcp_server/server.py`.
