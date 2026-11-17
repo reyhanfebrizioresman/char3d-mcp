@@ -7,6 +7,7 @@ import bpy
 from mathutils import Quaternion, Vector
 
 from . import command, anim
+from .gaze import head_frame
 from .footlock import _intervals, _legs, _smoothstep, _sole_points, foot_lock
 from .util import obj_or_raise
 from .terrain import GroundQuery, smooth_heights, sole_footprint
@@ -64,6 +65,11 @@ def _start(rig, frame, ground=None):
     pos.z = 0.0
     feet = {s: (mw @ rig.pose.bones[smap[f"foot.{s}"]].matrix).copy() for s in "LR"}
     return start, pos, _yaw(forward), feet
+
+
+def _anatomical_yaw(rig):
+    """Actual body heading, without mocap's cardinal-axis rest-frame snapping."""
+    return _yaw(head_frame(rig, "hips")[1] @ Vector((0, -1, 0)))
 
 
 def _target_yaw(target, origin, frame, fallback):
@@ -358,7 +364,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
 
 
 def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=None,
-                 phases=None, runs=None):
+                 phases=None, runs=None, _world_route=False):
     began = time.perf_counter()
     sc = bpy.context.scene
     fps = sc.render.fps / sc.render.fps_base
@@ -422,7 +428,7 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
     fade = anim._crossfade(rig, prev, start, end)
     if fade:
         info["crossfade"] = fade
-    if fade or ground is not None:
+    if fade or ground is not None or _world_route:
         # The route already starts at the preceding pose's heading and limits yaw
         # over time. Blending that moving heading from a frozen pose delays the turn,
         # then speeds it up to catch the route. Keep the planned world yaw while
@@ -433,12 +439,13 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
         forward = (_terrain_forward(rig, smap) if ground else
                    anim._facing(rig, smap).inverted() @ Vector((0, -1, 0)))
         previous = {}
-        fix_frames = (start, end) if ground is not None else fade["frames"]
+        fix_frames = (start, end) if ground is not None or _world_route else fade["frames"]
         for f in range(fix_frames[0], fix_frames[1] + 1):
             sc.frame_set(f)
             hp = rig.pose.bones[hips_name]
             q = (mw @ hp.matrix).to_quaternion()
-            heading = _yaw(q @ rest.inverted() @ forward)
+            heading = (_anatomical_yaw(rig) if _world_route else
+                       _yaw(q @ rest.inverted() @ forward))
             correction = Quaternion((0, 0, 1), _angle(heading, samples[f - start][1]))
             loc = None
             if ground is not None:
@@ -447,9 +454,14 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                 # and heading on the final rig, independent of proxy rest orientation.
                 pos = samples[f-start][0]
                 loc = Vector((pos.x, pos.y, root_heights[f-start]))
+            elif _world_route:
+                # Paired approaches need absolute world routes even when a proxy's
+                # rest orientation predates an object transform. Keep walk bob Z.
+                pos = samples[f-start][0]
+                loc = Vector((pos.x, pos.y, (mw @ hp.matrix).translation.z))
             anim._set_world_rot(rig, hp, correction @ q, loc)
             anim._key_rot(hp, f, previous)
-            if ground is not None:
+            if ground is not None or _world_route:
                 hp.keyframe_insert("location", frame=f, group=hips_name)
         bpy.context.view_layer.update()
     targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run",
@@ -515,7 +527,7 @@ def _fk_dependencies(rig):
 
 
 def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
-          phases=None, runs=None):
+          phases=None, runs=None, _world_route=False):
     """Generated FK rigs need bone evaluation, not repeated skin deformation."""
     began = time.perf_counter()
     hidden, muted, drivers = [], [], []
@@ -545,7 +557,7 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
                 obj.hide_viewport = True
     try:
         result = _bake_motion(rig, start, samples, active, initial_feet, clip, speed,
-                              ground, phases, runs)
+                              ground, phases, runs, _world_route)
     finally:
         for fc in drivers:
             fc.mute = False
@@ -568,7 +580,7 @@ def _speed(value):
 
 @command("walk_path")
 def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_end=None,
-              avoid="auto", ignore=None):
+              avoid="auto", ignore=None, _world_route=False):
     """Walk/run through XY targets; static obstacle detours by default.
 
     avoid=False preserves the old route. auto/True plan only on intersection;
@@ -588,6 +600,8 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
         query = GroundQuery()
         ground = query if query.objects else None
         start, pos, yaw, feet = _start(rig, start_frame, ground)
+        if _world_route:
+            yaw = _anatomical_yaw(rig)
         route = [pos]
         for p in destinations:
             if (p - route[-1]).length > 1e-5:
@@ -627,7 +641,7 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
                        "clearance_m": None, "warnings": []})
         navigation["planning_seconds"] = round(planning_seconds, 6)
         result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
-                       phases=phases, runs=runs)
+                       phases=phases, runs=runs, _world_route=_world_route)
         return {**result, "clip": clip, "distance_m": round(distance, 4),
                 "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2],
                 **navigation}
@@ -636,7 +650,7 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
 
 
 @command("turn_to")
-def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None):
+def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _world_route=False):
     """Turn in place; reject a blocked body envelope unless avoid=False or ignored."""
     ignored = validate_options(avoid, ignore)
     rig = anim._target(armature)
@@ -645,6 +659,8 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None):
         query = GroundQuery()
         ground = query if query.objects else None
         start, pos, yaw, feet = _start(rig, start_frame, ground)
+        if _world_route:
+            yaw = _anatomical_yaw(rig)
         planner = None
         planning_seconds = 0.0
         if avoid is not False:
@@ -663,7 +679,8 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None):
                       {"avoided": False, "detours": 0, "path_points": [list(pos)[:2]],
                        "clearance_m": None, "warnings": []})
         navigation["planning_seconds"] = round(planning_seconds, 6)
-        result = _bake(rig, start, samples, active, feet, "walk", 1.0, ground=ground)
+        result = _bake(rig, start, samples, active, feet, "walk", 1.0, ground=ground,
+                       _world_route=_world_route)
         return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3),
                 **navigation}
     finally:

@@ -43,7 +43,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
-  four, ok)
+  four, ok, grip)
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
   `retarget_animation`, `lock_feet`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
@@ -52,6 +52,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `render_options`, `render_video`, `render_status`, `cancel_render`
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
   `hold_prop`, `release_prop`
+- Interactions: `interact` (handshake, hug, high_five, fist_bump, handover, pat_shoulder)
 - Walkable ground: `add_terrain`, `clear_terrain`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
@@ -132,9 +133,49 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 `set_hand_pose(character, shape, side)` poses the fingers on any rig with finger bones
 (MPFB game_engine/mixamo/rigify, Mixamo, Rigify human); curl axes are derived from the
 hand geometry, so shapes look the same on every skeleton. Shapes: relaxed, open, palm,
-beat, point, fist, thumbs_up, peace, three, four, ok. Pair with arm poses, e.g. `apply_pose(rig,
+beat, point, fist, thumbs_up, peace, three, four, ok, grip. Pair with arm poses, e.g. `apply_pose(rig,
 "point_forward")` + `set_hand_pose(rig, "point", side="right")`; `keyframe=True, frame=N`
 to animate. Mannequins from `create_human` have no fingers.
+
+## Interactions
+`interact(a, b, kind, start_frame=None, prop=None, approach=True, hold_seconds=None,
+side="right")` bakes two-character contact on basic/Rigify mannequins and MPFB
+game_engine/Rigify humans, including mixed heights. None appends after **both** rig
+actions. Earlier body keys are retained. Contact uses world-space two-bone arm IK
+and rig-aware fingers (mannequins skip fingers), with blended reach/retraction and
+heads looking toward the partner.
+- Kinds: `handshake` (three pumps, grip), `high_five` (raised open palms),
+  `fist_bump` (knuckles), `hug` (both arms around upper back), `pat_shoulder`
+  (first character's selected hand on the nearer shoulder), `handover`.
+- Approach walks the second character to a height-scaled comfortable distance and
+  turns both partners, using static obstacle avoidance. Only the partner is excluded
+  from route obstacles to permit contact. Shoulder pats stage side by side. The first
+  partner waits as needed. `moved` lists walks/turns and frames. `approach=False`
+  keeps placement and rejects unreachable contact before keying.
+- For handover, first `hold_prop(a, cup, hand="right")`, then
+  `interact(a, b, "handover", prop=cup)`. At contact the stepped live attachment
+  switches to a bone-parented palm helper on b, preserving the prop world transform.
+  Historical attachments remain evaluable on earlier frames and export as sampled
+  glTF animation. Released props can be held again at/after release. One prop per hand.
+- `frames` contains `approach` (range or None), `reach`, `contact`, `release`, `end`;
+  `next_start_frame` chains the next performance. `hold_seconds` overrides the hold
+  (0..30 s). Most reaches/retractions blend over 0.45 s; handovers use deliberate
+  2 s reaches/retractions to keep prop travel continuous. `contact_error_m` measures
+  palm/knuckle errors against a shared point;
+  hugs, pats and handovers measure against their back/shoulder/grip sites (handover
+  grips are separated for the prop). `contact_samples` gives actual/target positions.
+  Hug `penetration_m` samples chest ellipsoids and arm capsules. These proxies do not
+  guarantee mesh or clothing collision clearance.
+- Script directions: `[Sari dan Dimas bersalaman]`, `[Dimas berjabat tangan dengan Sari]`,
+  `[mereka berpelukan]`, `[Sari tos dengan Dimas]`, `[Sari memberikan buku kepada Dimas]`,
+  and English shake hands/hug/high five/fist bump/hands the book to. `they`/`mereka`
+  requires exactly two declared characters. Dict: `{"do":"interact", "who":"Sari",
+  "with":"Dimas", "kind":"handshake"}`; optional prop/approach/hold_seconds/side.
+  Script handovers create/pick up known procedural props as needed. Contacts survive
+  the later speaking gesture pass.
+- Inspect Eevee front three-quarter and side views at contact and during reach.
+  Extreme proportions, tight clothing and nearby furniture may intersect; there is
+  no dynamic collision, cloth or full-body contact solver.
 
 ## Facial animation
 Works on `create_realistic_human` characters (face=True) and any mesh with ARKit
@@ -648,8 +689,8 @@ highest surface and index 0. Set roots enumerate their seat positions too.
   held props; glTF receives transform animation, not a constraint or physics simulation.
 - Limits: static level seats and one flat floor; mesh fallback uses the highest vertices
   (not arbitrary concave seats). No obstacle, clothing, armrest/desk collision or automatic
-  seat occupancy solving. Very high/low seats can exceed limb reach. Each prop supports
-  one pickup/release interval; use separate props for additional intervals. Use one held
+  seat occupancy solving. Very high/low seats can exceed limb reach. Prop pickup/release
+  intervals must be sequential; a new hold can start at/after the previous release. Use one held
   prop per hand at a time. Upright holds own wrist roll/flex; extreme arm poses can require
   a pronounced wrist bend or still intersect the body/prop. There is no arm/prop collision
   solver or automatic elbow lift; choose a suitable arm pose for drinking/raised microphones.
