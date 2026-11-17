@@ -33,7 +33,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Scene: `engine_status`, `scene_info`, `new_scene`, `add_primitive`,
   `transform_object`, `delete_objects`
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
-- Look: `render_preview`, `render_views` (`engine_name="eevee"` for textures)
+- Look: `render_style`, `render_preview`, `render_views` (`engine_name="eevee"` for textures)
 - Realistic humans (MPFB): `mpfb_assets` (categories + installed packs),
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
@@ -786,6 +786,66 @@ MPFB character (~10× preview, ≈ 4.5 h for a 15 s clip). Always do a draft fir
   half the scene size and final the full scene size. `width`/`height` for custom sizes.
 - Vertical video: `vertical=True` (e.g. 1080p → 1080×1920). Output is H.264 MP4, 24 fps
   unless `set_timeline(fps=...)`.
+
+## Render styles
+`render_style(style="none", strength=1.0, outline=None, grade=None, letterbox=None)`
+stores JSON in `scene["char3d_render_style"]`; it survives save/open and background
+video snapshots. It never edits original materials, modifiers, world or view settings.
+Lit `render_preview`, `render_views`, `render_frames(camera="scene")` and preview/final/
+cycles videos apply temporary overrides, restored in `finally` even on render failure.
+`none` removes the config and uses the original render path with identical pixels;
+`strength=0` bypasses everything. Draft/workbench retains its existing appearance.
+
+- `anime` / `toon` (alias): three lighting bands multiplied by each Principled
+  material's existing base color/texture; alpha follows its original texture graph.
+  Nested shader groups (including MPFB skin) are copied recursively for the render.
+  Opaque meshes receive thin, reversed, expanded silhouette shells with backface
+  culling. Alpha hair cards, eyes, brows, lashes and mouth inserts skip shells to
+  preserve readable features. Hair keeps its alpha and receives the same light ramp.
+  `outline=False` skips shells. A same-camera Eevee trial of Freestyle on/off
+  produced identical pixels (24.7 vs 32.2 s at 512 px), so it did not provide
+  outlines here. Hulls work in Eevee without line art's Grease Pencil setup.
+  They add silhouette geometry without tracing
+  every texture edge; this favors predictable cost and readable faces. Thin/open
+  meshes can show seams; outline width is 1.2 mm before object scaling at strength 1.
+  Cycles uses Toon BSDF instead of Eevee's Shader-to-RGB ramp.
+- `clay`: uniform warm, rough clay with the scene's soft lighting/shadows; alpha masks
+  remain active. Custom shaders without a Principled node keep their shading.
+- `film`: AgX with contrast, subtle fog glow, vignette and animated deterministic grain.
+  `grade={"teal_orange": True}` enables a subtle split tone; `letterbox=True` adds
+  2.39:1 bars (or pass an aspect 1..4). Bars and grading precede titles/captions.
+- `noir`: high contrast monochrome, stronger grain and vignette.
+- `vintage`: warm faded color, softer contrast, raised blacks, grain and light vignette.
+
+`grade` overrides exposure (-8..8 stops), contrast/saturation (0..3, neutral 1),
+temperature/tint (-1..1, neutral 0). `strength` is 0..1. Styles replace the previous
+config; omitted options use the new preset's defaults. Grade affects the picture,
+while subtitles/titles retain their original colors and layout. User compositor groups
+are preserved upstream; style configuration does not export to glTF.
+
+`render_options` reports `render_style` and `style_cost_factor`; the same factor
+is included in estimates and removed from machine-speed learning to avoid counting
+style cost twice. Measurements and inspected close/medium views can be reproduced
+with `CHAR3D_PORT=9980 .venv/bin/python tests/render_style_visuals.py`; results go to
+`output/render_style_benchmark.json` and `output/render_style_contact_sheet.png`.
+
+Measured CPU Eevee at 960×540 / 16 samples on the same MPFB podcast close-up;
+mean of two warmed stills, including override setup/restoration and PNG output:
+
+| style | seconds/frame | vs none | estimate factor |
+|---|---:|---:|---:|
+| none | 34.8 | 1.00× | 1.00× |
+| anime, outlines on | 41.7 | 1.20× | 1.20× |
+| clay | 29.3 | 0.84× | 1.00× |
+| film | 32.2 | 0.93× | 1.10× |
+| noir | 33.2 | 0.96× | 1.05× |
+| vintage | 32.9 | 0.94× | 1.05× |
+
+These measurements used llvmpipe with 8 rendering threads on a shared CPU. Cold
+shader compilation is excluded; relative costs vary with scene/shader complexity.
+Estimates conservatively retain overhead for the looks that happened to be cheaper
+in this scene. Anime without outlines uses 1.05×; explicitly enabling outlines on
+another look adds 0.20 to its factor. Draft always uses 1.00×.
 
 ## AI generation (external services)
 - **Only use `ai_*` generation tools when the user explicitly asks for AI generation** —

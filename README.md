@@ -20,6 +20,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
 | `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; Rigify hanya tulang deform; `max_influences=4` membatasi bobot untuk game tanpa mengubah adegan (hasil: `vertices_limited`) |
 | `save_project`, `open_project` | File .blend |
+| `render_style` | Preset anime/toon, clay, film, noir, vintage; non-destruktif, tersimpan di .blend; `none` mengembalikan tampilan asli |
 | `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI; `engine_name="eevee"` untuk tekstur |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
 | `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, rambut, baju, sepatu, janggut, aksesori; kategori pakaian + preset `outfit` dengan `seed`; rig `game_engine`, `mixamo`, `rigify` |
@@ -349,6 +350,33 @@ Uji alur AI tanpa key dan tanpa internet (memakai server fal.ai tiruan lokal):
 - Komputer tanpa GPU: render Workbench ±1 detik, Eevee ±10 detik per gambar
   (512 px). Cycles lambat, jadi gunakan hanya untuk hasil final.
 - Konvensi: satuan meter, sumbu Z ke atas, karakter menghadap -Y.
+
+### Render styles
+
+`render_style("anime")` memberi cel shading dengan warna/tekstur asli dan outline
+siluet tipis. Kulit, mata dan alpha rambut tetap terbaca. `outline=False` mematikan
+outline. `clay` memakai clay matte seragam; `film` memakai AgX, glow ringan, vignette
+dan grain; `noir` hitam putih kontras; `vintage` hangat dan pudar.
+
+```python
+render_style("film", strength=0.8, grade={"teal_orange": True, "exposure": 0.2}, letterbox=True)
+render_frames([1], camera="scene", engine_name="eevee", size=512)
+render_style("none")
+```
+
+`grade` mendukung exposure (-8..8 stop), contrast/saturation (0..3; netral 1),
+temperature/tint (-1..1; netral 0). `letterbox=True` = 2.39:1, atau rasio 1..4.
+Konfigurasi bertahan lewat save/open dan render video terpisah. Material, modifier,
+world dan pengaturan view asli dipulihkan sesudah render, termasuk saat gagal.
+Draft/workbench tetap seperti sebelumnya; judul/subtitle digambar sesudah grade.
+`render_options` menyertakan faktor biaya style dalam estimasi. Outline hanya untuk
+mesh opaque; alpha hair cards dan fitur mata dilewati. Shader kustom tanpa Principled
+tetap memakai shading aslinya. Cycles memakai Toon BSDF, sehingga ramp berbeda dari Eevee.
+
+
+Uji CPU Eevee 540p dengan karakter MPFB: anime + outline ≈ 1.20× waktu normal;
+clay/film/noir/vintage 0.84–0.96× pada adegan uji. Estimasi tetap konservatif dan
+belajar dari kecepatan mesin. Detail angka dan batas outline ada di AGENTS.md.
 
 ## Lisensi
 MIT — lihat [LICENSE](LICENSE). Aset MPFB/MakeHuman berlisensi CC0; gambar, audio, dan

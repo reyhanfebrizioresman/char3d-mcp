@@ -12,6 +12,7 @@ from mathutils import Vector
 from .. import context
 from . import command
 from .util import RENDERABLE, obj_or_raise, scene_bounds
+from .render_style import applied_style
 
 VIEWS = {
     "front": (0, -1, 0),
@@ -134,7 +135,8 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
         sc.render.filepath = out
         try:
             _setup_engine(sc, engine)
-            bpy.ops.render.render(write_still=True)
+            with applied_style(sc):
+                bpy.ops.render.render(write_still=True)
         except RuntimeError:
             # Workbench/Eevee need an OpenGL context; fall back to CPU Cycles.
             if engine == "cycles":
@@ -143,7 +145,8 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
             if not lights:
                 lights = _temp_lights(sc, center, radius)
             _setup_engine(sc, "cycles")
-            bpy.ops.render.render(write_still=True)
+            with applied_style(sc):
+                bpy.ops.render.render(write_still=True)
     finally:
         for m, c in muted:
             m.camera = c
@@ -191,7 +194,8 @@ def _render_scene_camera(sc, width, height, engine, filename, view):
         sc.render.image_settings.file_format = "PNG"
         sc.render.filepath = out
         _setup_engine(sc, engine)
-        bpy.ops.render.render(write_still=True)
+        with applied_style(sc):
+            bpy.ops.render.render(write_still=True)
     finally:
         sc.render.engine, sc.camera = saved["engine"], saved["camera"]
         sc.render.resolution_x, sc.render.resolution_y = saved["rx"], saved["ry"]

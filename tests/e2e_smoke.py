@@ -2437,6 +2437,223 @@ DIMAS: Bagus sekali! Saya tidak sabar mendengarnya.
           "guest chair/explicit seat/live singles/two-shot OK")
 
 
+async def _render_style_checks(call):
+    """Real lit frames, lossless reset, persisted look and background styled MP4s."""
+    import av
+    import numpy as np
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def python(code):
+        return (await data('run_blender_python', code=textwrap.dedent(code)))['result']
+
+    def pixels(path):
+        with av.open(path) as image:
+            return next(image.decode(video=0)).to_ndarray(format='rgb24')
+
+    # Snapshot all scalar/array RNA settings, node sockets/links, slots and modifiers.
+    snapshot = '''
+        def props(item):
+            out = {}
+            for p in item.bl_rna.properties:
+                if p.identifier == 'rna_type' or p.is_readonly:
+                    continue
+                v = getattr(item, p.identifier)
+                if p.type in {'BOOLEAN','INT','FLOAT','STRING','ENUM'}:
+                    out[p.identifier] = list(v) if getattr(p,'is_array',False) else sorted(v) if isinstance(v,set) else v
+                elif p.type == 'POINTER':
+                    out[p.identifier] = getattr(v, 'name', None)
+            return out
+        def nodes(tree):
+            return None if tree is None else {
+                'nodes': [(n.name,props(n),[(s.name,list(s.default_value) if hasattr(s.default_value,'__len__') and not isinstance(s.default_value,str) else s.default_value)
+                    for s in n.inputs if hasattr(s,'default_value')]) for n in tree.nodes],
+                'links': [(l.from_node.name,l.from_socket.identifier,l.to_node.name,l.to_socket.identifier) for l in tree.links]}
+        sc=bpy.context.scene
+        result=dict(materials=[(m.name,props(m),nodes(m.node_tree)) for m in bpy.data.materials],
+                    worlds=[(w.name,props(w),nodes(w.node_tree)) for w in bpy.data.worlds],
+                    objects=[(o.name,[(s.link,s.material.name if s.material else None) for s in o.material_slots],
+                              [(m.name,props(m)) for m in o.modifiers]) for o in sc.objects],
+                    view=props(sc.view_settings),render=props(sc.render),eevee=props(sc.eevee),
+                    groups=sorted(g.name for g in bpy.data.node_groups),
+                    meshes=sorted(m.name for m in bpy.data.meshes),images=sorted(i.name for i in bpy.data.images),
+                    compositor=sc.compositing_node_group.name if sc.compositing_node_group else None)
+    '''
+    await call('new_scene', frame_end=4)
+    await call('add_primitive',kind='monkey',name='StyleTest',location=[0,0,1])
+    await call('set_material',objects=['StyleTest'],color=[.65,.2,.08])
+    await call('set_lighting',preset='studio',subject=['StyleTest'])
+    await call('camera_shot',subject=['StyleTest'],shot='full',start_frame=1,end_frame=4)
+    await python('bpy.context.scene.render.resolution_x=320\nbpy.context.scene.render.resolution_y=180')
+    async def frame(prefix, engine='eevee'):
+        # render_frames returns one text record per still through MCP.
+        return json.loads(text_of(await call('render_frames',frames=[1],camera='scene',
+                         engine_name=engine,size=256))[0])['path']
+    # Background movie checks precede in-process Eevee to limit software GL memory.
+    for style in ('anime','film'):
+        await call('render_style',style=style,letterbox=(style=='film'),
+                   grade={'teal_orange':True,'exposure':-.25,'contrast':1.05,
+                          'saturation':.9,'temperature':.1,'tint':-.05} if style=='film' else None)
+        if style=='film':
+            await call('add_title',text='STYLE',style='corner',color=[1,0,0],
+                       start_s=0,duration_s=1,animation='none')
+            await call('add_subtitles',style='classic',color=[0,1,0],
+                       lines=[{'text':'LOOK','start':0,'end':1}])
+        saved = await data('save_project',path='style_'+style+'.blend')
+        await call('render_style',style='none')
+        await call('open_project',path=saved['path'])
+        opts = await data('render_options',quality='preview')
+        assert opts['render_style']['style'] == style
+        video = await data('render_video',path='style_'+style+'.mp4',quality='preview',
+                           width=320,height=180,frame_start=1,frame_end=4,wait=True)
+        assert video['status']=='done' and video['bytes']>1000, video
+        with av.open(video['path']) as movie:
+            decoded=[f.to_ndarray(format='rgb24') for f in movie.decode(video=0)]
+        assert len(decoded)==4 and decoded[0].shape==(90,160,3), video
+        assert decoded[0].std()>5, video
+        if style=='film':
+            assert decoded[0][:8,-40:].mean()<3 and decoded[0][15:75].mean()>5
+            # Graphics keep their original colors above the grade and bars.
+            top=decoded[0][:35].astype(float)
+            bottom=decoded[0][-25:].astype(float)
+            assert ((top[:,:,0]>150)&(top[:,:,0]>top[:,:,1]*1.5)).sum()>3
+            assert ((bottom[:,:,1]>100)&(bottom[:,:,1]>bottom[:,:,0]*1.5)).sum()>3
+            await call('remove_graphics',all=True)
+            await call('remove_subtitles')
+    await call('render_style',style='none')
+    baseline = pixels(await frame('style_baseline'))
+    before = await python(snapshot)
+    draft = pixels(await frame('style_draft_baseline', 'workbench'))
+    for style in ('anime','clay','film','noir','vintage'):
+        cfg = await data('render_style',style=style)
+        assert cfg['style'] == style and cfg['strength'] == 1
+        opts = await data('render_options',quality='preview')
+        assert 1 <= opts['style_cost_factor'] <= (2 if style=='anime' else 1.5), opts
+        styled = pixels(await frame('style_'+style))
+        assert np.abs(styled.astype(float)-baseline).mean() > 0.5, style
+        if style == 'noir':
+            assert np.abs(styled[:,:,0].astype(float)-styled[:,:,2]).mean() < 1.5
+        await call('render_style',style='none')
+        assert await python(snapshot) == before, style
+    await call('render_style',style='toon')
+    assert np.array_equal(pixels(await frame('style_draft_anime','workbench')),draft)
+    await call('render_style',style='none')
+    reset = pixels(await frame('style_reset'))
+    assert np.array_equal(baseline,reset), np.abs(baseline.astype(float)-reset).max()
+    assert await python(snapshot) == before
+    await call('render_style',style='anime',strength=0)
+    assert np.array_equal(baseline,pixels(await frame('style_zero')))
+    await call('render_style',style='none')
+    # Invalid configs are atomic, including finite-number and unknown-key validation.
+    await python('''
+        from engine.commands.render_style import render_style, CONFIG_PROP
+        for kwargs in [dict(style='bad'),dict(strength=float('nan')),dict(style='film',grade={'oops':1}),
+                       dict(style='anime',outline=2),dict(style='film',letterbox=-1)]:
+            try: render_style(**kwargs)
+            except ValueError: pass
+            else: raise AssertionError(kwargs)
+        assert CONFIG_PROP not in bpy.context.scene
+        result=True
+    ''')
+    # A render/setup exception must restore exactly the same datablocks/settings.
+    await call('render_style',style='anime')
+    await python('''
+        from unittest.mock import patch
+        from engine.commands.render_style import applied_style
+        try:
+            with patch('engine.commands.render_style._compositor',side_effect=RuntimeError('test')):
+                with applied_style(bpy.context.scene): pass
+        except RuntimeError: pass
+        result=True
+    ''')
+    assert await python(snapshot) == before
+    # Strength, outline opt-out, alpha connections, user compositor and inactive
+    # OBJECT overrides all survive the temporary override context.
+    await python('''
+        from engine.commands.render_style import applied_style, render_style
+        sc=bpy.context.scene
+        obj=bpy.data.objects['StyleTest']
+        slot=obj.material_slots[0]
+        original=slot.material
+        hidden=bpy.data.materials.new('Inactive override')
+        slot.link='OBJECT'
+        slot.material=hidden
+        slot.link='DATA'
+        group=bpy.data.node_groups.new('User compositor','CompositorNodeTree')
+        group.interface.new_socket(name='Image',in_out='OUTPUT',socket_type='NodeSocketColor')
+        source=group.nodes.new('CompositorNodeRLayers')
+        output=group.nodes.new('NodeGroupOutput')
+        group.links.new(source.outputs['Image'],output.inputs['Image'])
+        sc.compositing_node_group=group
+        for active in (True,False):
+            sc.render.use_compositing=active
+            render_style('anime',strength=.5,outline=False,grade={'saturation':.4})
+            with applied_style(sc):
+                assert slot.material != original
+                assert not any(o.name.startswith('__c3d_style_outline') for o in sc.objects)
+                assert sc.compositing_node_group != group
+            assert sc.compositing_node_group == group and sc.render.use_compositing == active
+            assert slot.material == original
+            slot.link='OBJECT'
+            assert slot.material == hidden
+            slot.link='DATA'
+        slot.link='OBJECT'
+        slot.material=None
+        slot.link='DATA'
+        sc.compositing_node_group=None
+        sc.render.use_compositing=True
+        bpy.data.node_groups.remove(group)
+        bpy.data.materials.remove(hidden)
+        render_style('none')
+        result=True
+    ''')
+    assert await python(snapshot) == before
+    await call('render_style',style='none')
+    await python('''
+        from engine.commands.render_style import applied_style, render_style
+        sc=bpy.context.scene
+        obj=bpy.data.objects['StyleTest']
+        slot=obj.material_slots[0]
+        group=bpy.data.node_groups.new('Nested skin fixture','ShaderNodeTree')
+        group.interface.new_socket(name='Color',in_out='INPUT',socket_type='NodeSocketColor')
+        group.interface.new_socket(name='Shader',in_out='OUTPUT',socket_type='NodeSocketShader')
+        gi=group.nodes.new('NodeGroupInput')
+        go=group.nodes.new('NodeGroupOutput')
+        bsdf=group.nodes.new('ShaderNodeBsdfPrincipled')
+        group.links.new(gi.outputs['Color'],bsdf.inputs['Base Color'])
+        group.links.new(bsdf.outputs['BSDF'],go.inputs['Shader'])
+        mat=bpy.data.materials.new('Nested skin fixture')
+        mat.use_nodes=True
+        mat.node_tree.nodes.clear()
+        out=mat.node_tree.nodes.new('ShaderNodeOutputMaterial')
+        node=mat.node_tree.nodes.new('ShaderNodeGroup')
+        node.node_tree=group
+        node.inputs['Color'].default_value=(.65,.3,.18,1)
+        mat.node_tree.links.new(node.outputs[0],out.inputs['Surface'])
+        slot.link='OBJECT'
+        slot.material=mat
+        groups=set(bpy.data.node_groups)
+        for style in ['anime','clay']:
+            render_style(style,outline=False)
+            with applied_style(sc):
+                copy=slot.material
+                nested=next(n.node_tree for n in copy.node_tree.nodes if n.type=='GROUP')
+                assert nested!=group and len(nested.nodes)>len(group.nodes)
+                assert any(n.type=='SHADERTORGB' for n in nested.nodes) == (style=='anime')
+                assert len(group.nodes)==3 and len(group.links)==2
+            assert slot.material==mat and set(bpy.data.node_groups)==groups
+        render_style('none')
+        slot.material=None
+        slot.link='DATA'
+        bpy.data.materials.remove(mat)
+        bpy.data.node_groups.remove(group)
+        result=True
+    ''')
+    assert await python(snapshot) == before
+    print('render styles: 5 lit looks | exact reset pixels/settings | draft unchanged | save/open | anime+film 4-frame MP4 OK')
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -2457,6 +2674,7 @@ async def main():
 
         print("status:", text_of(await call("engine_status")))
         assert "script_to_scene" in tools
+        await _render_style_checks(call)
         await _script_scene_checks(call)
         await _occlusion_checks(call)
         await _dialog_gaze_checks(call)

@@ -640,6 +640,26 @@ Resolution = Literal["480p", "540p", "720p", "1080p", "1440p", "4k"]
 
 
 @mcp.tool()
+async def render_style(style: Literal['none', 'anime', 'toon', 'clay', 'film', 'noir', 'vintage'] = 'none',
+                       strength: float = 1.0, outline: bool | None = None,
+                       grade: dict | None = None, letterbox: bool | float | None = None) -> dict:
+    """Set a non-destructive scene look, saved in .blend and used by lit stills/videos.
+
+    none restores today's output; draft/workbench always keeps its existing look.
+    anime/toon uses texture-preserving cel shading and opaque silhouette outlines;
+    clay is uniform matte clay; film uses AgX, glow, vignette and grain; noir is high
+    contrast monochrome; vintage is warm and faded. Alpha hair/eyes stay readable.
+    strength: 0..1. outline: anime default True, False disables silhouettes.
+    grade overrides: exposure (-8..8 stops), contrast/saturation (0..3, neutral 1),
+    temperature/tint (-1..1), teal_orange (bool). letterbox=True adds 2.39:1 bars,
+    or provide an aspect 1..4. Captions/titles stay above the grade and bars.
+    render_options includes the style's render cost. Custom non-Principled shaders
+    keep their shading; Cycles uses Toon BSDF rather than Eevee's light ramp."""
+    return await run('render_style', style=style, strength=strength, outline=outline,
+                     grade=grade, letterbox=letterbox)
+
+
+@mcp.tool()
 async def render_options(quality: Literal["draft", "preview", "final", "cycles"] = "final",
                          frame_start: int | None = None, frame_end: int | None = None,
                          vertical: bool = False, calibrate: bool = False) -> dict:
