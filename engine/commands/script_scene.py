@@ -111,6 +111,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     from .lighting import PRESETS as LIGHTS
     from .semantic import load_words
     from .walk import _start as navigation_start
+    from .interaction import preserve_interactions
 
     started = time.perf_counter()
     timings = {}
@@ -339,7 +340,20 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 initial_idle(ident, start - 1)
                 sc.frame_set(max(1, start - 1))
                 report = {}
-                if action == "walk":
+                if action == "interact":
+                    initial_idle(beat["with"], start - 1)
+                    args = {"a": rig, "b": characters[beat["with"]]["rig"],
+                            "kind": beat["kind"], "start_frame": start,
+                            **{k: beat[k] for k in ("approach", "hold_seconds", "side") if k in beat}}
+                    if beat.get("prop"):
+                        prop, _ = resolve(beat["prop"], ident)
+                        args["prop"] = prop
+                        if bpy.data.objects[prop].get("c3d_hold_character") != rig:
+                            dispatch("hold_prop", {"character": rig, "prop": prop,
+                                "hand": beat.get("side", "right"), "start_frame": start})
+                    report = dispatch("interact", args)
+                    end = report["frames"]["end"]
+                elif action == "walk":
                     target = beat["to"]
                     walk_args = {"armature": rig, "start_frame": start}
                     if isinstance(target, str):
@@ -403,7 +417,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                         target = marker.name
                     looks.append({"who": rig, "target": target, "frame_start": start})
                     end = start + 23
-                if action not in ("sit", "stand", "hold", "pose", "look") and "frames" in report:
+                if action not in ("sit", "stand", "hold", "pose", "look", "interact") and "frames" in report:
                     end = report["frames"][1]
                 beat["result"] = report
                 frame = end + 1
@@ -455,7 +469,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             # Explicit camera glances need a provisional camera to sample. Final
             # coverage replaces these shots after the head performance is baked.
             shots.clear()
-    with timed("performance"), _bones_only():
+    with timed("performance"), _bones_only(), preserve_interactions(plan["beats"]):
         for i, (ident, char) in enumerate(characters.items()):
             rig = char["rig"]
             if char["realistic"]:

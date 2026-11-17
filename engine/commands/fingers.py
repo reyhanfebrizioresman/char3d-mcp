@@ -28,6 +28,8 @@ PATTERNS = (
 
 # hand shapes: per finger (curl joint1, joint2, joint3) degrees, plus spread degrees
 SHAPES = {
+    "grip": {"thumb": (12, 25, 20), "index": (25, 50, 30), "middle": (30, 55, 35),
+             "ring": (35, 60, 40), "pinky": (40, 65, 45), "spread": 0},
     "relaxed": {"thumb": (5, 10, 10), "index": (10, 15, 10), "middle": (14, 18, 12),
                 "ring": (18, 22, 14), "pinky": (22, 25, 16), "spread": 0},
     "open": {"thumb": (-8, 0, 0), "index": (0, 3, 2), "middle": (0, 3, 2), "ring": (0, 3, 2),

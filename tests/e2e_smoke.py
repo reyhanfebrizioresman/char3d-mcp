@@ -2811,6 +2811,323 @@ result = {name: s.write_cached(s.footstep(name, s.rng_for(77, name)),
           "| AAC peak error", round(max(errors)*1000, 1), "ms | 6 surface spectra | idempotent/clear OK", flush=True)
 
 
+async def _interaction_checks(call):
+    """Real paired IK, historical animation, live prop transfer and script contacts."""
+    import math
+    import shutil
+    import av
+    import numpy as np
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[-1])
+
+    async def python(code):
+        return (await data("run_blender_python", code=textwrap.dedent(code)))["result"]
+
+    await data("scene_info")
+    await call("new_scene")
+    parser_cases = [
+        ("Sari dan Dimas bersalaman", "handshake", "Sari", "Dimas"),
+        ("Dimas berjabat tangan dengan Sari", "handshake", "Dimas", "Sari"),
+        ("mereka berpelukan", "hug", "Sari", "Dimas"),
+        ("Sari tos dengan Dimas", "high_five", "Sari", "Dimas"),
+        ("Sari memberikan buku kepada Dimas", "handover", "Sari", "Dimas"),
+        ("Sari and Dimas shake hands", "handshake", "Sari", "Dimas"),
+        ("Dimas shakes hands with Sari", "handshake", "Dimas", "Sari"),
+        ("they hug", "hug", "Sari", "Dimas"),
+        ("Sari high fives Dimas", "high_five", "Sari", "Dimas"),
+        ("Sari fist bumps Dimas", "fist_bump", "Sari", "Dimas"),
+        ("Sari hands the book to Dimas", "handover", "Sari", "Dimas"),
+    ]
+    before = await data("scene_info")
+    for direction, kind, a, b in parser_cases:
+        parsed = await data("script_to_scene", script=f"Sari: Halo.\nDimas: Hai.\n[{direction}]", build=False)
+        beat = parsed["plan"]["beats"][-1]
+        assert (beat["do"], beat["kind"], beat["who"], beat["with"]) == ("interact", kind, a, b), beat
+        if kind == "handover":
+            assert beat["prop"] == "book", beat
+        assert not parsed["warnings"], parsed
+    assert await data("scene_info") == before, "interaction parsing mutated scene"
+
+    sheets, reports, jumps = [], [], []
+    for realistic in (False, True):
+        await call("new_scene")
+        for i, (name, height) in enumerate((("ContactA", 1.60), ("ContactB", 1.85))):
+            if realistic:
+                human = await data("create_realistic_human", name=name, gender=i,
+                                   rig="game_engine" if i == 0 else "rigify",
+                                   hair="bob01" if i == 0 else "short01",
+                                   clothes=["female_casualsuit01" if i == 0 else "male_casualsuit01", "shoes01"])
+                scale = height / human["height_m"]
+            else:
+                await data("create_human", name=name, height=height, style="realistic")
+                rigged = await data("auto_rig_humanoid", mesh=name, rig_type="basic" if i == 0 else "rigify")
+                assert rigged["ok"], rigged
+                scale = 1
+            await call("transform_object", name=name+"_rig", location=[-.38 if i == 0 else .38, 0, 0],
+                       rotation_deg=[0, 0, 90 if i == 0 else -90], scale=[scale]*3)
+            await call("animate", armature=name+"_rig", clip="idle", start_frame=1, cycles=1, speed=4)
+        pose_code = '''
+            from engine.commands.anim import semantic_map
+            def before_contact():
+                out = []
+                for frame in (1, 7, 12, 23):
+                    bpy.context.scene.frame_set(frame)
+                    for name in ('ContactA_rig', 'ContactB_rig'):
+                        rig = bpy.data.objects[name]
+                        for bone in semantic_map(rig).values():
+                            out.extend(v for row in (rig.matrix_world @ rig.pose.bones[bone].matrix) for v in row)
+                return out
+            result = before_contact()
+        '''
+        old_pose = await python(pose_code)
+        curve_code = '''
+            from engine.commands.talk import _fcurves
+            result = {r.name+':'+c.data_path+':'+str(c.array_index):
+                      [c.evaluate(f) for f in (1, 7, 12, 23)]
+                      for r in (bpy.data.objects['ContactA_rig'], bpy.data.objects['ContactB_rig'])
+                      for c in _fcurves(r.animation_data.action)}
+        '''
+        old_curves = await python(curve_code)
+        kinds = ("handshake", "high_five", "hug", "handover", "fist_bump", "pat_shoulder") if realistic else ("handshake", "high_five")
+        pair_reports = []
+        for kind in kinds:
+            kwargs = {}
+            if kind == "handover":
+                await python('''
+                    bpy.context.scene.frame_set(1 + int(max(bpy.data.objects[n].animation_data.action.frame_range[1]
+                        for n in ('ContactA_rig','ContactB_rig'))))
+                    result = True
+                ''')
+                cup = await data("add_prop", kind="cup")
+                await python(f'''
+                    from engine.commands.talk import _fcurves
+                    root=bpy.data.objects[{cup['root']!r}]
+                    birth=bpy.context.scene.frame_current
+                    for obj in [root, *root.children_recursive]:
+                        obj.hide_render=True
+                        obj.keyframe_insert('hide_render',frame=1)
+                        obj.hide_render=False
+                        obj.keyframe_insert('hide_render',frame=birth)
+                        for curve in _fcurves(obj.animation_data.action):
+                            if curve.data_path=='hide_render':
+                                for key in curve.keyframe_points:
+                                    key.interpolation='CONSTANT'
+                    result=True
+                ''')
+                await data("hold_prop", character="ContactA_rig", prop=cup["root"])
+                kwargs["prop"] = cup["root"]
+            rep = await data("interact", a="ContactA_rig", b="ContactB_rig", kind=kind, **kwargs)
+            reports.append(rep)
+            pair_reports.append(rep)
+            fr = rep["frames"]
+            assert fr["reach"] < fr["contact"] <= fr["release"] < fr["end"], rep
+            assert rep["next_start_frame"] == fr["end"]+1 and rep["contact_error_m"] <= .03, rep
+            # Inspect real evaluated matrices after scrubbing, independently of the bake's
+            # error accumulator. Shared contacts must be palm-to-palm within 3 cm.
+            measured = await python(f'''
+                from mathutils import Vector
+                from engine.commands.holding import _palm
+                from engine.commands.interaction import _penetration
+                from engine.commands.anim import semantic_map
+                records = {rep['contact_samples']!r}
+                errors, shared = [], {{}}
+                for item in records:
+                    bpy.context.scene.frame_set(item['frame'])
+                    rig = bpy.data.objects[item['character']]
+                    bone, palm = _palm(rig, item['side'])
+                    local = palm.translation.copy()
+                    if {kind!r} == 'fist_bump':
+                        local += Vector((0,.04,0))
+                    point = (rig.matrix_world @ rig.pose.bones[bone].matrix) @ local
+                    errors.append((point-Vector(item['target'])).length)
+                    shared.setdefault(item['frame'], []).append(point.copy())
+                result = dict(error=max(errors), pair=max(((p[0]-p[1]).length
+                              for p in shared.values() if len(p)>1), default=0))
+            ''')
+            assert measured["error"] <= .03, (kind, measured)
+            if kind in ("handshake", "high_five", "fist_bump"):
+                assert measured["pair"] <= .03, (kind, measured)
+            if kind == "hug":
+                assert rep["penetration_m"] <= .03, rep
+                clearance = await python(f'''
+                    from engine.commands.interaction import _chest, _height
+                    bpy.context.scene.frame_set({fr['contact']})
+                    rigs=[bpy.data.objects[n] for n in ('ContactA_rig','ContactB_rig')]
+                    result=(_chest(rigs[0])-_chest(rigs[1])).length
+                ''')
+                assert clearance >= .24, clearance
+            if kind == "handover":
+                continuity = await python(f'''
+                    from engine.commands.holding import _palm
+                    obj = bpy.data.objects[{cup['root']!r}]
+                    points, owners = [], []
+                    for frame in range({fr['reach']}, {fr['end']+1}):
+                        bpy.context.scene.frame_set(frame)
+                        points.append(obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.translation.copy())
+                        active = [c for c in obj.constraints if c.name.startswith('char3d_hold') and c.influence > .99]
+                        assert len(active) == 1
+                        owners.append(active[0].target.parent.name)
+                    bpy.context.scene.frame_set({fr['contact']})
+                    rig=bpy.data.objects['ContactB_rig']
+                    bone,palm=_palm(rig,'R')
+                    hand=(rig.matrix_world@rig.pose.bones[bone].matrix)@palm.translation
+                    world=obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world
+                    result = dict(jump=max((b-a).length for a,b in zip(points, points[1:])),
+                                  owners=owners, receiver_grip=list(world.inverted()@hand))
+                ''')
+                giver_frames = fr["contact"]-fr["reach"]
+                assert continuity["owners"][:giver_frames] == ["ContactA_rig"]*giver_frames, continuity
+                assert set(continuity["owners"][giver_frames:]) == {"ContactB_rig"}, continuity
+                assert continuity["jump"] <= .02 and rep["transfer"]["world_jump_m"] < 1e-5, continuity
+                # Cup body center + outer radius is 9.5 + 4.5 cm from the handle.
+                # The receiver must touch that outer surface, not the cup center.
+                assert .13 <= continuity["receiver_grip"][0] <= .15, continuity
+                assert max(abs(v) for v in continuity["receiver_grip"][1:]) < .02, continuity
+                jumps.append(continuity["jump"])
+                await data("export_asset", path="interaction_handover.glb", objects=["ContactA_rig", "ContactB_rig"])
+                await data("release_prop", character="ContactB_rig", prop=cup["root"],
+                           frame=fr["end"]+1, place_at=[2, 1, .1])
+            current_pose = await python(pose_code)
+            difference = max(abs(a-b) for a,b in zip(old_pose, current_pose))
+            # Rigify's zero-influence wrist layers still normalize evaluated
+            # matrices. Allow <0.5 mm / ~0.03 degrees of numeric variation;
+            # the underlying animation curves themselves must stay exact.
+            current_curves = await python(curve_code)
+            changes = {k: (v, current_curves[k]) for k,v in old_curves.items()
+                       if max(abs(a-b) for a,b in zip(v, current_curves[k])) > 1e-7}
+            assert not changes, ("interaction changed earlier animation curves", changes)
+            assert difference < 5e-4, ("interaction changed earlier body animation", realistic, kind, difference)
+        if realistic:
+            for name in ("ContactA_rig", "ContactB_rig"):
+                await data("auto_blink", character=name, frame_start=1, frame_end=pair_reports[-1]["frames"]["end"])
+            # Persist the verified timeline before rendering, so a host interruption
+            # does not discard the expensive mixed-rig/contact/export evidence.
+            with open(os.path.join(ROOT, "output", "interaction_results.json"), "w") as f:
+                json.dump(reports, f, indent=2)
+            await call("set_lighting", preset="studio", subject=["ContactA_rig", "ContactB_rig"], follow=False)
+            await call("save_project", path="interaction_all.blend")
+            for rep in pair_reports:
+                kind, fr = rep["kind"], rep["frames"]
+                # Pats stage side by side facing +X; see both shoulders from +X.
+                angles = (("front", 80), ("side", 125)) if kind == "pat_shoulder" else (("front", 25), ("side", 0))
+                for view, angle in angles:
+                    await call("camera_shot", subject=["ContactA_rig", "ContactB_rig"], shot="medium",
+                               angle=angle, start_frame=fr["reach"], end_frame=fr["end"],
+                               name="InteractionCheck"+view, avoid_occlusion=False)
+                    rendered = await data("render_frames", frames=[fr["contact"]], camera="scene", size=512,
+                                          engine_name="eevee")
+                    path = os.path.join(ROOT, "output", "renders", f"interaction_{kind}_{view}.png")
+                    shutil.copyfile(rendered["path"], path)
+                    sheets.append((kind+" "+view, path))
+            await call("save_project", path="interaction_all.blend")
+        else:
+            # Sparse Bezier animation before an explicit start must retain its
+            # original curve, including samples between the old keyframes.
+            await python('''
+                from engine.commands.anim import semantic_map
+                from engine.commands.talk import _fcurves
+                rig=bpy.data.objects['ContactA_rig']
+                path=rig.pose.bones[semantic_map(rig)['head']].path_from_id('rotation_euler')
+                curve=next(c for c in _fcurves(rig.animation_data.action) if c.data_path==path and c.array_index==0)
+                curve.keyframe_points.clear()
+                for frame,value in ((1,0), (500,.5)):
+                    key=curve.keyframe_points.insert(frame,value)
+                    key.handle_left_type=key.handle_right_type='AUTO'
+                curve.update()
+                result=True
+            ''')
+            sparse_code = '''
+                from engine.commands.anim import semantic_map
+                from engine.commands.talk import _fcurves
+                rig=bpy.data.objects['ContactA_rig']
+                path=rig.pose.bones[semantic_map(rig)['head']].path_from_id('rotation_euler')
+                curve=next(c for c in _fcurves(rig.animation_data.action) if c.data_path==path and c.array_index==0)
+                result=[curve.evaluate(f) for f in (1,31,100,150,200,249)]
+            '''
+            sparse = await python(sparse_code)
+            await data('interact', a='ContactA_rig', b='ContactB_rig', kind='handshake',
+                       start_frame=250, approach=False)
+            after = await python(sparse_code)
+            assert max(abs(a-b) for a,b in zip(sparse,after)) < 2e-6, (sparse,after)
+        # Unreachable placement must fail before any action edits.
+        await call("transform_object", name="ContactB_rig", location=[4, 0, 0])
+        action_state = '''
+            import hashlib, json
+            from engine.commands.talk import _fcurves
+            state = [(o.name, [(c.data_path, c.array_index, [(list(k.co), k.interpolation) for k in c.keyframe_points])
+                     for c in _fcurves(o.animation_data.action)]) for o in bpy.context.scene.objects
+                     if o.type == 'ARMATURE' and o.animation_data and o.animation_data.action]
+            result = hashlib.sha256(json.dumps(state).encode()).hexdigest()
+        '''
+        state = await python(action_state)
+        try:
+            await data("interact", a="ContactA_rig", b="ContactB_rig", kind="handshake", approach=False)
+            raise AssertionError("unreachable contact accepted")
+        except RuntimeError as exc:
+            assert "cannot reach" in str(exc), exc
+        assert state == await python(action_state)
+
+    await call("new_scene")
+    script = "Sari (perempuan): Halo.\nDimas (pria): Hai.\n[Sari dan Dimas bersalaman]\nSari: Terima kasih."
+    built = await data("script_to_scene", script=script, camera="none", subtitles=False)
+    beat = next(b for b in built["plan"]["beats"] if b.get("do") == "interact")
+    assert beat["result"]["contact_error_m"] <= .03, beat
+    scripted_contact = await python(f'''
+        import math
+        from engine.commands.holding import _palm
+        from engine.commands.gaze import head_frame
+        from engine.commands.interaction import _position
+        bpy.context.scene.frame_set({beat['result']['frames']['contact']})
+        points,rigs,angles,left=[],[],[],[]
+        for name in ({beat['result']['a']!r}, {beat['result']['b']!r}):
+            rig=bpy.data.objects[name]
+            rigs.append(rig)
+            bone,palm=_palm(rig,'R')
+            points.append((rig.matrix_world@rig.pose.bones[bone].matrix)@palm.translation)
+            bone,palm=_palm(rig,'L')
+            left.append((rig.matrix_world@rig.pose.bones[bone].matrix)@palm.translation)
+        for i,rig in enumerate(rigs):
+            forward=head_frame(rig,'hips')[1]@Vector((0,-1,0))
+            toward=_position(rigs[1-i])-_position(rig)
+            forward.z=toward.z=0
+            angles.append(math.degrees(forward.angle(toward)))
+        result=dict(gap=(points[0]-points[1]).length,facing_degrees=max(angles),
+                    unused_hand_gap=(left[0]-left[1]).length)
+    ''')
+    assert scripted_contact['gap'] <= .03 and scripted_contact['facing_degrees'] <= 4, scripted_contact
+    assert scripted_contact['unused_hand_gap'] >= .15, scripted_contact
+    rendered = await data("render_frames", frames=[beat["result"]["frames"]["contact"]], camera="scene", size=512,
+                          engine_name="eevee")
+    path = os.path.join(ROOT, "output", "renders", "interaction_script_handshake.png")
+    shutil.copyfile(rendered["path"], path)
+    sheets.append(("script handshake", path))
+    await call("save_project", path="interaction_script.blend")
+    rows = math.ceil(len(sheets)/2)
+    sheet = np.full((rows*320, 1024, 3), 24, dtype=np.uint8)
+    for i, (label, path) in enumerate(sheets):
+        with av.open(path) as original:
+            frame = next(original.decode(video=0))
+            frame = frame.reformat(width=512, height=min(308, round(frame.height*512/frame.width)))
+            image = frame.to_ndarray(format="rgb24")
+            x, y = i%2*512, i//2*320
+            sheet[y:y+image.shape[0], x:x+image.shape[1]] = image
+    with av.open(os.path.join(ROOT, "output", "interaction_contact_sheet.png"), "w", format="image2") as output:
+        stream = output.add_stream("png", rate=1)
+        stream.width, stream.height = sheet.shape[1], sheet.shape[0]
+        stream.pix_fmt = "rgb24"
+        for packet in stream.encode(av.VideoFrame.from_ndarray(sheet, format="rgb24")):
+            output.mux(packet)
+        for packet in stream.encode():
+            output.mux(packet)
+    with open(os.path.join(ROOT, "output", "interaction_stills.json"), "w") as f:
+        json.dump(sheets, f, indent=2)
+    with open(os.path.join(ROOT, "output", "interaction_results.json"), "w") as f:
+        json.dump(reports, f, indent=2)
+    print(f"interactions: {len(reports)} basic/Rigify/MPFB contacts | max error {max(r['contact_error_m'] for r in reports):.5f} m | "
+          f"hug {max(r.get('penetration_m') or 0 for r in reports):.5f} m | prop step {max(jumps):.5f} m | parser/script/history OK")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -2832,6 +3149,8 @@ async def main():
         print("status:", text_of(await call("engine_status")))
         assert "auto_sfx" in tools
         await _auto_sfx_checks(call)
+        assert "interact" in tools
+        await _interaction_checks(call)
         assert "script_to_scene" in tools
         await _render_style_checks(call)
         await _script_scene_checks(call)

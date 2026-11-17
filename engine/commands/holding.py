@@ -60,7 +60,8 @@ def _key_object(obj, f):
 
 
 def _constraint(obj):
-    return next((c for c in obj.constraints if c.name.startswith("char3d_hold")), None)
+    return next((c for c in reversed(list(obj.constraints))
+                 if c.name.startswith("char3d_hold")), None)
 
 
 def _influence(con, start, release=None):
@@ -88,7 +89,7 @@ def _grip_layer(rig, obj, bone, palm, hands, side, shape, strength, start, uprig
     regardless of the animated forearm, while the palm center stays on the hand.
     This uses native constraints, so it also survives saves, scrubbing and exports.
     """
-    name = f"char3d_grip:{obj.name}"
+    name = f"char3d_grip:{obj.name}:{start}:{rig.name}"
     obj["c3d_hold_layer"] = name
     if upright:
         pb = rig.pose.bones[bone]
@@ -137,24 +138,27 @@ def _grip_layer(rig, obj, bone, palm, hands, side, shape, strength, start, uprig
 
 
 def clear_grip(obj):
-    """Remove a deleted environment prop's owned wrist/finger layer and its keys."""
-    layer = obj.get("c3d_hold_layer")
-    rig = bpy.data.objects.get(obj.get("c3d_hold_character", ""))
-    if not layer or rig is None:
-        return
-    action = rig.animation_data.action if rig.animation_data else None
-    curves = ([bag.fcurves for layer in action.layers for strip in layer.strips
-               for bag in strip.channelbags] if action and hasattr(action, "layers") else
-              [action.fcurves] if action else [])
-    for pb in rig.pose.bones:
-        for con in list(pb.constraints):
-            if con.name == layer or con.name.startswith(layer+":"):
-                path = con.path_from_id("influence")
-                for collection in curves:
-                    for fc in list(collection):
-                        if fc.data_path == path:
-                            collection.remove(fc)
-                pb.constraints.remove(con)
+    """Remove all historical owners' grip layers when an environment prop is deleted."""
+    prefix = f"char3d_grip:{obj.name}"
+    rigs = {c.target.parent for c in obj.constraints if c.name.startswith("char3d_hold")
+            and c.target and c.target.parent and c.target.parent.type == "ARMATURE"}
+    current = bpy.data.objects.get(obj.get("c3d_hold_character", ""))
+    if current is not None:
+        rigs.add(current)
+    for rig in rigs:
+        action = rig.animation_data.action if rig.animation_data else None
+        curves = ([bag.fcurves for layer in action.layers for strip in layer.strips
+                   for bag in strip.channelbags] if action and hasattr(action, "layers") else
+                  [action.fcurves] if action else [])
+        for pb in rig.pose.bones:
+            for con in list(pb.constraints):
+                if con.name == prefix or con.name.startswith(prefix+":"):
+                    path = con.path_from_id("influence")
+                    for collection in curves:
+                        for fc in list(collection):
+                            if fc.data_path == path:
+                                collection.remove(fc)
+                    pb.constraints.remove(con)
 
 
 @command("hold_prop")
@@ -175,7 +179,7 @@ def hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, g
     end = int(end_frame) if end_frame is not None else None
     if start < sc.frame_start or (end is not None and end < start):
         raise ValueError("invalid hold frame range")
-    if _constraint(obj):
+    if _constraint(obj) and (obj.get("c3d_hold_release") is None or start < obj["c3d_hold_release"]):
         raise ValueError("prop already has an attachment; use a separate prop for another hold")
     side = "R" if hand == "right" else "L"
     hands = HandRig(rig)
@@ -209,6 +213,8 @@ def hold_prop(character, prop, hand="right", start_frame=None, end_frame=None, g
     obj["c3d_hold_character"] = rig.name
     obj["c3d_hold_hand"] = hand
     obj["c3d_hold_start"] = start
+    if "c3d_hold_release" in obj:
+        del obj["c3d_hold_release"]
     obj["c3d_hold_palm"] = json.dumps(list(palm.translation))
     kind = obj.get("c3d_prop_kind", "")
     upright = kind in ("cup", "handheld_microphone") if upright is None else upright
@@ -274,6 +280,31 @@ def release_prop(character, prop, frame, place_at=None):
             "physics": False}
 
 
+def transfer_prop(a, b, obj, hand, frame):
+    """Switch live palm owners at a contact without changing the prop's world frame.
+
+    Keep the old stepped attachment and grip keys for earlier frames. The receiving
+    helper is bone-parented to b; the prop keeps the same constraint-based lifecycle
+    as hold_prop, including subsequent release and sampled glTF export.
+    """
+    sc = bpy.context.scene
+    sc.frame_set(frame)
+    bpy.context.view_layer.update()
+    world = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.copy()
+    release_prop(a.name, obj.name, frame)
+    report = hold_prop(b.name, obj.name, hand=hand, start_frame=frame,
+                       upright=obj.get("c3d_hold_upright", False))
+    helper = _constraint(obj).target
+    bpy.context.view_layer.update()
+    current = helper.matrix_world.copy()
+    helper.matrix_basis = helper.matrix_basis @ current.inverted() @ world
+    bpy.context.view_layer.update()
+    actual = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world
+    report["world_jump_m"] = round((actual.translation-world.translation).length, 7)
+    report["parent"] = helper.parent.name
+    return report
+
+
 @contextmanager
 def export_attachments(objects):
     """Temporarily sample constraints into world keys, leaving live scene/actions intact."""
@@ -291,10 +322,12 @@ def export_attachments(objects):
                 samples.append(obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.copy())
             action = obj.animation_data.action if obj.animation_data else None
             slot = obj.animation_data.action_slot if obj.animation_data else None
-            saved.append((obj, action, slot, obj.matrix_basis.copy(), con, con.mute))
+            constraints = [(c, c.mute) for c in obj.constraints if c.name.startswith("char3d_hold")]
+            saved.append((obj, action, slot, obj.matrix_basis.copy(), constraints))
             obj.animation_data_create()
             obj.animation_data.action = bpy.data.actions.new(obj.name+"_export_hold")
-            con.mute = True
+            for c, _ in constraints:
+                c.mute = True
             previous = None
             for f, m in zip(range(sc.frame_start, sc.frame_end+1), samples):
                 obj.matrix_world = m
@@ -309,12 +342,13 @@ def export_attachments(objects):
         sc.frame_set(frame)
         yield
     finally:
-        for obj, action, slot, basis, con, muted in saved:
+        for obj, action, slot, basis, constraints in saved:
             temp = obj.animation_data.action
             obj.animation_data.action = action
             if slot is not None:
                 obj.animation_data.action_slot = slot
-            con.mute = muted
+            for con, muted in constraints:
+                con.mute = muted
             obj.matrix_basis = basis
             if temp and temp.users == 0:
                 bpy.data.actions.remove(temp)

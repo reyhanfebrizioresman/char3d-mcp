@@ -27,6 +27,27 @@ VERBS = {"jalan": "walk", "berjalan": "walk", "walk": "walk", "walks": "walk",
          "wave": "gesture", "memegang": "hold", "holds": "hold", "hold": "hold",
          "menunjuk": "point", "points": "point", "point": "point", "melihat": "look",
          "looks": "look", "look": "look"}
+INTERACTIONS = {
+    "handshake": r"bersalaman|berjabat tangan|shakes? hands?",
+    "hug": r"berpelukan|memeluk|hugs?",
+    "high_five": r"tos|high[ -]fives?",
+    "fist_bump": r"adu tinju|fist[ -]bumps?",
+}
+
+
+def _interaction_direction(text):
+    handover = re.fullmatch(r"(.+?)\s+(?:memberikan|menyerahkan|hands?|gives?)\s+(?:the\s+)?(.+?)\s+(?:kepada|ke|to)\s+(.+)", text, re.I)
+    if handover:
+        return {"do": "interact", "who": handover[1], "with": handover[3],
+                "kind": "handover", "prop": _target(handover[2])}
+    for kind, verbs in INTERACTIONS.items():
+        pair = re.fullmatch(r"(.+?)\s+(?:dan|and|&)\s+(.+?)\s+(?:" + verbs + r")", text, re.I)
+        if pair:
+            return {"do": "interact", "who": pair[1], "with": pair[2], "kind": kind}
+        directed = re.fullmatch(r"(.+?)\s+(?:" + verbs + r")(?:\s+(?:(?:dengan|with)\s+)?(.+))?", text, re.I)
+        if directed:
+            return {"do": "interact", "who": directed[1], "with": directed[2], "kind": kind}
+    return None
 
 
 def _number(value, label, low=0, high=100000):
@@ -109,6 +130,9 @@ def _descriptors(text, char, warnings):
 
 
 def _direction(text, warnings):
+    interaction = _interaction_direction(text)
+    if interaction:
+        return interaction
     pause = re.fullmatch(r"(?:pause|jeda|tunggu)\s+(\d+(?:\.\d+)?)(?:\s+(?:seconds?|detik))?", text, re.I)
     if pause:
         return {"do": "pause", "seconds": float(pause[1])}
@@ -245,7 +269,7 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
             duration = max(4, round(len(beat.get("text", "")) / 14 * fps) + 3)
         elif "title" in beat:
             duration = max(2, round(_number(beat.get("seconds", 2), "title seconds", 0.1, 60) * fps))
-        elif beat.get("do") in ("walk", "sit", "stand", "hold", "gesture", "pose", "look", "pause"):
+        elif beat.get("do") in ("walk", "sit", "stand", "hold", "gesture", "pose", "look", "pause", "interact"):
             action = beat["do"]
             for key in {"walk": ["to"], "hold": ["prop"], "look": ["at"], "gesture": ["name"], "pose": ["name"]}.get(action, []):
                 if not beat.get(key):
@@ -256,8 +280,27 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
                 raise ValueError("hand must be left or right")
             if action == "pause":
                 beat["seconds"] = _number(beat.get("seconds", 1), "pause seconds", 0, 60)
+            if action == "interact":
+                if beat.get("kind") not in (*INTERACTIONS, "handover", "pat_shoulder"):
+                    raise ValueError("unknown interaction kind")
+                if str(beat.get("who", "")).casefold() in ("mereka", "they"):
+                    if len(characters) != 2:
+                        raise ValueError("they/mereka requires exactly two declared characters")
+                    beat["who"], beat["with"] = [c["id"] for c in characters]
+                partner = str(beat.get("with", "")).strip()
+                if partner.casefold() not in ids:
+                    raise ValueError(f"unknown interaction partner: {partner!r}")
+                beat["with"] = ids[partner.casefold()]
+                if beat.get("kind") == "handover" and not beat.get("prop"):
+                    raise ValueError("handover needs prop")
+                if beat.get("side", "right") not in ("right", "left"):
+                    raise ValueError("interaction side must be right or left")
+                if not isinstance(beat.get("approach", True), bool):
+                    raise ValueError("interaction approach must be a bool")
+                if "hold_seconds" in beat:
+                    beat["hold_seconds"] = _number(beat["hold_seconds"], "hold_seconds", 0, 30)
             duration = {"walk": 72, "sit": 21, "stand": 21, "hold": 12,
-                        "gesture": 37, "pose": 24, "look": 24,
+                        "gesture": 37, "pose": 24, "look": 24, "interact": round(3*fps),
                         "pause": max(1, round(beat.get("seconds", 1) * fps))}[action]
         else:
             warnings.append(f"Unknown beat ignored: {source}")
@@ -268,6 +311,8 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
             if ident.casefold() not in ids:
                 raise ValueError(f"unknown character: {ident!r}; declare it in characters or a speech line")
             beat[who_key] = ids[ident.casefold()]
+            if beat.get("do") == "interact" and beat["who"] == beat["with"]:
+                raise ValueError("interaction needs two different characters")
         for key in ("to", "on", "prop", "at"):
             if key in beat:
                 value = beat[key]

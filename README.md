@@ -53,6 +53,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `set_environment`, `add_prop`, `clear_environment` | Set prosedural: podcast_studio, classroom, office, stage, living_room, news_desk; furnitur, bangku, stool, cup, phone, book, handheld_microphone + lampu praktis dalam koleksi char3d_env, variant/tema warna dan gambar lokal pada layar/papan; bersihkan tanpa menghapus karakter/kamera |
 | `sit_on`, `stand_up` | Duduk pada kursi/sofa/bangku/stool atau permukaan mesh: kontak bokong diukur, kaki IK menapak, arah mengikuti kursi, transisi halus dan pilihan posisi sofa; bisa dilapisi gerak bicara. Berdiri kembali di depan kursi; dudukan statis dan lantai datar |
 | `hold_prop`, `release_prop` | Tempel cup/phone/book/mic atau prop lain ke telapak kiri/kanan. `upright=None` otomatis menjaga cup tegak dan mic condong 12° ke telapak/mulut; `True`/`False` mengaktifkan/menonaktifkan koreksi pergelangan, yaw mengikuti tangan. Grip jari bertahan saat gestur ditambahkan; release memulihkan animasi pergelangan/jari di bawahnya. Phone/book tetap mengikuti rotasi tangan. Ekspor glTF menyimpan transform tiap frame; tanpa simulasi jatuh atau solver tabrakan lengan/prop. Pose ekstrem dapat menekuk pergelangan tajam; sesuaikan pose lengan |
+| `interact` | Dua karakter bersalaman, berpelukan, tos, fist bump, menyerahkan prop, atau menepuk bahu; pendekatan jalan/putar, IK lengan ke titik kontak bersama, jari dan tatapan pasangan; basic/Rigify/MPFB termasuk beda tinggi |
 | `add_subtitles`, `remove_subtitles` | Subtitle otomatis dari waktu kata lip sync (atau teks/audio): gaya tiktok (kata aktif menyala + pop-in), karaoke, classic; dibakar ke video + file .srt |
 | `add_transition`, `add_title`, `list_graphics`, `remove_graphics` | Grafis timeline: crossfade antar-shot (frame tambahan kamera keluar), fade in/out, dip hitam/putih; kartu judul dan lower third nama + peran dengan bar transparan, animasi slide/fade; digabung dengan subtitle tanpa mengubah durasi/audio |
 | `render_options`, `render_video`, `render_status`, `cancel_render` | Render MP4 (H.264) di proses latar belakang: draft, preview, final, cycles; pilih resolusi 480p–4K (atau vertikal) dengan estimasi waktu render yang dikalibrasi per mesin (belajar dari render sebelumnya, atau `calibrate=True` untuk frame uji) |
@@ -64,6 +65,21 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).
+
+`interact(a, b, "handshake")` menyambung setelah animasi kedua rig. Pilih
+`hug`, `high_five`, `fist_bump`, `handover`, atau `pat_shoulder`; `start_frame`
+menentukan awal, `hold_seconds` durasi kontak, `side="left"` untuk tangan kiri.
+`approach=True` memakai jalan/putar dengan penghindaran rintangan statis;
+`False` menjaga posisi dan menolak kontak yang tak terjangkau. Untuk menyerahkan
+cangkir: `hold_prop(a, cup)` lalu `interact(a, b, "handover", prop=cup)`.
+Attachment telapak pindah ke b tanpa mengubah transform dunia prop saat kontak;
+animasi lampau tetap tersimpan, termasuk saat ekspor glTF. Hasil berisi frame
+approach/reach/contact/release/end, `moved`, `contact_error_m` dan `penetration_m`
+pelukan (proxy dada/lengan, bukan jaminan bebas tabrakan mesh/pakaian).
+Periksa Eevee dari depan tiga-perempat dan samping. Naskah juga menerima
+`[Sari dan Dimas bersalaman]`, `[mereka berpelukan]`, `[Sari tos dengan Dimas]`,
+`[Sari memberikan buku kepada Dimas]`, serta padanan Inggris; dict memakai
+`{"do":"interact", "who":"Sari", "with":"Dimas", "kind":"handshake"}`.
 
 Panggil `set_lighting` setelah animasi tubuh (`walk_path`, `animate`, `sit_on`), lalu
 ulangi jika geraknya berubah. `follow="auto"` mengikuti perpindahan horizontal di atas

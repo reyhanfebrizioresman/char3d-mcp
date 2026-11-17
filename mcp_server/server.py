@@ -600,6 +600,7 @@ async def hold_prop(character: str, prop: str, hand: Literal["right", "left"] = 
     add_prop cup/phone/book/handheld_microphone use real sizes and grip origins; location
     may be omitted. None start uses current frame, None end keeps holding. The live
     attachment follows later arm keys. end_frame releases on the following frame.
+    A released prop may be held again at/after its release frame, retaining earlier holds.
     upright=None auto-levels cups and points handheld microphones up with a slight
     lean toward the palm; True levels any prop, False keeps the rigid hand rotation.
     Upright holds constrain wrist roll/flex while preserving yaw; the grip stays in
@@ -616,6 +617,26 @@ async def release_prop(character: str, prop: str, frame: int,
     """Release at frame: keep the prop's world transform, or put its grip at place_at.
     The prop remains static afterwards; no falling simulation. place_at is world XYZ."""
     return await run("release_prop", character=character, prop=prop, frame=frame, place_at=place_at)
+
+
+@mcp.tool()
+async def interact(a: str, b: str,
+                   kind: Literal["handshake", "hug", "high_five", "fist_bump", "handover", "pat_shoulder"],
+                   start_frame: int | None = None, prop: str | None = None,
+                   approach: bool = True, hold_seconds: float | None = None,
+                   side: Literal["right", "left"] = "right") -> dict:
+    """Two humanoids approach, reach a shared contact, hold and retract.
+    Supports basic/Rigify/MPFB and different heights; finger poses skip mannequins.
+    None start appends after both actions. Existing animation before start is kept.
+    approach walks/turns with static obstacle avoidance; False requires reachable placement.
+    handshake pumps, high_five claps, fist_bump meets knuckles, hug wraps both arms,
+    pat_shoulder touches the nearby shoulder. handover requires prop held by a in side;
+    transfers its live palm attachment to b at contact, preserving its world transform.
+    Returns approach/reach/contact/release/end frames, next_start_frame, moved characters,
+    contact_error_m and hug penetration_m (sampled chest/arm proxies, not mesh collision).
+    hold_seconds overrides the kind's hold duration (0..30). No cloth collision solving."""
+    return await run("interact", a=a, b=b, kind=kind, start_frame=start_frame, prop=prop,
+                     approach=approach, hold_seconds=hold_seconds, side=side)
 
 
 @mcp.tool()
@@ -1112,7 +1133,11 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     Dict: {title, environment, characters: [{id, gender, age, hair, clothes, race,
     outfit?, beard?, accessories?}],
     beats: [{say: id, text, audio?, emotion?}, {do: walk, who: id, to: [x,y]},
-    {do: sit, who: id, on: chair}, {do: stand/hold/gesture/pose/look/pause, ...}]}.
+    {do: sit, who: id, on: chair}, {do: stand/hold/gesture/pose/look/pause, ...},
+    {do: interact, who: id, with: partner, kind: handshake/hug/high_five/fist_bump/handover/pat_shoulder}]}.
+    Text contacts: [Ana dan Budi bersalaman], [mereka berpelukan], [Ana tos dengan Budi],
+    [Ana memberikan buku kepada Budi], or English equivalents. Handovers create/hold a
+    known procedural prop when needed. Contact keys survive later speaking gestures.
     build=False returns a deterministic normalized plan and estimated frames with NO
     scene changes or audio transcription. Builds use existing body/dialog/camera tools,
     captions and hair/loose-cloth motion; text is mouth-only, audio is placed on the timeline.
@@ -1234,7 +1259,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
 
 
 HandShape = Literal["relaxed", "open", "palm", "beat", "point", "fist", "thumbs_up", "peace",
-                    "three", "four", "ok"]
+                    "three", "four", "ok", "grip"]
 
 
 @mcp.tool()
@@ -1242,7 +1267,7 @@ async def set_hand_pose(character: str, shape: HandShape = "relaxed",
                         side: Literal["both", "left", "right"] = "both", strength: float = 1.0,
                         frame: int | None = None, keyframe: bool = False) -> dict:
     """Pose the fingers: relaxed, open, palm, beat (half fist), point (index), fist,
-    thumbs_up, peace (V), ok. Works on rigs with finger bones (create_realistic_human with
+    thumbs_up, peace (V), ok, grip (handshake). Works on rigs with finger bones (create_realistic_human with
     any rig, Mixamo, Rigify human). Combine with apply_pose/set_pose for full gestures, e.g.
     apply_pose("point_forward") + set_hand_pose("point", side="right"). keyframe=True keys it
     at `frame`; strength < 1 for a softer version. 'left'/'right' = the character's own."""
