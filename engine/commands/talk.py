@@ -13,11 +13,12 @@ import random
 
 import bpy
 import numpy as np
-from mathutils import Matrix, Quaternion
+from mathutils import Matrix, Quaternion, Vector
 
 from . import command
 from .anim import _key_rot, semantic_map
 from .face import _basemesh, _ensure_face, _face_meshes, _set
+from .gaze import head_frame
 from .util import obj_or_raise
 
 
@@ -156,8 +157,7 @@ def _target_point(target, frame):
     if rig is not None:
         head = semantic_map(rig).get("head")
         if head:
-            pb = rig.pose.bones[head]
-            return rig.matrix_world @ ((pb.head + pb.tail) / 2)
+            return head_frame(rig)[0]
     return obj.matrix_world.translation.copy()
 
 
@@ -171,9 +171,9 @@ def _look_target(look_at, frame):
     return look_at
 
 
-def _camera_angles(head_pos, forward_q, frame, target="camera"):
+def _camera_angles(head_pos, forward_q, frame, target="camera", point=None):
     """Yaw/pitch (deg, character space) from the head to the look target at frame."""
-    point = _target_point(target, frame) if target else None
+    point = point if point is not None else (_target_point(target, frame) if target else None)
     if point is None:
         return 0.0, 0.0
     d = forward_q.inverted() @ (point - head_pos)
@@ -220,8 +220,8 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     except (ValueError, RuntimeError):
         base = None                     # rigs without a face still get head motion
 
-    if look_at is None and look_at_camera:
-        look_at = "camera"
+    if look_at is None:
+        look_at = listen_to or ("camera" if look_at_camera else None)
     env, sources = _speech_env(rig, base, f0, f1)
     source = "audio:" + ",".join(sources) if sources else None
     if env.max() <= 1e-6 and base is not None:
@@ -283,13 +283,17 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     rq = rig.matrix_world.to_quaternion()
     if head and head_b:
         prev = {}
-        bones = [b for b in (neck_b, head_b) if b]
+        chest_b = smap.get("chest")
+        person = look_at is not None and look_at != "camera"
+        bones = [b for b in (chest_b if person else None, neck_b, head_b) if b]
         # pass 1: record the untouched base pose for every frame BEFORE inserting keys, so
         # offsets never stack on top of keys we add (matters where the base has no keys)
-        base_pose = {}
+        base_pose, target_points = {}, {}
         for i in range(n):
             sc.frame_set(f0 + i)
             base_pose[f0 + i] = {b: rig.pose.bones[b].matrix_basis.copy() for b in bones}
+            target = _look_target(look_at, f0 + i)
+            target_points[f0 + i] = _target_point(target, f0 + i) if target else None
         for i in range(n):
             f = f0 + i
             sc.frame_set(f)
@@ -299,26 +303,61 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
             hp = rig.pose.bones[head_b]
             yaw_c, pitch_c = (0.0, 0.0)
             target = _look_target(look_at, f)
+            body_turn = 0.0
             if target:
-                yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f, target)
                 if target == "camera":
+                    yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f, target,
+                                                    target_points[f])
                     yaw_c, pitch_c = max(-35, min(35, yaw_c)) * 0.45, max(-20, min(20, pitch_c)) * 0.35
-                else:     # a person: turn the head most of the way
-                    yaw_c, pitch_c = max(-60, min(60, yaw_c)) * 0.7, max(-25, min(25, pitch_c)) * 0.5
+                else:
+                    pos, facing = head_frame(rig)
+                    point = target_points[f]
+                    if isinstance(look_at, (list, tuple)) and point is not None:
+                        cue = next((s for s in look_at if s["frame_start"] <= f <= s["frame_end"]), {})
+                        cheat = math.radians(cue.get("cheat_deg", 0))
+                        delta = point - pos
+                        # Open faces a little to the current camera side of the
+                        # conversation axis while keeping the eyeline within 18°.
+                        side = delta.cross(Vector((0, 0, 1))) * cue.get("side_sign", 1.0)
+                        if side.length > 1e-6:
+                            point = pos + delta * math.cos(cheat) + side.normalized() * delta.length * math.sin(cheat)
+                    yaw_c, pitch_c = _camera_angles(pos, facing, f, target, point)
+                    if chest_b:
+                        body_turn = math.copysign(min(45, max(0, abs(yaw_c) - 65) * 0.6), yaw_c)
+                    yaw_c = max(-135, min(135, yaw_c - body_turn))
+                    pitch_c = max(-40, min(40, pitch_c))
             q_char = (Quaternion((0, 0, 1), math.radians(turn[i] + yaw_c))
                       @ Quaternion((1, 0, 0), math.radians(nod[i] + pitch_c))
                       @ Quaternion((0, 1, 0), math.radians(tilt[i])))
-            for bone, share in ((neck_b, 0.4), (head_b, 0.6 if neck_b else 1.0)):
+            for bone, share in ((chest_b if person else None, 0),
+                                (neck_b, 0.4), (head_b, 0.6 if neck_b else 1.0)):
                 if not bone:
                     continue
                 pb = rig.pose.bones[bone]
-                part = Quaternion().slerp(q_char, share)
-                d = rq @ part @ rq.inverted()
+                if target and target != "camera":
+                    if share == 0:
+                        d = Quaternion((0, 0, 1), math.radians(body_turn))
+                    else:
+                        d = facing @ Quaternion().slerp(q_char, share) @ facing.inverted()
+                else:
+                    part = Quaternion().slerp(q_char, share)
+                    d = rq @ part @ rq.inverted()
                 mw = rig.matrix_world @ pb.matrix
                 new = Matrix.LocRotScale(mw.translation, d @ mw.to_quaternion(), mw.to_scale())
                 pb.matrix = rig.matrix_world.inverted() @ new
                 bpy.context.view_layer.update()
                 _key_rot(pb, f, prev)
+                if share == 0 and target and target != "camera":
+                    # Turning the chest also translates the head around the spine.
+                    # Re-aim from that new origin instead of subtracting torso yaw
+                    # from an angle measured before the torso moved.
+                    pos, facing = head_frame(rig)
+                    yaw_c, pitch_c = _camera_angles(pos, facing, f, target, point)
+                    yaw_c = max(-135, min(135, yaw_c))
+                    pitch_c = max(-40, min(40, pitch_c))
+                    q_char = (Quaternion((0, 0, 1), math.radians(turn[i] + yaw_c))
+                              @ Quaternion((1, 0, 0), math.radians(nod[i] + pitch_c))
+                              @ Quaternion((0, 1, 0), math.radians(tilt[i])))
         result["head_bones"] = [b for b in (neck_b, head_b) if b]
         result["head_range_deg"] = {"nod": [round(float(nod.min()), 1), round(float(nod.max()), 1)],
                                     "turn": [round(float(turn.min()), 1), round(float(turn.max()), 1)],
@@ -365,13 +404,15 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
                     sc.frame_set(f)
                     hp = rig.pose.bones[head_b] if head_b else None
                     if hp is not None:
-                        yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f, target)
                         if target == "camera":
+                            yaw_c, pitch_c = _camera_angles(rig.matrix_world @ hp.head, rq, f, target)
                             yaw_c = max(-30, min(30, yaw_c)) * 0.55     # head covers the rest
                             pitch_c = max(-25, min(25, pitch_c)) * 0.65
                         else:
-                            yaw_c = max(-60, min(60, yaw_c)) * 0.3
-                            pitch_c = max(-25, min(25, pitch_c)) * 0.5
+                            pos, facing = head_frame(rig)
+                            yaw_c, pitch_c = _camera_angles(pos, facing, f, target)
+                            yaw_c = max(-30, min(30, yaw_c))
+                            pitch_c = max(-25, min(25, pitch_c))
                 away = any(abs(f - s) < fps * 0.4 for s in phrase_starts) and rng.random() < 0.6
                 if away:   # thinking glance at the start of a phrase
                     yaw = rng.choice((-1, 1)) * rng.uniform(10, 18)

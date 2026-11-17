@@ -466,7 +466,9 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
     preserve eye line, headroom and subject size while trying pedestal, angle and
     closer positions. Requires <=5% face occlusion and <=25% foreground (35% wide).
     Tries one wider size before retaining the original camera with a warning.
-    Clear shots keep identical keys; False retains original framing. Returns
+    Faces turned over 75 degrees away also trigger adjustment; face_angle reports
+    the worst sampled angle in degrees. Frontal clear shots keep identical keys;
+    False retains original framing. Returns
     occlusion fractions, frame_coverage_before/after, normalized face_screen eye
     positions (top-left origin), subject_scale, shot_size, adjustments and timing.
     Subject parts/held props and ground are ignored; other characters can occlude."""
@@ -1008,12 +1010,13 @@ async def talk_motion(character: str, frame_start: int | None = None, frame_end:
     """Make a speaking character feel alive: speech-driven head nods on stressed words,
     gentle head drift and phrase tilts, brow flashes, and eye saccades with occasional
     'thinking' glances. Rhythm comes from timeline voice audio (or the lip-sync keys).
-    Layered on top: only neck/head rotation and brow/eye-gaze shape keys are keyed, body
-    animation is untouched. look_at_camera turns eyes (and partly the head) toward the
+    Layered on top: neck/head and brow/eye-gaze keys follow live posed head targets.
+    Targets over 70 degrees to the side also turn the chest slightly; legs/root stay
+    intact. look_at_camera turns eyes (and partly the head) toward the
     shot camera. Run it LAST, after animate/lip_sync_audio/camera_shot (re-running animate
     over the same frames would overwrite the head). intensity 0.5 = calm, 1.5 = animated.
     look_at = another character/object to look at instead of the camera; listen_to = a
-    character whose stressed words get small listener nods while this one is silent
+    character to watch whose stressed words get small listener nods while this one is silent
     (the `dialog` tool sets both automatically)."""
     return await run("talk_motion", character=character, frame_start=frame_start,
                      frame_end=frame_end, intensity=intensity, head=head, eyes=eyes, brows=brows,
@@ -1076,6 +1079,9 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     gaun/dress/rok/skirt, jenggot/beard/kumis/moustache, kacamata/glasses and topi/hat;
     accessories=['glasses', 'hat'] in dicts. Pack names are checked at build time;
     missing optional assets warn and outfits fall back to installed system suits.
+    Generic seats hidden behind a peer or facing away get a clear guest chair facing
+    the conversation (plan.guest_chairs and warnings); explicit object seats are honored.
+    Dialog gaze and coverage follow the cast after walking, turning and sitting.
     MPFB missing: rigged mannequins retain word times, audio, gestures and captions,
     without facial animation. Returns plan, character rig/mesh map, frames, shots,
     duration_s, warnings and per-stage timings. Nothing is saved automatically.
@@ -1138,7 +1144,9 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     stressed words, each speaker gestures on their own words (gestures=None: off), blinks,
     a light base expression, an idle clip on rigs without animation, and cameras: "mixed" =
     two-shot for the first line then a clean single of each speaker, cut 4 frames before
-    they talk (same side of the action line). Run body clips (animate/walk) BEFORE this;
+    they talk (same side of the live head-to-head action line). Gaze samples live
+    head positions; singles follow actual face direction after walks/sits/turns.
+    Run body clips (animate/walk) BEFORE this;
     add_subtitles afterwards for captions. Returns turns, shots, next_start_frame."""
     if not lines:
         raise ValueError("lines is empty")

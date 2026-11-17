@@ -146,13 +146,22 @@ lensa agar proyeksi mata/puncak kepala/dada mengikuti desain awal: toleransi pos
 diarahkan ke garis 1/3 frame tanpa mengubah skala desain. Wajah harus terhalang
 ≤5%, mata close-up bebas, dan foreground ≤25% untuk close-up/medium (≤35% shot
 lebih lebar), diukur dengan ray grid 24×14 sampai kedalaman mata subjek.
-Kamera dialog/`script_to_scene` tetap di sisi garis dialog dan lorong kamera set;
+Gaze dialog mengikuti posisi kepala aktual sesudah jalan/duduk/berputar; target jauh
+di samping juga memutar dada sedikit. Single dibuat sesudah gaze, mengikuti arah
+wajah dan garis antar kepala saat itu agar eyeline konsisten di setiap cut.
+Kursi generik yang menyembunyikan karakter di belakang lawan bicara atau membelakangi
+percakapan diganti guest chair pada lantai kosong dengan jalur pendekatan yang bisa
+dicapai; hasil tercatat di `warnings` dan `plan.guest_chairs`. Nama kursi eksplisit
+tetap dihormati. Kamera dialog/`script_to_scene` tetap di sisi garis dialog saat itu;
 kandidat di dalam mesh atau menembus dinding ditolak. Jika gagal, coba satu ukuran
 lebih lebar; jika tetap gagal, kamera asli dipertahankan dengan `warning`.
-Shot bebas penghalang mempertahankan key kamera persis; `False` memakai framing
+Shot frontal bebas penghalang mempertahankan key kamera persis; `False` memakai framing
 lama, `True` sama dengan `"auto"`. Single dialog juga memeriksa komposisi saat
 wajah sudah bebas agar mata tetap di bagian sepertiga atas.
-Hasil `occlusion` memuat `before`/`after`, `adjusted`, `sample_frames`, `seconds`,
+Wajah yang berpaling >75° juga memicu koreksi atau warning; `face_angle_before`
+dan `face_angle` melaporkan sudut terburuk dalam derajat. Shot frontal bebas
+penghalang mempertahankan key persis. Hasil `occlusion` memuat `before`/`after`,
+`adjusted`, `sample_frames`, `seconds`,
 `frame_coverage_before`/`frame_coverage_after`, `face_screen` (posisi mata 0..1 dari
 kiri atas per sampel), `subject_scale` (rasio tinggi kepala–dada terhadap desain),
 dan `shot_size` terpilih (juga di hasil utama). Bagian karakter sendiri, prop yang

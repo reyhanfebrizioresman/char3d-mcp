@@ -1,5 +1,6 @@
 """Build a screenplay by composing the registered engine commands in-process."""
 import json
+import math
 import random
 import time
 from contextlib import contextmanager
@@ -190,6 +191,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             dispatch("set_environment", {"preset": plan["environment"], "subject": cast, "variant": abs(int(seed))})
 
     props, occupied, assigned_seats, body_started, looks, titles, lines = {}, set(), {}, set(), [], [], []
+    preferred_seats = {}
     fps = sc.render.fps
 
     def initial_idle(ident, end):
@@ -219,6 +221,13 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
 
         if target in characters:
             return characters[target]["rig"], 0
+        previous = preferred_seats.get((ident, target)) if seat else None
+        if previous and previous not in occupied:
+            return previous
+        if seat and target in props:
+            anchor = seat_anchor(bpy.data.objects[props[target]])
+            if (anchor, 0) not in occupied:
+                return anchor, 0
         if target in props and not seat:
             return props[target], 0
         obj = bpy.data.objects.get(target)
@@ -235,8 +244,67 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             elif not seat and o.get("c3d_prop_kind") == target:
                 candidates.append(((o.matrix_world.translation - position).length, o.name, 0))
         if candidates:
-            _, name, index = min(candidates)
-            return name, index
+            from .seating import _seat
+            from .gaze import head_frame
+            peers = [head_frame(bpy.data.objects[n])[0] for n in cast if n != rig.name]
+            suitable = []
+            for candidate in sorted(candidates):
+                _, name, index = candidate
+                if not seat or not peers:
+                    suitable.append(candidate)
+                    continue
+                center, front, _, _ = _seat(name, index)
+                other = min(peers, key=lambda p: (p-center).length)
+                delta = other - center
+                hidden = abs(delta.x) < 0.55 and delta.y < -0.15
+                away = front.xy.dot(delta.xy) < 0
+                if not hidden and not away:
+                    suitable.append(candidate)
+            if suitable:
+                _, name, index = suitable[0]
+                return name, index
+            if seat and peers:
+                from .navigation import footprints, _distance, Planner
+                from .terrain import GroundQuery
+                ground = GroundQuery()
+                raw = footprints(rig, set(), ground, sc.frame_current)
+                other = min(peers, key=lambda p: (p-position).length)
+                front = Vector((other.x-position.x, other.y-position.y, 0)).normalized()
+                if front.length < 1e-6:
+                    front = Vector((1, 0, 0))
+                side = Vector((-front.y, front.x, 0))
+                location = None
+                # Search the conversation's open floor, leaving room for both the
+                # chair footprint and the approach. Never mutate on planning failure.
+                for back in (0.1, 0.4, 0.7, 1.0):
+                    for offset in (0, -0.4, 0.4, -0.8, 0.8):
+                        point = position - front * back + side * offset
+                        if any(float(_distance([list(point.xy)], poly)[0]) < 0.48 for _, poly in raw):
+                            continue
+                        approach = point + front * 0.45
+                        route = [position.copy(), approach]
+                        planner = Planner(rig, route, ground, set(), sc.frame_current)
+                        try:
+                            path = planner.plan(route, lambda r: [], escape=True)
+                        except ValueError:
+                            continue
+                        if (path[-1]-approach).length > 0.08:
+                            continue
+                        location = point
+                        break
+                    if location is not None:
+                        break
+                if location is None:
+                    raise ValueError(f"No clear guest-chair position for {ident}; specify an explicit seat")
+                location.z = ground.sample(location.x, location.y)[0]
+                rotation = math.degrees(math.atan2(front.x, -front.y))
+                added = dispatch("add_prop", {"kind": "chair", "location": list(location), "rotation_z": rotation})
+                props[target] = added["root"]
+                note = f"{ident}: added guest chair {added['root']} facing the conversation; matching seats hide the sitter or face away"
+                warnings.append(note)
+                plan.setdefault("guest_chairs", []).append({"character": ident, "root": added["root"],
+                    "location": list(location), "rotation_z": rotation, "reason": note})
+                return seat_anchor(bpy.data.objects[added["root"]]), 0
         kind = "chair" if target == "seat" else target
         if kind not in PROPS:
             raise ValueError(f"unknown scene target: {target!r}")
@@ -304,6 +372,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     if action == "sit":
                         occupied.discard(assigned_seats.pop(ident, None))
                         seat, index = resolve(beat["on"], ident, seat=True)
+                        preferred_seats[ident, beat["on"]] = (seat, index)
                         occupied.add((seat, index))
                         assigned_seats[ident] = (seat, index)
                         args.update(seat=seat, seat_index=index)
@@ -363,21 +432,29 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             if cues or load_words(bpy.data.objects[char["mesh"]], 1, final):
                 dispatch("auto_expression", {"character": rig, "frame_start": 1, "frame_end": final,
                                               "language": language, "cues": cues})
-    with timed("cameras"):
-        if turns and camera != "none":
-            coverage = dispatch("dialog_direct", {"turns": turns, "characters": cast, "camera": camera,
-                "expression": None, "blink": False, "motion": False, "gestures": None, "idle": False,
-                "frame_start": 1, "frame_end": final, "shot_prefix": prefix,
-                "two_shot_angle": 20.0 if plan["environment"] == "office" else 0.0,
-                "shot": "medium_close" if plan["environment"] == "office" else "medium",
-                "single_angle_bias": 25.0,
-                "single_angle_limits": [-40.0, 80.0] if plan["environment"] == "office" else None})
-            shots.extend(coverage.get("shots", []))
-        else:
-            # Even camera='none' builds a renderable scene, without editorial cuts.
-            shot = dispatch("camera_shot", {"subject": cast, "shot": "medium_full", "angle": 0,
-                "start_frame": 1, "end_frame": final, "name": prefix + "Wide"})
-            shots.append(shot)
+    def make_cameras():
+        with timed("cameras"):
+            if turns and camera != "none":
+                coverage = dispatch("dialog_direct", {"turns": turns, "characters": cast, "camera": camera,
+                    "expression": None, "blink": False, "motion": False, "gestures": None, "idle": False,
+                    "frame_start": 1, "frame_end": final, "shot_prefix": prefix,
+                    "two_shot_angle": 20.0 if plan["environment"] == "office" else 0.0,
+                    "shot": "medium_close" if plan["environment"] == "office" else "medium",
+                    "single_angle_bias": 25.0,
+                    "single_angle_limits": [-40.0, 80.0] if plan["environment"] == "office" else None})
+                shots.extend(coverage.get("shots", []))
+            else:
+                # Even camera='none' builds a renderable scene, without editorial cuts.
+                shot = dispatch("camera_shot", {"subject": cast, "shot": "medium_full", "angle": 0,
+                    "start_frame": 1, "end_frame": final, "name": prefix + "Wide"})
+                shots.append(shot)
+
+    if len(cast) == 1 or any(cue["target"] == "camera" for cue in looks):
+        make_cameras()
+        if len(cast) > 1:
+            # Explicit camera glances need a provisional camera to sample. Final
+            # coverage replaces these shots after the head performance is baked.
+            shots.clear()
     with timed("performance"), _bones_only():
         for i, (ident, char) in enumerate(characters.items()):
             rig = char["rig"]
@@ -411,6 +488,8 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     if "no speech found" not in str(exc):
                         raise
                     warnings.append(f"{ident}: no speech signal; gestures skipped")
+    if len(cast) > 1:
+        make_cameras()
     with timed("lighting"):
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
     with timed("graphics"):

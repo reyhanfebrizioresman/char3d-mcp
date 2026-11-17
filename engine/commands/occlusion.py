@@ -8,6 +8,7 @@ from mathutils import Euler, Vector
 from mathutils.bvhtree import BVHTree
 
 from .anim import semantic_map
+from .gaze import head_frame, face_angle
 from .util import is_helper, scene_bounds
 
 
@@ -194,10 +195,11 @@ def frame_coverage(pos, rot, lens, sensor, meshes, groups):
 
 
 class VisibilityProbe:
-    def __init__(self, targets, shot, height, angle_limits=None, action_line=None):
+    def __init__(self, targets, shot, height, angle_limits=None, action_line=None, face_limit=75.0):
         self.shot, self.height = shot, height
         self.angle_limits = angle_limits
         self.action_line = action_line
+        self.face_limit = face_limit
         self.groups = {}
         self.rigs = {_rig(o) for o in targets} - {None}
         ignored = set(targets) | self.rigs
@@ -211,6 +213,7 @@ class VisibilityProbe:
             self.groups.setdefault(r or obj, []).append(obj)
         self.ignored = ignored
         self.cache, self.samples = {}, []
+        self.faces = {}
         self.seconds = 0.0
         aspect = bpy.context.scene.render.resolution_y / bpy.context.scene.render.resolution_x
         self.sensor = (36 * max(1, aspect), 36 * min(1, aspect))
@@ -251,21 +254,24 @@ class VisibilityProbe:
                 if not ignored_sight:
                     meshes.append(mesh)
         groups = self.points()
+        self.faces[frame] = [head_frame(root) if root.type == "ARMATURE" else None
+                             for root in self.groups]
         rotation = rotation or (aim-position).to_track_quat("-Z", "Y").to_euler()
         targets = framing_targets(position, rotation, lens, groups, self.sensor, self.shot)
         line = []
         for name in (self.action_line or [])[:2]:
             rig = bpy.data.objects[name]
             ev = rig.evaluated_get(dg)
-            hips = semantic_map(rig).get("hips")
-            line.append(ev.matrix_world @ ev.pose.bones[hips].head if hips else ev.matrix_world.translation.copy())
+            head = semantic_map(rig).get("head")
+            line.append(head_frame(rig)[0] if head else ev.matrix_world.translation.copy())
         self.samples.append((frame, position.copy(), aim.copy(), meshes, groups, line, rotation.copy(), lens, targets, solids))
         self.seconds += time.perf_counter() - started
 
     def measure(self, adjustment=None):
         worst, body_worst, eye_blocked, safe = 0.0, 0.0, False, True
         coverage, composed, screens, sizes = 0.0, True, [], []
-        for _, pos, aim, meshes, groups, line, rot, mm, targets, solids in self.samples:
+        angle = 0.0
+        for frame, pos, aim, meshes, groups, line, rot, mm, targets, solids in self.samples:
             original = pos
             if adjustment is not None:
                 pos, aim = adjusted(pos, aim, self.height, adjustment)
@@ -285,6 +291,9 @@ class VisibilityProbe:
                         safe = False
             inside = any(m.inside(pos) for m in solids)
             safe &= not inside
+            for face in self.faces[frame]:
+                if face is not None:
+                    angle = max(angle, face_angle(*face, pos))
             for group, target in zip(groups, targets):
                 face, eyes, body = group
                 blocked = lambda p: inside or any(m.hit(pos, p) for m in meshes)
@@ -310,17 +319,17 @@ class VisibilityProbe:
                 sizes.append(round(scale, 4))
             # Avoid spending grid rays on candidates that already fail visibility,
             # composition or collision checks. The original always gets a report.
-            if adjustment is None or (safe and composed and worst <= 0.05):
+            if adjustment is None or (safe and composed and worst <= 0.05 and angle <= self.face_limit):
                 coverage = max(coverage, frame_coverage(pos, rot, mm, self.sensor, meshes, groups))
             else:
                 return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
-                            coverage=1.0, composed=False, screens=screens, sizes=sizes)
+                            coverage=1.0, composed=False, screens=screens, sizes=sizes, face_angle=angle)
         return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
-                    coverage=coverage, composed=composed, screens=screens, sizes=sizes)
+                    coverage=coverage, composed=composed, screens=screens, sizes=sizes, face_angle=angle)
 
     def accepts(self, value):
         limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
-        return (value['safe'] and value['face'] <= 0.05 and value['composed'] and
+        return (value['safe'] and value['face'] <= 0.05 and value['face_angle'] <= self.face_limit and value['composed'] and
                 not (self.shot in {"close_up", "extreme_close_up"} and value['eyes']) and
                 value['coverage'] <= limit)
 
@@ -330,7 +339,7 @@ class VisibilityProbe:
         limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
         # Preserve the exact keys of an unobstructed design, including intentional
         # pans/tilts and close crops. Composition constraints apply to corrections.
-        blocked = (before['face'] > 0.05 or before['coverage'] > limit or
+        blocked = (before['face'] > 0.05 or before['face_angle'] > self.face_limit or before['coverage'] > limit or
                    (self.shot in {"close_up", "extreme_close_up"} and before['eyes']) or
                    (require_composition and not self.accepts(before)))
         chosen, after = None, before
@@ -340,12 +349,21 @@ class VisibilityProbe:
                 if self.accepts(value):
                     chosen, after = candidate, value
                     break
+            if chosen is None and before['face_angle'] > self.face_limit:
+                for az in (60, -60, 90, -90, 120, -120, 150, -150, 180):
+                    candidate = {"angle": az}
+                    value = self.measure(candidate)
+                    if self.accepts(value):
+                        chosen, after = candidate, value
+                        break
         report = {"before": round(before['face'], 4), "after": round(after['face'], 4),
                   "adjusted": [] if chosen is None else [
                       f"{key}={value:g}" for key, value in chosen.items()],
                   "body_before": round(before['body'], 4), "body_after": round(after['body'], 4),
                   "frame_coverage_before": round(before['coverage'], 4),
                   "frame_coverage_after": round(after['coverage'], 4),
+                  "face_angle_before": round(before['face_angle'], 2),
+                  "face_angle": round(after['face_angle'], 2),
                   "face_screen": after['screens'], "subject_scale": after['sizes'],
                   "shot_size": self.shot, "sample_frames": [s[0] for s in self.samples]}
         if enabled and blocked and chosen is None:

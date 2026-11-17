@@ -17,6 +17,7 @@ from mathutils import Vector
 
 from . import command
 from .talk import _rig_of
+from .gaze import head_frame
 
 
 def _facing_az(rig):
@@ -83,12 +84,20 @@ def _addressee(turns, i, speaker, others):
 def _look_schedule(char, turns, others, f0, f1):
     """[{frame_start, frame_end, target}] for one character over the whole scene."""
     sched = []
+    sc = bpy.context.scene
+    saved = sc.frame_current
+    sc.frame_set(f0)
+    origin = head_frame(_rig_of(char))[0]
+    sides = {n: 1.0 if head_frame(_rig_of(n))[0].x >= origin.x else -1.0 for n in others}
+    sc.frame_set(saved)
     for i, t in enumerate(turns):
         a = f0 if i == 0 else t["start"]
         b = f1 if i == len(turns) - 1 else turns[i + 1]["start"] - 1
         target = t["speaker"] if t["speaker"] != char else _addressee(turns, i, char, others)
         if target and b >= a:
-            sched.append({"frame_start": a, "frame_end": b, "target": target})
+            sched.append({"frame_start": a, "frame_end": b, "target": target,
+                          "cheat_deg": 35.0 if i == 0 else 18.0,
+                          "side_sign": sides.get(target, 1.0)})
     return sched
 
 
@@ -146,40 +155,6 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
             except (ValueError, RuntimeError):
                 pass      # no face shapes (mannequin)
 
-    shots = []
-    if camera != "none":
-        plan = []                     # (start, speaker or None for a two-shot)
-        if camera == "two_shot":
-            plan = [(f0, None)]
-        else:
-            for i, t in enumerate(merged):
-                cut = f0 if i == 0 else max(f0 + 1, t["start"] - int(lead_frames))
-                single = not (camera == "mixed" and i == 0 and len(names) > 1)
-                plan.append((cut, t["speaker"] if single else None))
-        plan = [p for k, p in enumerate(plan) if k == 0 or p[0] > plan[k - 1][0]]
-        for k, (a, who) in enumerate(plan):
-            b = (plan[k + 1][0] - 1) if k + 1 < len(plan) else f1
-            if b <= a:
-                continue
-            if who is None:
-                angle, subj, size = float(two_shot_angle), names, two_shot
-            else:
-                az = _facing_az(rigs[who])
-                bias = float(single_angle_bias)
-                angle = (az - math.copysign(min(-bias, abs(az)), az) if bias <= 0 else
-                         az + math.copysign(bias, az)) if abs(az) > 1e-3 else 0.0
-                if single_angle_limits is not None:
-                    angle = max(float(single_angle_limits[0]), min(float(single_angle_limits[1]), angle))
-                subj, size = [who], shot
-            r = camera_shot(subject=subj, shot=size, move=move, start_frame=a, end_frame=b,
-                            angle=angle, elevation=3.0, intensity=0.35, name=f"{shot_prefix}{k + 1:02d}",
-                            angle_limits=single_angle_limits or [-89.0, 89.0], action_line=names,
-                            require_composition=True)
-            shots.append({"camera": r.get("camera", f"Dialog{k + 1:02d}"), "frames": [a, b],
-                          "subject": "two_shot" if who is None else who,
-                          "angle": round(angle, 1), "occlusion": r["occlusion"]})
-        report["shots"] = shots
-
     for i, (n, rig) in enumerate(rigs.items()):
         others = [m for m in names if m != n]
         if blink:
@@ -188,7 +163,7 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
             except (ValueError, RuntimeError):
                 pass
         if motion:
-            sched = _look_schedule(n, merged, others, f0, f1)
+            sched = _look_schedule(n, turns, others, f0, f1)
             r = talk_motion(n, f0, f1, look_at=sched, look_at_camera=False, seed=3 + 11 * i,
                             listen_to=others[0] if len(others) == 1 else None)
             report.setdefault("motion", {})[n] = {"listener_nods": len(r.get("listener_nods", [])),
@@ -201,6 +176,44 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                     "semantic": [s["word"] for s in g.get("semantic", [])]}
             except ValueError:
                 pass          # this character never speaks
+    shots = []
+    if camera != "none":
+        plan = []                     # (start, speaker or None for a two-shot)
+        if camera == "two_shot":
+            plan = [(f0, None)]
+        else:
+            for i, t in enumerate(turns):
+                cut = f0 if i == 0 else max(f0 + 1, t["start"] - int(lead_frames))
+                single = not (camera == "mixed" and i == 0 and len(names) > 1)
+                plan.append((cut, t["speaker"] if single else None))
+        plan = [p for k, p in enumerate(plan) if k == 0 or p[0] > plan[k - 1][0]]
+        for k, (a, who) in enumerate(plan):
+            b = (plan[k + 1][0] - 1) if k + 1 < len(plan) else f1
+            if b <= a:
+                continue
+            line_of_action = names
+            if who is None:
+                angle, subj, size = float(two_shot_angle), names, two_shot
+            else:
+                az = _facing_az(rigs[who])
+                bias = float(single_angle_bias)
+                angle = (az - math.copysign(min(-bias, abs(az)), az) if bias <= 0 else
+                         az + math.copysign(bias, az)) if abs(az) > 1e-3 else 0.0
+                if single_angle_limits is not None:
+                    angle = max(float(single_angle_limits[0]), min(float(single_angle_limits[1]), angle))
+                subj, size = [who], shot
+                turn_index = min(range(len(turns)), key=lambda i: abs(turns[i]["start"] - a))
+                partner = _addressee(turns, turn_index, who, [n for n in names if n != who])
+                line_of_action = [n for n in names if n in (who, partner)]
+            r = camera_shot(subject=subj, shot=size, move=move, start_frame=a, end_frame=b,
+                            angle=angle, elevation=3.0, intensity=0.35, name=f"{shot_prefix}{k + 1:02d}",
+                            angle_limits=single_angle_limits or [-89.0, 89.0], action_line=line_of_action,
+                            require_composition=True, face_coverage=len(names) > 1, coverage_turns=turns)
+            shots.append({"camera": r.get("camera", f"Dialog{k + 1:02d}"), "frames": [a, b],
+                          "subject": "two_shot" if who is None else who,
+                          "angle": round(angle, 1), "occlusion": r["occlusion"]})
+        report["shots"] = shots
+
     sc.frame_set(f0)
     return report
 

@@ -39,7 +39,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
-- Dialog: `dialog`, `stage_dialog`, `script_to_scene` (catalog outfits/accessories + hair/cloth motion)
+- Dialog: `dialog`, `stage_dialog`, `script_to_scene` (live dialog coverage, guest seating, outfits + hair/cloth motion)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
@@ -270,8 +270,16 @@ optional per line `pause_s` / `delay_s`). It:
   give small nods on the talker's stressed words; blinks; base `expression` (smile 0.3);
   an idle clip on rigs without animation; `gestures` per speaker (None = off),
 - cameras (`camera`): `mixed` = two-shot for the first line, then a clean single of each
-  speaker (`shot` size) cut 4 frames before they speak, all from the -Y side (180° rule);
+  speaker (`shot` size) cut 4 frames before they speak, on the same side of the live
+  head-to-head action line (initially -Y; 180° rule);
   `singles`, `two_shot`, `none` (then frame it yourself with `camera_shot`).
+Gaze samples the live posed head of each target at every keyed frame, including
+pelvis turns and seated height. Targets beyond 70° also receive a small chest turn
+(up to 45°); root/legs stay intact. Dialog opens heads 18° toward the camera side
+(35° on the opening line for establishing coverage) so both faces fit a two-shot;
+eyes track the remaining angle. Singles are baked
+after this performance, from the actual face direction beside the current eyeline,
+following moves and keeping the same side of the current head-to-head action line.
 Run body clips (animate, walk) BEFORE `dialog` (it keys head/eyes/arms on top); add
 `add_subtitles()` afterwards for captions of every speaker. `talk_motion(look_at=...,
 listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
@@ -338,13 +346,20 @@ Other dict beats: `stand`, `hold` (`prop`, `hand`), `gesture`/`pose` (`name` fro
 clip/pose library), `look` (`at` character/object/camera or XY/XYZ), `pause` (`seconds`),
 and `{"title": "Later", "subtitle": "...", "seconds": 2}`.
 
-Body beats chain on one timeline before dialog, expressions and shot cameras; blinks,
-gaze/gestures follow, then lighting samples the final body motion and hair plus loose
-clothing are baked last. Skirts/dresses get cloth motion automatically; tight garments
+Body beats chain on one timeline before speech and expressions; blinks, gaze and
+gestures are baked before final dialog coverage. Explicit camera glances sample
+provisional cameras, replaced by final coverage afterwards. Lighting samples the
+final body motion, then hair and loose clothing are baked last. Skirts/dresses get cloth motion automatically; tight garments
 and short hair are skipped normally, including characters with no eligible parts.
 Speech after a walk/sit waits for the action's end. Staging uses `stage_dialog`; generic
-seat names pick a free environment seat or add a chair. Other known prop kinds are
-created as needed. Exact scene object names also work. MPFB missing uses rigged
+seat names pick a free environment seat or add a chair. Generic seats that hide
+the sitter behind a peer from the main camera side, or
+face over 90° away from the nearest peer, are replaced with a guest chair on clear
+conversation floor facing the peer. Placement checks furniture/character footprints
+and a reachable approach. Builds report the choice in `warnings` and
+`plan.guest_chairs`; parse-only plans do not inspect or place scene furniture.
+Exact seat object names are always honored, with gaze/cameras adapting instead.
+Other known prop kinds are created as needed. MPFB missing uses rigged
 mannequins, with timing/audio/captions and gestures but no face, hair or clothes.
 The result includes `characters` (id → `{rig, mesh, realistic}`), actual beat `frames`,
 `lines`, `shots`, `duration_s`, `warnings`, and `timings` in seconds. `camera="none"`
@@ -684,13 +699,18 @@ intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
   also extreme_close_up) or <= 35% for wider sizes. Coverage uses a 24x14 ray grid,
   ending at the nearest subject's eye-depth plane. Subject geometry uses the same
   exclusions as face rays. Camera positions inside scenery/subject bounds or
-  across walls are rejected; dialog preserves its action-line side and camera aisle.
+  across walls are rejected; dialog preserves the current action-line side.
 - If no candidate passes, try exactly one wider size (close_up → medium_close →
   medium → medium_full; extreme_close_up → close_up), with the same checks. If
-  that fails, keep the original camera and return a `warning`. Unobstructed shots
+  that fails, keep the original camera and return a `warning`. Frontal unobstructed shots
   retain exactly the original transform/lens keys; `False` retains original framing.
   Dialog singles additionally require composition even if face/foreground are clear,
   so bounds-based seated framing cannot leave the eyes against the frame edge.
+- Face orientation is checked with the live anatomical head frame: a face angle
+  over 75° triggers adjustment (larger azimuth candidates are tried for turned
+  faces), or a warning if no safe view passes. Frontal unobstructed shots retain
+  their exact original keys. Results add `face_angle_before` and `face_angle`
+  (worst sampled degrees) alongside geometric occlusion fractions.
 - Results include `occlusion`: worst sampled face fraction `before`/`after`,
   `adjusted`, body fractions, `sample_frames`, timing `seconds`,
   `frame_coverage_before`/`frame_coverage_after`, `face_screen` (sampled normalized

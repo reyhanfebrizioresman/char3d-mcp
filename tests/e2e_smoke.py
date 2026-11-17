@@ -2321,6 +2321,122 @@ async def _occlusion_checks(call):
           "clear keys identical | timed blockers/walls OK | podcast composition OK")
 
 
+async def _dialog_gaze_checks(call):
+    """Moving dialog: live eyelines, face coverage, explicit seats and two-shots."""
+    import shutil
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def python(code):
+        return (await data('run_blender_python', code=textwrap.dedent(code)))['result']
+
+    script = '''JUDUL: Ngobrol Pagi
+LOKASI: office
+SARI (perempuan, 27, gaun, rambut panjang): Halo Pak Dimas, selamat pagi!
+DIMAS (laki-laki, 40, jenggot, kacamata, formal): Pagi, Sari. Silakan duduk dulu.
+[Sari duduk di kursi]
+SARI: Terima kasih. Hari ini kita bahas tiga ide baru.
+DIMAS: Bagus sekali! Saya tidak sabar mendengarnya.
+'''
+    await call('new_scene')
+    built = await data('script_to_scene', script=script, language='id', seed=3)
+    assert len(built['plan']['guest_chairs']) == 1, built['plan']
+    assert any('guest chair' in w for w in built['warnings']), built['warnings']
+    sit = next(b for b in built['plan']['beats'] if b.get('do') == 'sit')
+    assert sit['result']['seat'] != 'Env_office_chair_seat', sit
+
+    async def measure(lines, rigs, all_frames=False):
+        # Derive the face axis independently from rest-to-pose matrices, and use
+        # actual evaluated scene.camera keys. Both native rigs face rest -Y.
+        return await python(f'''
+            import math
+            from engine.commands.anim import semantic_map
+            from engine.commands.camera import _subjects
+            from engine.commands.occlusion import VisibilityProbe
+            from bpy_extras.object_utils import world_to_camera_view
+            sc=bpy.context.scene
+            def head(name):
+                rig=bpy.data.objects[name]
+                bone=semantic_map(rig)['head']
+                pb=rig.pose.bones[bone]
+                deform=rig.matrix_world @ pb.matrix @ rig.data.bones[bone].matrix_local.inverted()
+                return rig.matrix_world @ ((pb.head+pb.tail)/2), (deform.to_3x3() @ Vector((0,-1,0))).normalized()
+            result=[]
+            for line in {lines!r}:
+                middle=(line['start']+line['end'])//2
+                frames=range(line['start'],line['end']+1) if {all_frames!r} else [middle]
+                worst=0
+                for frame in frames:
+                    sc.frame_set(frame)
+                    p,forward=head(line['speaker'])
+                    camera=sc.camera
+                    angle=math.degrees(forward.angle(camera.matrix_world.translation-p))
+                    worst=max(worst,angle)
+                    if frame!=middle:
+                        continue
+                    other=next(n for n in {rigs!r} if n!=line['speaker'])
+                    lp,lf=head(other)
+                    listener=math.degrees(lf.angle(p-lp))
+                    parts=_subjects([line['speaker']])
+                    probe=VisibilityProbe(parts,'medium',1.8)
+                    groups=probe.points()
+                    probe.capture(frame,camera.location,camera.location+camera.matrix_world.to_quaternion() @ Vector((0,0,-1)),camera.rotation_euler,camera.data.lens)
+                    fraction=probe.measure()['face']
+                    inside=all(0<=uv.x<=1 and 0<=uv.y<=1 and uv.z>0 for g in groups for point in g[0] for uv in [world_to_camera_view(sc,camera,point)])
+                    row=dict(frame=frame,angle=angle,listener=listener,fraction=fraction,inside=inside)
+                row['worst']=worst
+                result.append(row)
+        ''')
+
+    rigs = [c['rig'] for c in built['characters'].values()]
+    measured = await measure(built['lines'], rigs, all_frames=True)
+    assert all(r['angle'] <= 45 and r['fraction'] <= 0.05 and r['inside'] for r in measured), measured
+    assert all(r['worst'] <= 60 for r in measured[1:]), measured
+    assert all(r['listener'] <= 25 for r in measured if r['frame'] > sit['frames'][1]), measured
+    await python('bpy.context.scene.render.resolution_x=512\nbpy.context.scene.render.resolution_y=288')
+    renders = await call('render_frames', frames=[20,110,175,215,250,320],
+                         camera='scene', engine_name='eevee', size=512)
+    for item in (json.loads(t) for t in text_of(renders)):
+        shutil.copyfile(item['path'], os.path.join(ROOT, 'output', f"dialog_gaze_fixed_{item['frame']:04d}.png"))
+    await call('save_project', path='dialog_gaze_fixed.blend')
+
+    # Continuous two-shot coverage after the sit: every sampled face stays visible.
+    two = await python(f'''
+        from engine.commands.dialog import dialog_direct
+        result=dialog_direct({built['lines']!r},characters={rigs!r},camera='two_shot',
+                            frame_start={sit['frames'][1]+1},frame_end={built['frames'][1]},
+                            motion=False,blink=False,gestures=None,idle=False,expression=None,
+                            shot_prefix='MovingTwo')
+    ''')
+    assert two['shots'][0]['occlusion']['face_angle'] <= 75, two
+    assert two['shots'][0]['occlusion']['after'] <= 0.05, two
+
+    # An explicit desk seat must remain honored; gaze/cameras adapt to it instead.
+    await call('new_scene')
+    explicit = await data('script_to_scene', subtitles=False, camera='singles', script={
+        'environment':'office','characters':[{'id':'Mover'},{'id':'Peer'}],
+        'beats':[{'say':'Mover','text':'Halo.'},
+                 {'do':'sit','who':'Mover','on':'Env_office_chair_seat'},
+                 {'say':'Mover','text':'Terima kasih atas idenya.'},
+                 {'say':'Peer','text':'Bagus sekali.'}]})
+    explicit_sit = explicit['plan']['beats'][1]
+    assert explicit_sit['result']['seat'] == 'Env_office_chair_seat', explicit_sit
+    assert not explicit['plan'].get('guest_chairs'), explicit
+    explicit_rows = await measure(explicit['lines'],[c['rig'] for c in explicit['characters'].values()])
+    assert all(r['angle'] <= 45 and r['fraction'] <= 0.05 for r in explicit_rows), explicit_rows
+    assert all(r['listener'] <= 25 for r in explicit_rows[1:]), explicit_rows
+    # The hand-made API also watches a live listener target without a look_at schedule.
+    await data('talk_motion', character=explicit['characters']['Peer']['rig'],
+               listen_to=explicit['characters']['Mover']['rig'], look_at_camera=False)
+    watching = await measure(explicit['lines'],[c['rig'] for c in explicit['characters'].values()])
+    assert watching[1]['listener'] <= 10, watching
+    await call('save_project', path='dialog_gaze_explicit.blend')
+    print(f"dialog gaze: face max {max(r['angle'] for r in measured):.2f} deg | "
+          f"post-sit listener max {max(r['listener'] for r in measured[2:]):.2f} deg | "
+          "guest chair/explicit seat/live singles/two-shot OK")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -2343,6 +2459,7 @@ async def main():
         assert "script_to_scene" in tools
         await _script_scene_checks(call)
         await _occlusion_checks(call)
+        await _dialog_gaze_checks(call)
         await _lighting_checks(call)
         await call("new_scene")
         await call("add_primitive", kind="monkey", name="Hero", location=[0, 0, 1])

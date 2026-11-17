@@ -17,6 +17,7 @@ from mathutils import Euler, Vector
 from . import command
 from .util import RENDERABLE, is_helper, obj_or_raise, scene_bounds
 from .occlusion import VisibilityProbe, adjusted, fit_frame, framing_targets, sample_frames
+from .gaze import head_frame
 
 # shot size: (visible height as multiple of subject height, aim height fraction, lens mm)
 SHOTS = {
@@ -135,7 +136,8 @@ def list_camera_moves():
 def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_frame=72,
                 angle=20.0, elevation=5.0, intensity=1.0, ease="ease_in_out", lens=None,
                 handheld=0.0, roll=0.0, depth_of_field=False, f_stop=2.8, name=None,
-                avoid_occlusion="auto", angle_limits=None, action_line=None, require_composition=False):
+                avoid_occlusion="auto", angle_limits=None, action_line=None, require_composition=False,
+                face_coverage=False, coverage_turns=None):
     """Create a baked shot and cut marker, preserving composition while clearing faces.
     False keeps old framing. angle_limits/action_line constrain internal dialog coverage.
     """
@@ -168,6 +170,11 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
 
     aspect = sc.render.resolution_y / sc.render.resolution_x
     sensor_v = cam_data.sensor_width * min(1.0, aspect)
+    action_side = 1.0
+    if face_coverage and action_line and len(action_line) >= 2:
+        sc.frame_set(sc.frame_start)
+        axis = head_frame(bpy.data.objects[action_line[1]])[0] - head_frame(bpy.data.objects[action_line[0]])[0]
+        action_side = 1.0 if axis.x >= 0 else -1.0
     sc.frame_set(start)
     lo, hi = scene_bounds(targets)
     H = max(hi.z - lo.z, 0.05)
@@ -175,7 +182,9 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     def design(size):
         frac_h, aim_frac, default_lens = SHOTS[size]
         base_lens = float(lens or default_lens)
-        probe = VisibilityProbe(targets, size, H, angle_limits, action_line)
+        probe = VisibilityProbe(targets, size, H, None if face_coverage else angle_limits, action_line)
+        if face_coverage and len(probe.rigs) == 1:
+            probe.face_limit = 45.0
         samples = set(sample_frames(start, end, sc.render.fps / sc.render.fps_base))
         trajectory = []
         fn = MOVES[move][0]
@@ -206,6 +215,42 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             if move in ("static", "handheld", "pan_left", "pan_right", "tilt_up", "tilt_down",
                         "zoom_in", "crash_zoom"):
                 aim = base_focus + right * p.get("aim_side", 0.0) * H + Vector((0, 0, p.get("aim_up", 0.0) * H))
+
+            if face_coverage and probe.rigs:
+                frames = [head_frame(r) for r in sorted(probe.rigs, key=lambda r: r.name)]
+                normal = Vector((math.sin(math.radians(angle)), -math.cos(math.radians(angle)), 0))
+                if action_line and len(action_line) >= 2:
+                    axis = head_frame(bpy.data.objects[action_line[1]])[0] - head_frame(bpy.data.objects[action_line[0]])[0]
+                    side = Vector((axis.y, -axis.x, 0)) * action_side
+                    if side.length > 1e-6:
+                        normal = side.normalized()
+                if len(frames) == 1:
+                    head_pos, orient = frames[0]
+                    forward = orient @ Vector((0, -1, 0))
+                    direction = (forward + normal * 0.35).normalized()
+                    # Face-relative coverage follows root turns and seating, even
+                    # for a nominally static shot. Preserve the designed eye line.
+                    aim = Vector((head_pos.x, head_pos.y, focus.z))
+                else:
+                    direction = normal
+                    # Mixed standing/seated bounds otherwise aim below the desk
+                    # and let foreground screens cover a face. Frame the heads.
+                    aim = Vector((focus.x, focus.y, sum(p.z for p, _ in frames) / len(frames) - 0.12 * H))
+                    active = next((t['speaker'] for t in (coverage_turns or [])
+                                   if t['start'] <= f <= t['end']), None)
+                    if active:
+                        speaker_forward = head_frame(bpy.data.objects[active])[1] @ Vector((0, -1, 0))
+                        candidate = (normal + speaker_forward * 0.4).normalized()
+                        # Favor the current speaker only while every face still
+                        # fits inside the two-shot's frontal visibility cone.
+                        if all((q @ Vector((0, -1, 0))).angle(candidate) <= math.radians(73)
+                               for _, q in frames):
+                            direction = candidate
+                    lateral = Vector((-direction.y, direction.x, 0)).normalized()
+                    span = max(p.dot(lateral) for p, _ in frames) - min(p.dot(lateral) for p, _ in frames)
+                    dist = max(dist, (span + 0.3 * H) * lens_mm / cam_data.sensor_width)
+                pos = aim + direction * dist
+                pos.z += math.sin(el) * dist
 
             if "to_face" in p:   # zooms drift the aim from the shot's focus up to the face
                 aim = aim + Vector((0, 0, (0.92 - aim_frac) * H * max(0.0, p["to_face"])))
