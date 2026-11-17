@@ -118,6 +118,9 @@ def transform_object(name, location=None, rotation_deg=None, scale=None):
         obj.rotation_euler = [math.radians(a) for a in rotation_deg]
     if scale is not None:
         obj.scale = Vector(scale if hasattr(scale, "__len__") else (scale,) * 3)
+    # Refresh matrix_world now: later commands read world-space landmarks, and a
+    # stale matrix made e.g. animate build its proxy unrotated (bent/akimbo arms).
+    bpy.context.view_layer.update()
     return _describe(obj)
 
 

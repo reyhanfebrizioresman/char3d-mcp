@@ -4,7 +4,7 @@ import math
 import time
 
 import bpy
-from mathutils import Quaternion, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 from . import command, anim
 from .gaze import head_frame
@@ -383,6 +383,11 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
         heights = smooth_heights([ground.sample(p.x, p.y)[0] for p, _yaw in samples], half//2)
         samples = [(Vector((p.x, p.y, z)), yaw) for (p, yaw), z in zip(samples, heights)]
 
+    # The proxy is authored facing -Y (canonical); world route offsets and headings
+    # are turned into that frame, and _drive turns the result back to the rig's yaw.
+    turn = anim.rig_yaw(rig)
+    undo = Matrix.Rotation(-turn, 3, "Z")
+
     def author(basic, lm, direct, carry):
         d, rest_deg = anim._dims(lm), anim._arm_rest_deg(lm)
         mw = basic.matrix_world
@@ -415,16 +420,17 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                 root_heights.append(root_rest.z + up)
             # _drive retargets offsets from the proxy rest onto the target rest.
             # Rigify's torso control need not share the proxy pelvis' rest head.
+            offset = undo @ Vector((pos.x - root_rest.x, pos.y - root_rest.y, 0.0))
             anim._key_basic(basic, f, rots,
-                            (pos.x - root_rest.x, up if ground else up*w, root_rest.y - pos.y))
+                            (offset.x, up if ground else up*w, -offset.y))
             bpy.context.view_layer.update()
             hp = basic.pose.bones["hips"]
             world = mw @ hp.matrix
-            q = Quaternion((0, 0, 1), yaw - rest_yaw) @ world.to_quaternion()
+            q = Quaternion((0, 0, 1), yaw - turn - rest_yaw) @ world.to_quaternion()
             anim._set_world_rot(basic, hp, q)
             anim._key_rot(hp, f, previous)
 
-    info = anim._drive(rig, author, start, end, start)
+    info = anim._drive(rig, author, start, end, start, canonical=True)
     fade = anim._crossfade(rig, prev, start, end)
     if fade:
         info["crossfade"] = fade

@@ -2441,6 +2441,77 @@ DIMAS: Bagus sekali! Saya tidak sabar mendengarnya.
           "guest chair/explicit seat/live singles/two-shot OK")
 
 
+async def _rotated_rig_checks(call):
+    """MPFB rigs turned with transform_object animate like unrotated ones."""
+    import math
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def python(code):
+        return (await data('run_blender_python', code=textwrap.dedent(code)))['result']
+
+    measure = """
+        import bpy, math
+        from engine.commands.anim import semantic_map
+        out = {}
+        for name in NAMES:
+            rig = bpy.data.objects[name]; sm = semantic_map(rig)
+            bpy.context.scene.frame_set(FRAME)
+            inv = rig.matrix_world.to_3x3().normalized().inverted()
+            row = {}
+            for s in "LR":
+                pb = lambda b: rig.pose.bones[sm[b]]
+                up = (inv @ (rig.matrix_world.to_3x3() @ (pb(f"forearm.{s}").head - pb(f"upper_arm.{s}").head))).normalized()
+                fo = (pb(f"hand.{s}").head - pb(f"forearm.{s}").head)
+                row[s] = [*up, math.degrees(up.angle(inv @ (rig.matrix_world.to_3x3() @ fo)))]
+            hips = rig.matrix_world @ rig.pose.bones[sm["hips"]].head
+            left = rig.matrix_world.to_3x3() @ (rig.pose.bones[sm["thigh.L"]].head - rig.pose.bones[sm["thigh.R"]].head)
+            row["hips"] = list(hips); row["left"] = list(left)
+            out[name] = row
+        result = out
+    """
+    await call("new_scene")
+    cases = []
+    for rig_kind in ("game_engine", "rigify"):
+        for k, (yaw, scale) in enumerate(((0, 1.0), (90, 1.0), (180, 0.95), (-35, 0.95))):
+            name = f"Turn{rig_kind[0]}{k}"
+            await data("create_realistic_human", name=name, gender=0, rig=rig_kind, face=False, clothes=[])
+            # No other command in between: animate must not read stale world matrices.
+            await data("transform_object", name=name + "_rig", location=[k * 1.5, 3 * (rig_kind == "rigify"), 0],
+                       rotation_deg=[0, 0, yaw], scale=[scale] * 3)
+            await data("animate", armature=name + "_rig", clip="idle", start_frame=1, cycles=1, speed=4)
+            w = await data("animate", armature=name + "_rig", clip="walk", start_frame=26, cycles=1)
+            cases.append((name + "_rig", rig_kind, yaw, scale, w["frames"][1]))
+    names = [c[0] for c in cases]
+    idle = await python(measure.replace("NAMES", repr(names)).replace("FRAME", "24"))
+    walked = await python(measure.replace("NAMES", repr(names)).replace("FRAME", str(cases[0][4])))
+    start = await python(measure.replace("NAMES", repr(names)).replace("FRAME", "25"))
+    worst = 0.0
+    for name, kind, yaw, scale, _ in cases:
+        ref = idle[next(c[0] for c in cases if c[1] == kind and c[2] == 0)]
+        for s in "LR":
+            got = idle[name][s]
+            worst = max(worst, abs(got[3] - ref[s][3]))
+            assert abs(got[3] - ref[s][3]) < 1.0, (name, s, got, ref[s])
+            assert all(abs(a - b) < .02 for a, b in zip(got[:3], ref[s][:3])), (name, s, got, ref[s])
+        a, b = start[name]["hips"], walked[name]["hips"]
+        travel = [b[0] - a[0], b[1] - a[1]]
+        length = math.hypot(*travel)
+        heading = math.radians(yaw)
+        front = (math.sin(heading), -math.cos(heading))
+        assert length > .8 * scale and (travel[0] * front[0] + travel[1] * front[1]) / length > .98, (name, travel)
+    # A turned rig follows a world route to its exact target with relaxed arms.
+    # (avoid=False: the other test rigs stand nearby and would snap the target.)
+    route = await data("walk_path", armature=cases[5][0], points=[[2.5, 1.5]], avoid=False)
+    end = await python(measure.replace("NAMES", repr([cases[5][0]])).replace("FRAME", str(route["frames"][1])))
+    hips = end[cases[5][0]]["hips"]
+    assert math.hypot(hips[0] - 2.5, hips[1] - 1.5) < .03, hips
+    assert max(end[cases[5][0]][s][3] for s in "LR") < 20, end
+    print(f"rotated rigs: game_engine/rigify x 0/90/180/-35 deg idle arm delta {worst:.2f} deg | "
+          f"walk along facing | rotated walk_path target OK")
+
+
 async def _render_style_checks(call):
     """Real lit frames, lossless reset, persisted look and background styled MP4s."""
     import av
@@ -3318,6 +3389,7 @@ async def main():
         assert "interact" in tools
         await _interaction_checks(call)
         assert "script_to_scene" in tools
+        await _rotated_rig_checks(call)
         await _render_style_checks(call)
         await _script_scene_checks(call)
         await _occlusion_checks(call)

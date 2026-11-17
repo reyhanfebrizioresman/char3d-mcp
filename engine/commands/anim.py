@@ -88,10 +88,46 @@ def semantic_map(rig):
     return heuristic_map(rig)
 
 
+# Limb joints only: Rigify torso/neck controls sit away from the DEF joints the
+# landmarks were measured on, while FK limb controls share their heads.
+_LANDMARK_BONES = {**{f"{k}.{s}": f"{b}.{s}" for s in "LR" for k, b in (
+                       ("shoulder", "upper_arm"), ("elbow", "forearm"), ("wrist", "hand"),
+                       ("hip", "thigh"), ("knee", "shin"), ("ankle", "foot"))}}
+
+
+def _follow_rig(rig, smap, stored):
+    """Stored landmarks are world positions from when the rig was built. Re-place them
+    rigidly on the rig's current rest joints, so a rig moved/rotated afterwards (e.g.
+    transform_object to face a partner) still gets a proxy facing its real front."""
+    import numpy as np
+    keys = [k for k, b in _LANDMARK_BONES.items()
+            if k in stored and b in smap and smap[b] in rig.data.bones]
+    if len(keys) < 4:
+        return stored
+    mw = rig.matrix_world
+    now = np.array([list(mw @ rig.data.bones[smap[_LANDMARK_BONES[k]]].head_local) for k in keys])
+    old = np.array([list(stored[k]) for k in keys])
+    if np.abs(now - old).max() < 1e-5:
+        return stored                                  # unmoved: exactly as before
+    # Similarity fit (Umeyama): rotation, translation and the rig's uniform scale.
+    co, cn = old.mean(axis=0), now.mean(axis=0)
+    a, b = old - co, now - cn
+    u, sv, vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    rot = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    scale = float((sv * [1.0, 1.0, d]).sum() / max((a * a).sum(), 1e-12))
+    moved = scale * a @ rot.T + cn
+    if np.linalg.norm(moved - now, axis=1).max() > 0.03:
+        return stored                                  # not a rigid move: keep old data
+    R, c0, c1 = Matrix(rot.tolist()) * scale, Vector(co.tolist()), Vector(cn.tolist())
+    return {k: R @ (v - c0) + c1 for k, v in stored.items()}
+
+
 def _rig_landmarks(rig, smap):
     """Landmarks for building a basic proxy that matches `rig`'s proportions."""
     if rig.get("c3d_landmarks"):
-        return {k: Vector(v) for k, v in json.loads(rig["c3d_landmarks"]).items()}
+        stored = {k: Vector(v) for k, v in json.loads(rig["c3d_landmarks"]).items()}
+        return _follow_rig(rig, smap, stored)
     need = ["hips", "spine", "chest", "neck", "head"] + [
         f"{b}.{s}" for b in ("shoulder", "upper_arm", "forearm", "hand", "thigh", "shin", "foot")
         for s in "LR"]
@@ -407,7 +443,7 @@ def _key_rot(pb, frame, prev):
 
 def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start=None,
                   in_place=False, align_rest=True, root_scale=None, key=True,
-                  root_mode="first", carry=None, align_bones=()):
+                  root_mode="first", carry=None, align_bones=(), facing=None):
     """root_mode "first": root motion relative to the source's first frame (mocap);
     "rest": relative to the source rest pose (proxy rigs that already include carry).
     carry: world offset added to the root (continue from where the previous clip ended)."""
@@ -418,7 +454,9 @@ def bake_retarget(src, tgt, src_map, tgt_map, frame_start, frame_end, dest_start
     if "hips" not in names:
         raise ValueError("both rigs need a recognisable hips bone")
     names.sort(key=lambda b: _depth(tgt, tgt_map[b]))
-    F = _facing(src, src_map)
+    # facing: explicit rotation from the source's frame to the target's world frame
+    # (a canonical proxy authored facing -Y for a rotated rig); None measures it.
+    F = _facing(src, src_map) if facing is None else facing
     Fm = F.to_matrix()
     swm, twm = src.matrix_world, tgt.matrix_world
 
@@ -510,11 +548,37 @@ def _straighten_arms(lm):
     return lm
 
 
-def _proxy_for(rig):
+def _landmark_yaw(lm):
+    """Rest heading of a rig from its hip landmarks (0 = facing -Y, the char3d front)."""
+    left = lm["hip.L"] - lm["hip.R"]
+    yaw = math.atan2(left.y, left.x) if left.xy.length > 1e-6 else 0.0
+    return yaw if abs(yaw) > 1e-6 else 0.0
+
+
+def rig_yaw(rig):
+    """The yaw _drive(canonical=True) undoes when it builds a proxy for `rig`."""
+    if rig.get("c3d_rig_type") == "basic" or all(b in rig.pose.bones for b in BASIC_BONES):
+        return 0.0          # basic rigs are driven directly, never through a proxy
+    bpy.context.view_layer.update()
+    return _landmark_yaw(_rig_landmarks(rig, semantic_map(rig)))
+
+
+def _proxy_for(rig, canonical=False):
+    """Basic proxy matching the rig's proportions. canonical=True builds it facing -Y
+    (the rig's yaw undone around its hips) so clip/pose authoring, whose local bone
+    axes assume the char3d front, is right for rotated rigs; returns that yaw too."""
     smap = semantic_map(rig)
+    bpy.context.view_layer.update()   # world landmarks need a current matrix_world
     lm = _straighten_arms(_rig_landmarks(rig, smap))
+    yaw = 0.0
+    if canonical:
+        yaw = _landmark_yaw(lm)
+        if yaw:
+            pivot = Vector((lm["hips"].x, lm["hips"].y, 0.0))
+            undo = Matrix.Rotation(-yaw, 3, "Z")
+            lm = {k: pivot + undo @ (v - pivot) for k, v in lm.items()}
     proxy = rigmod._build_basic(lm, "__c3d_proxy")
-    return proxy, smap, lm
+    return proxy, smap, lm, yaw
 
 
 def _drop(obj):
@@ -541,7 +605,8 @@ def _carry(rig, smap, frame):
     return Vector((now.x - rest.x, now.y - rest.y, 0.0))
 
 
-def _drive(rig, author, frame_start, frame_end, dest_start, in_place=False, key=True):
+def _drive(rig, author, frame_start, frame_end, dest_start, in_place=False, key=True,
+           canonical=False):
     """Run author(basic_rig, landmarks, direct) on the rig itself (basic rigs) or on a
     proportion-matched basic proxy that is then retargeted onto the rig."""
     if rig.get("c3d_rig_type") == "basic" or all(b in rig.pose.bones for b in BASIC_BONES):
@@ -552,13 +617,19 @@ def _drive(rig, author, frame_start, frame_end, dest_start, in_place=False, key=
         return {"via": "direct", "continues_from": [round(carry.x, 3), round(carry.y, 3)]}
     smap = semantic_map(rig)
     carry = _carry(rig, smap, dest_start) if key else Vector((0, 0, 0))
-    proxy, smap, lm = _proxy_for(rig)
+    proxy, smap, lm, yaw = _proxy_for(rig, canonical)
+    facing, world_carry = None, carry.copy()
+    if yaw:
+        # Author in the canonical frame, then turn the motion back to the rig's yaw.
+        carry = Matrix.Rotation(-yaw, 3, "Z") @ carry
+        facing = Quaternion(Vector((0.0, 0.0, 1.0)), yaw)
     try:
         author(proxy, lm, False, carry)
         info = bake_retarget(proxy, rig, {b: b for b in BASIC_BONES}, smap, frame_start,
                              frame_end, dest_start, in_place=in_place, align_rest=False,
-                             root_scale=1.0, key=key, root_mode="rest", align_bones=ARM_ALIGN)
-        info["continues_from"] = [round(carry.x, 3), round(carry.y, 3)]
+                             root_scale=1.0, key=key, root_mode="rest", align_bones=ARM_ALIGN,
+                             facing=facing)
+        info["continues_from"] = [round(world_carry.x, 3), round(world_carry.y, 3)]
     finally:
         _drop(proxy)
     info["via"] = "proxy-retarget"
@@ -599,7 +670,7 @@ def apply_pose(armature, pose, frame=None, keyframe=False):
             _pose_basic(basic, rots, loc)
         bpy.context.view_layer.update()
 
-    info = _drive(rig, author, f, f, f, key=bool(keyframe))
+    info = _drive(rig, author, f, f, f, key=bool(keyframe), canonical=True)
     bpy.context.view_layer.update()
     return {"armature": rig.name, "pose": pose, "frame": f, "keyed": bool(keyframe), **info}
 
@@ -752,7 +823,7 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
 
     blend = None if blend_frames is None else int(blend_frames)
     prev = _sample_pose(rig, start) if blend != 0 else None
-    info = _drive(rig, author, start, end, start, in_place=in_place)
+    info = _drive(rig, author, start, end, start, in_place=in_place, canonical=True)
     _extend_range(end)
     fade = _crossfade(rig, prev, start, end, blend)
     if fade:
