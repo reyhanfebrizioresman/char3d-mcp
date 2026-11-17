@@ -506,6 +506,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
         make_cameras()
     with timed("lighting"):
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
+    if "weather" in plan:
+        with timed("weather"):
+            result["weather"] = dispatch("set_weather", {"kind": plan["weather"], "seed": abs(int(seed))})
     with timed("graphics"):
         words_available = any(load_words(bpy.data.objects[c["mesh"]], 1, final) for c in characters.values())
         if subtitles and words_available:

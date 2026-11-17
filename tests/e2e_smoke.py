@@ -6,6 +6,8 @@ Set CHAR3D_ENV_VISUALS=1 to render every environment in Eevee. By default the
 office and screen-image cases provide a cheaper rendering smoke check.
 Set CHAR3D_MPFB_PACK_VISUALS=1 for front/three-quarter Eevee sheets of four outfits;
 pack weight/deformation and texture-path assertions always run.
+Set CHAR3D_OUTDOOR_VISUALS=1 for all outdoor Eevee stills (park = park/weather only).
+Numeric outdoor/weather checks, precipitation workbench stills and the weather draft always run.
 """
 import asyncio
 import json
@@ -3128,6 +3130,168 @@ async def _interaction_checks(call):
           f"hug {max(r.get('penetration_m') or 0 for r in reports):.5f} m | prop step {max(jumps):.5f} m | parser/script/history OK")
 
 
+async def _outdoor_checks(call):
+    """Outdoor sets/weather through MCP, including actual seat/route/render data."""
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def inspect(code):
+        return (await data("run_blender_python", code=code))["result"]
+
+    async def render(label, **args):
+        import shutil
+        visuals = os.environ.get("CHAR3D_OUTDOOR_VISUALS")
+        show = (visuals == "1" or (visuals == "park" and label.startswith("park_"))
+                or label.endswith("_workbench"))
+        if not show:
+            return []
+        result = await call("render_frames", **args)
+        paths = []
+        for text in text_of(result):
+            item = json.loads(text)
+            path = os.path.join(ROOT, "output", "renders", f"outdoor_{label}_f{item['frame']:04d}.png")
+            shutil.copyfile(item["path"], path)
+            paths.append(path)
+        assert len(paths) == len(args["frames"]), paths
+        return paths
+
+    images, contacts, cafe_clearance = [], [], None
+    for preset in ("city_street", "park", "cafe_terrace", "beach"):
+        await call("new_scene", frame_end=24)
+        await call("create_human", name="Outdoor", height=1.75)
+        await call("auto_rig_humanoid", mesh="Outdoor")
+        await call("apply_pose", armature="Outdoor_rig", pose="relaxed")
+        env = await data("set_environment", preset=preset, subject=["Outdoor_rig"], variant=2)
+        state = await inspect('''
+result = dict(ground=[list(o.dimensions) for o in bpy.context.scene.objects if o.get('char3d_walkable')],
+    seats=[o.name for o in bpy.context.scene.objects if 'c3d_seat_centers' in o],
+    sun=sum(bool(o.get('c3d_outdoor_sun')) for o in bpy.context.scene.objects),
+    shadow=[bpy.context.scene.eevee.shadow_pool_size,bpy.context.scene.eevee.shadow_resolution_scale])
+''')
+        assert state["sun"] == 1 and state["seats"], state
+        assert state["shadow"] == ["128", .5], state
+        assert max(d[1] for d in state["ground"]) >= 30, state
+        assert .99 < env["unit_scale"] < 1.02, env
+        light = await data("set_lighting", preset="noon", subject=["Outdoor_rig"])
+        assert light["ground"] is None and len(light["lights"]) == 2, light
+        for shot, frame in (("wide", 1), ("medium", 13)):
+            await call("camera_shot", name="Outdoor_"+shot, subject=["Outdoor_rig"], shot=shot,
+                       start_frame=frame, end_frame=frame+11, angle=8)
+            images += await render(preset+"_"+shot, frames=[frame], camera="scene", engine_name="eevee", size=384)
+        seat = await data("sit_on", character="Outdoor_rig", seat=state["seats"][0],
+                          start_frame=1, transition_frames=3, hands="none")
+        contacts.append(abs(seat["contact_error_m"]))
+        assert contacts[-1] < .015, seat
+        if preset == "cafe_terrace":
+            cafe_clearance = await inspect('''
+import math
+bpy.context.scene.frame_set(5)
+ev=bpy.data.objects['Outdoor'].evaluated_get(bpy.context.evaluated_depsgraph_get())
+mesh=ev.to_mesh()
+try:
+    feet=[ev.matrix_world@v.co for v in mesh.vertices if (ev.matrix_world@v.co).z<.15]
+    bases=[o for o in bpy.context.scene.objects if 'cafe_table_base' in o.name]
+    result=min(math.hypot(p.x-o.matrix_world.translation.x,p.y-o.matrix_world.translation.y)
+               -o.dimensions.x/2 for p in feet for o in bases)
+finally:
+    ev.to_mesh_clear()
+''')
+            assert cafe_clearance > .02, cafe_clearance
+        await call("camera_shot", name="Outdoor_seated", subject=["Outdoor_rig"], shot="full",
+                   start_frame=5, end_frame=12, angle=20)
+        images += await render(preset+"_seated", frames=[5], camera="scene", engine_name="eevee", size=384)
+        await call("save_project", path="outdoor_"+preset+".blend")
+
+    await call("new_scene", frame_end=24)
+    shadow_original = await inspect("result = [bpy.context.scene.eevee.shadow_pool_size,bpy.context.scene.eevee.shadow_resolution_scale]")
+    await call("create_human", name="Outdoor", height=1.75)
+    await call("auto_rig_humanoid", mesh="Outdoor")
+    await call("apply_pose", armature="Outdoor_rig", pose="relaxed")
+    await call("set_environment", preset="park", subject=["Outdoor_rig"])
+    for key, elevation in (("noon", 65), ("sunset", 8), ("overcast", 55), ("night", 25)):
+        light = await data("set_lighting", preset=key, subject=["Outdoor_rig"])
+        assert light["ground"] is None and light["outdoor"]["elevation"] == elevation, light
+        assert await inspect("result = sum(o.get('c3d_role') == 'ground' for o in bpy.context.scene.objects)") == 0
+    await call("camera_shot", name="WeatherWide", subject=["Outdoor_rig"], shot="wide",
+               start_frame=1, end_frame=24, angle=8)
+    await call("set_lighting", preset="sunset", subject=["Outdoor_rig"])
+    images += await render("park_sunset", frames=[1], camera="scene", engine_name="eevee", size=384)
+    await call("set_lighting", preset="noon", subject=["Outdoor_rig"])
+    original = await inspect("result = {m.name:m.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value for o in bpy.context.scene.objects if o.get('c3d_weather_ground') for m in o.data.materials}")
+    counts = {}
+    for kind in ("rain", "snow", "fog"):
+        weather = await data("set_weather", kind=kind, intensity=.6, wind=[1, .2, 0], seed=23)
+        counts[kind] = weather["particle_count"]
+        again = await data("set_weather", kind=kind, intensity=.6, wind=[1, .2, 0], seed=23)
+        assert counts[kind] == again["particle_count"], (weather, again)
+        assert counts[kind] > 500 if kind != "fog" else counts[kind] == 0
+        if kind == "rain":
+            wet = await inspect("result = {m.name:m.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value for o in bpy.context.scene.objects if o.get('c3d_weather_ground') for m in o.data.materials}")
+            assert all(wet[k] < original[k] for k in wet), (original, wet)
+        images += await render("park_"+kind, frames=[1, 12], camera="scene", engine_name="eevee", size=384)
+        if kind != "fog":
+            # Realized particles must move, reproduce exactly and vary by seed.
+            code = '''
+sc=bpy.context.scene
+obj=next(o for o in sc.objects if o.get('c3d_weather'))
+def samples(f):
+    sc.frame_set(f)
+    ev=obj.evaluated_get(bpy.context.evaluated_depsgraph_get()); mesh=ev.to_mesh()
+    try:
+        assert len(mesh.vertices)==obj['c3d_particle_count']*12
+        return [list(sum((mesh.vertices[k+j].co for j in range(12)),Vector())/12)
+                for k in range(0,96,12)]
+    finally:
+        ev.to_mesh_clear()
+result=[samples(1),samples(12),samples(1)]
+'''
+            positions = await inspect(code)
+            assert len(positions[0]) == 8 and positions[0] == positions[2] and positions[0] != positions[1], positions
+            await call("set_weather", kind=kind, seed=24, intensity=.6)
+            assert (await inspect(code))[0] != positions[0]
+            images += await render(kind+"_workbench", frames=[1], camera="scene", size=256)
+    await call("set_weather", kind="clear")
+    cleared = await inspect('''
+result = dict(objects=sum(bool(o.get('c3d_weather')) for o in bpy.data.objects),
+ data=sum(bool(d.get('c3d_weather')) for p in (bpy.data.meshes,bpy.data.materials,bpy.data.node_groups) for d in p),
+ settings=[k for k in bpy.context.scene.keys() if k.startswith('c3d_weather_')],
+ roughness={m.name:m.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value
+ for o in bpy.context.scene.objects if o.get('c3d_weather_ground') for m in o.data.materials})
+''')
+    assert cleared == dict(objects=0, data=0, settings=[], roughness=original), cleared
+    await call("set_weather", kind="wind", intensity=.5, wind=[2, 1, 0])
+    assert await inspect("result = list(bpy.context.scene['c3d_weather_wind'])") == [2, 1, 0]
+    await call("set_weather", kind="rain", seed=23)
+    await call("save_project", path="outdoor_weather.blend")
+    video = await data("render_video", path="outdoor_weather.mp4", quality="draft", width=256, height=144,
+                       frame_start=1, frame_end=12, wait=True)
+    assert video["status"] == "done", video
+    await call("set_weather", kind="clear")
+    await call("transform_object", name="Outdoor_rig", location=[-2.6, -1, 0])
+    walk = await data("walk_path", armature="Outdoor_rig", points=[[-2.6, 3.2]], start_frame=1)
+    assert walk["avoided"] and walk["detours"] >= 1 and walk["distance_m"] > 4.3, walk
+    await call("set_environment", preset="office", subject=["Outdoor_rig"])
+    indoor = await data("set_lighting", preset="noon", subject=["Outdoor_rig"])
+    assert indoor["ground"] and "outdoor" not in indoor, indoor
+    assert await inspect("result = [bpy.context.scene.eevee.shadow_pool_size,bpy.context.scene.eevee.shadow_resolution_scale]") == shadow_original
+    assert await inspect("result = not any(o.get('c3d_outdoor') for o in bpy.context.scene.objects)")
+    for location, preset in (("jalan", "city_street"), ("jalan kota", "city_street"), ("street", "city_street"),
+                             ("taman", "park"), ("park", "park"), ("kafe", "cafe_terrace"),
+                             ("cafe", "cafe_terrace"), ("pantai", "beach"), ("beach", "beach")):
+        plan = (await data("script_to_scene", script=f"LOKASI: {location}\nCUACA: hujan\nAna: Halo.", build=False))["plan"]
+        assert plan["environment"] == preset and plan["weather"] == "rain", plan
+    for word, kind in (("salju", "snow"), ("kabut", "fog"), ("berangin", "wind"), ("cerah", "clear"),
+                       ("rain", "rain"), ("snow", "snow"), ("fog", "fog"), ("wind", "wind"), ("clear", "clear")):
+        plan = (await data("script_to_scene", script=f"WEATHER: {word}\nAna: Halo.", build=False))["plan"]
+        assert plan["weather"] == kind, plan
+    metrics = dict(images=images, contact_max_m=max(contacts), counts=counts, walk_distance_m=walk["distance_m"],
+                   walk_detours=walk["detours"], cafe_foot_clearance_m=cafe_clearance, video=video["path"])
+    os.makedirs(os.path.join(ROOT, "output"), exist_ok=True)
+    with open(os.path.join(ROOT, "output", "outdoor_metrics.json"), "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"outdoors: 4 sets | seat contact <= {max(contacts):.5f} m | {walk['detours']} detours | particles {counts} | sky/cleanup/scripts/draft OK")
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -3149,6 +3313,8 @@ async def main():
         print("status:", text_of(await call("engine_status")))
         assert "auto_sfx" in tools
         await _auto_sfx_checks(call)
+        assert "set_weather" in tools
+        await _outdoor_checks(call)
         assert "interact" in tools
         await _interaction_checks(call)
         assert "script_to_scene" in tools

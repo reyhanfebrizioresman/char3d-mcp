@@ -20,3 +20,4 @@ from . import scene, io, render, character, rig, anim, camera, lighting, video, 
 from . import script_scene, interaction  # noqa: E402,F401
 from . import render_style  # noqa: E402,F401
 from . import sfx  # noqa: E402,F401
+from . import weather  # noqa: E402,F401

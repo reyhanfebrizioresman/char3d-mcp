@@ -50,7 +50,8 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
 | `dialog`, `stage_dialog` | Percakapan 2–4 karakter dalam satu panggilan: posisi saling berhadapan, lip sync per baris (audio/teks), saling menatap, pendengar mengangguk, gestur per pembicara, kamera two-shot lalu single per pembicara |
 | `script_to_scene` | Naskah pendek Indonesia/Inggris atau dict → 1–4 karakter, outfit/jenggot/aksesori katalog, set, aksi jalan/duduk/berdiri/pegang prop, dialog, ekspresi, kamera, subtitle, cahaya serta gerak rambut dan kain longgar. `build=False` hanya membuat rencana tanpa mengubah adegan; hasil berisi frame, shot, warning dan waktu proses |
-| `set_environment`, `add_prop`, `clear_environment` | Set prosedural: podcast_studio, classroom, office, stage, living_room, news_desk; furnitur, bangku, stool, cup, phone, book, handheld_microphone + lampu praktis dalam koleksi char3d_env, variant/tema warna dan gambar lokal pada layar/papan; bersihkan tanpa menghapus karakter/kamera |
+| `set_environment`, `add_prop`, `clear_environment` | Set prosedural indoor + city_street, park, cafe_terrace, beach; tanah walkable, furnitur/seats, lampu praktis, variant/tema warna dan gambar lokal; bersihkan tanpa menghapus karakter/kamera |
+| `set_weather` | clear/rain/snow/fog/wind; partikel deterministik tersimpan di .blend, area kamera, tanah basah, sky/sun, wind untuk rambut/kain |
 | `sit_on`, `stand_up` | Duduk pada kursi/sofa/bangku/stool atau permukaan mesh: kontak bokong diukur, kaki IK menapak, arah mengikuti kursi, transisi halus dan pilihan posisi sofa; bisa dilapisi gerak bicara. Berdiri kembali di depan kursi; dudukan statis dan lantai datar |
 | `hold_prop`, `release_prop` | Tempel cup/phone/book/mic atau prop lain ke telapak kiri/kanan. `upright=None` otomatis menjaga cup tegak dan mic condong 12° ke telapak/mulut; `True`/`False` mengaktifkan/menonaktifkan koreksi pergelangan, yaw mengikuti tangan. Grip jari bertahan saat gestur ditambahkan; release memulihkan animasi pergelangan/jari di bawahnya. Phone/book tetap mengikuti rotasi tangan. Ekspor glTF menyimpan transform tiap frame; tanpa simulasi jatuh atau solver tabrakan lengan/prop. Pose ekstrem dapat menekuk pergelangan tajam; sesuaikan pose lengan |
 | `interact` | Dua karakter bersalaman, berpelukan, tos, fist bump, menyerahkan prop, atau menepuk bahu; pendekatan jalan/putar, IK lengan ke titik kontak bersama, jari dan tatapan pasangan; basic/Rigify/MPFB termasuk beda tinggi |
@@ -129,6 +130,25 @@ Gunakan `build=False` untuk memeriksa rencana terlebih dahulu. `TITLE/LOCATION`,
 (`id`, `gender`, `age`, `hair`, `clothes`, `outfit`, `beard`, `accessories`, `race`) dan beat (`say`/`text`/`audio`/`emotion`,
 atau `do`/`who` dengan `walk`, `sit`, `stand`, `hold`, `gesture`, `pose`, `look`, `pause`).
 Kata deskripsi/arah panggung yang tidak dikenali dilaporkan sebagai warning.
+
+Outdoor: `LOKASI: jalan` / `jalan kota` / `street`, `taman` / `park`, `kafe` / `cafe`,
+`pantai` / `beach`. Header opsional `CUACA: hujan|salju|kabut|berangin|cerah` atau
+`WEATHER: rain|snow|fog|wind|clear` menerapkan cuaca setelah kamera/cahaya, sebelum kain.
+Set outdoor memakai gradient sky + sun; `set_lighting("noon"|"sunset"|"overcast"|"night")`
+mengubah waktu hari dan mempertahankan key/fill karakter tanpa menambah lantai indoor.
+Bangku, kursi kafe dan deck chair mendukung `sit_on`; tanah ditag walkable dan
+`walk_path` menghindari furnitur. Backdrop ≥30 m, geometri asli prosedural low-poly.
+Set memakai anchoring/scale/variant/color_theme yang sama dengan indoor.
+
+`set_weather(kind="rain", intensity=0.5, wind=[1, 0, 0], seed=0)` membuat streak hujan,
+meredupkan sky dan membasahi tanah; snow berupa flakes melayang, fog berupa volume
+Eevee dengan atenuasi jarak, wind memberi angin saja. Partikel tampil di Eevee/workbench
+dan video proses terpisah. Area frustum dekat (24 m) semua kamera shot diperbarui saat
+render/save; budget maksimum 2.200 streak / 1.200 flakes, bukan seluruh dunia.
+`secondary_motion(wind=None)` memakai wind cuaca (rebake setelah mengubah angin).
+`clear` memulihkan roughness/sky dan menghapus data cuaca miliknya; mengganti outdoor
+juga membersihkan cuaca. Fog tidak terlihat di workbench; belum ada collision partikel,
+akumulasi salju, splash, gelombang dinamis atau simulasi air. Lihat [Weather](AGENTS.md#weather).
 
 Deskripsi outfit: `kasual/casual`, `formal/jas/resmi/elegant`, `olahraga/sport`,
 `musim panas/summer`, `musim dingin/winter/jaket/coat`; `gaun/dress/rok/skirt` memilih

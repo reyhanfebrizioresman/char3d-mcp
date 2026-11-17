@@ -24,7 +24,7 @@ def obj_or_raise(name):
 
 def _visible_part(o):
     return (o.type in RENDERABLE and not o.hide_render and o.visible_get()
-            and not is_helper(o) and o.get("c3d_role") != "ground")
+            and not is_helper(o) and o.get("c3d_role") not in {"ground", "weather"})
 
 
 def scene_bounds(objects=None):

@@ -403,7 +403,7 @@ def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=Non
     for n, v in (('stiffness', stiffness), ('damping', damping), ('gravity', gravity)):
         if not math.isfinite(v) or v < 0 or (n != 'gravity' and v > 1):
             raise ValueError(f'{n} must be finite and ' + ('>= 0' if n == 'gravity' else 'in 0..1'))
-    wind = (0, 0, 0) if wind is None else wind
+    wind = bpy.context.scene.get('c3d_weather_wind', (0, 0, 0)) if wind is None else wind
     if len(wind) != 3 or not all(math.isfinite(v) for v in wind):
         raise ValueError('wind must be a finite world-space XYZ acceleration vector')
     rig = _rig_of(character)

@@ -173,9 +173,11 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
             line = line.strip()
             if not line:
                 continue
-            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION)\s*:\s*(.*)$", line, re.I)
+            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER)\s*:\s*(.*)$", line, re.I)
             if header:
-                raw["title" if header[1].upper() in ("JUDUL", "TITLE") else "environment"] = header[2]
+                key = ("title" if header[1].upper() in ("JUDUL", "TITLE") else
+                       "weather" if header[1].upper() in ("CUACA", "WEATHER") else "environment")
+                raw[key] = header[2]
             elif line.startswith("[") and line.endswith("]"):
                 beat = _direction(line[1:-1].strip(), warnings)
                 if beat:
@@ -329,7 +331,20 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
         raise ValueError("script needs 1 to 4 characters")
     if not beats:
         raise ValueError("script has no recognized beats")
+    location = environment if environment is not None else raw.get("environment")
+    aliases = {"jalan": "city_street", "jalan kota": "city_street", "street": "city_street",
+               "taman": "park", "park": "park", "kafe": "cafe_terrace", "cafe": "cafe_terrace",
+               "pantai": "beach", "beach": "beach"}
+    location = aliases.get(str(location).strip().casefold(), location)
+    weather = raw.get("weather")
+    extra = {}
+    if weather is not None:
+        weather = {"hujan": "rain", "salju": "snow", "kabut": "fog", "berangin": "wind",
+                   "cerah": "clear"}.get(str(weather).strip().casefold(), str(weather).strip().casefold())
+        if weather not in ("clear", "rain", "snow", "fog", "wind"):
+            raise ValueError("weather must be clear/rain/snow/fog/wind or Indonesian aliases")
+        extra["weather"] = weather
     return {"name": name or raw.get("title") or "ScriptScene", "title": raw.get("title"),
-            "environment": environment if environment is not None else raw.get("environment"),
+            "environment": location, **extra,
             "characters": characters, "beats": beats, "estimated_frames": [1, max(2, frame - 1)],
             "fps": fps, "seed": seed, "warnings": warnings}

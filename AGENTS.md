@@ -51,8 +51,9 @@ Keep previews ≤ 512 px unless the user asks for more.
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
-  `hold_prop`, `release_prop`
+  `hold_prop`, `release_prop` (indoor + city_street, park, cafe_terrace, beach)
 - Interactions: `interact` (handshake, hug, high_five, fist_bump, handover, pat_shoulder)
+- Weather: `set_weather` (clear, rain, snow, fog, wind; saved procedural animation)
 - Walkable ground: `add_terrain`, `clear_terrain`
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
@@ -372,6 +373,13 @@ ANA: Apa kabar hari ini?
 ```
 `TITLE`/`LOCATION` are aliases. Declare speakers with `NAME (descriptors): text`;
 later lines can use `NAME: text`. Names/references match without case sensitivity.
+
+Outdoor locations accept jalan/jalan kota/street → city_street, taman/park → park,
+kafe/cafe → cafe_terrace, pantai/beach → beach. Optional `CUACA:` / `WEATHER:` accepts
+hujan/rain, salju/snow, kabut/fog, berangin/wind, cerah/clear (also dict `weather`).
+Weather is applied after final cameras/lighting, before hair/cloth baking. Parse-only
+reports it without changing the scene; scripts without weather keep the old plan format.
+
 Descriptors recognize gender, age, hair (bob, short/pendek, long/panjang, ponytail/ekor
 kuda, braid/kepang, afro), outfits, facial hair, accessories or exact MPFB catalog names.
 Outfit descriptors: kasual/casual; formal/jas/resmi/elegant; olahraga/sport;
@@ -723,8 +731,48 @@ highest surface and index 0. Set roots enumerate their seat positions too.
   a pronounced wrist bend or still intersect the body/prop. There is no arm/prop collision
   solver or automatic elbow lift; choose a suitable arm pose for drinking/raised microphones.
 
+## Weather
+`set_weather(kind="clear", intensity=0.5, wind=None, seed=0)` replaces owned weather.
+- `rain` creates looping streaks, dims/desaturates the outdoor sky and lowers managed
+  ground roughness. `snow` creates slowly drifting low-poly flakes. Both use one
+  geometry-node modifier with deterministic seeded instances and saved Scene Time
+  animation, visible in Eevee/workbench and separate-process draft/preview video.
+- `fog` is a bounded low-density scattering volume in Eevee, with exponential distance
+  attenuation; workbench does not render volumetric fog. `wind` sets wind only.
+- `wind` is a world-space XYZ acceleration in m/s², bounded to ±100 per component.
+  Omitted wind chooses a gentle drift (stronger for wind weather). `secondary_motion`
+  uses this value when its own wind is omitted; explicit wind overrides it. Rebake
+  secondary motion after changing weather. Existing bakes are not modified automatically.
+- Particle/fog coverage is the union of all shot cameras' near frusta (24 m depth),
+  sampled over camera travel. It refreshes on still rendering, save_project and video
+  snapshot creation. Set cameras before weather; distant scenery stays precipitation-free.
+  Counts are capped at 2,200 rain streaks / 1,200 flakes, independent of world size;
+  very dispersed shots spread this budget thinly. No particle collisions, accumulation,
+  splashes or fluid simulation. Wind drifts particles, without a gust simulation.
+- `clear` removes owned meshes/modifiers/materials/node groups and restores ground
+  roughness, sky and sun; it preserves characters, cameras and user materials. Replacing
+  or clearing an outdoor environment also clears its weather and restores the prior world.
+
+**Outdoor sets** — `set_environment("city_street"|"park"|"cafe_terrace"|"beach")`
+uses the existing subject-foot anchoring, height scaling, variant seed and theme rules.
+Original low-poly streets/facades/car, park trees/paths, cafe furniture/awning and
+beach/palms/waves extend at least 30 m behind the cast; ground extends hundreds of
+meters at adult scale for wide/drone shots. Ground has `char3d_walkable` tags, furniture
+is visible to static obstacle avoidance, and bench/cafe/deck-chair seats support sit_on.
+Deck chairs have level pads and slightly reclined backs; sit_on uses its standard upright
+seated pose. The sea has gentle static procedural waves, without water physics.
+Outdoor sets install a procedural horizon-to-zenith world gradient and one SUN.
+`set_lighting("noon"|"sunset"|"overcast"|"night")` drives sun elevation/energy and sky,
+keeps character key/fill lights and suppresses the extra lighting ground. Other light
+presets retain their character lights with a noon outdoor sky. Explicit subjects are
+recommended for camera and lighting. Outdoor sets use a 128 MB shadow pool and half
+shadow resolution for CPU previews. Clear/replace restores the previous world and
+shadow settings, including after save/open. `CHAR3D_OUTDOOR_VISUALS=1` enables all
+outdoor stills in the smoke test; numeric checks, precipitation workbench checks and
+the weather draft always run.
+
 **Lighting** — `set_lighting(preset, subject, follow="auto")`: studio, soft, dramatic, sunset, noon,
-overcast, night, neon, silhouette, horror. Adds a large ground plane by default and
+overcast, night, neon, silhouette, horror. Adds a large ground plane indoors by default and
 switches the scene to Eevee. `rotate` spins the rig of lights around the subject.
 Call **after body animation** (`walk_path`, `animate`, `sit_on`) so it can sample the
 whole scene range; rerun after changing motion. `follow="auto"` follows horizontal
@@ -994,5 +1042,7 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   `engine/commands/*.py`, then a matching tool in `mcp_server/server.py`.
 - Test end-to-end with `.venv/bin/python tests/e2e_smoke.py` and the offline AI pipeline
   with `.venv/bin/python tests/e2e_ai_mock.py` (local fake fal.ai, no key or network).
+- `tests/e2e_outdoor_state.py` checks saved weather and user-world restoration across
+  save/open/clear; run it on an assigned experiment port after the main suites.
 - `providers/` runs in the MCP server process (network); never call the network from
   `engine/`. Never log or persist API keys.

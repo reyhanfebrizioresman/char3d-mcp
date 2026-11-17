@@ -18,7 +18,8 @@ from .lighting import make_material
 from .util import scene_bounds, vec
 
 COLLECTION = "char3d_env"
-PRESETS = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk")
+PRESETS = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk",
+           "city_street", "park", "cafe_terrace", "beach")
 PROPS = ("chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
          "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
          "handheld_microphone")
@@ -106,6 +107,11 @@ def _sync_ground():
 def clear_environment():
     """Remove owned sets/props and unused owned data, preserving all other scene objects."""
     from .holding import clear_grip
+    from .outdoor import clear_sky, outdoor_root
+    if outdoor_root() is not None:
+        from .weather import set_weather
+        set_weather("clear")
+        clear_sky()
     removed = []
     for obj in bpy.context.scene.objects:
         if "c3d_env_ground_original_z" in obj:
@@ -503,7 +509,13 @@ def set_environment(preset, subject=None, scale=1.0, variant=0, color_theme=None
         cleared = clear_environment()
         b = _Builder(preset, origin, unit, colors=colors, image=image, seed=variant)
         b.root["c3d_environment_preset"] = preset
-        _build_set(b, preset, variant)
+        from .outdoor import PRESETS as OUTDOORS, build_outdoor
+        if preset in OUTDOORS:
+            from .lighting import _clear_c3d
+            _clear_c3d("ground")
+            build_outdoor(b, preset, variant)
+        else:
+            _build_set(b, preset, variant)
         bpy.context.view_layer.update()
         _sync_ground()
     finally:

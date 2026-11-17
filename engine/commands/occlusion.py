@@ -229,7 +229,7 @@ class VisibilityProbe:
         collections = set(_render_collections(bpy.context.scene.collection))
         meshes, solids = [], []
         for obj in bpy.context.scene.objects:
-            if obj.type != "MESH" or obj in self.ignored or is_helper(obj):
+            if obj.type != "MESH" or obj in self.ignored or is_helper(obj) or obj.get("c3d_weather"):
                 continue
             chain = list(_ancestors(obj))
             if (obj.hide_render or not obj.visible_get() or

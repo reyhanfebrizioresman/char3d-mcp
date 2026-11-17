@@ -175,6 +175,7 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     Returns actual follow, travel_m and keys (location samples, not scalar keys).
     """
     from .environment import _sync_ground
+    from .outdoor import outdoor_root, configure_sky
 
     if preset not in PRESETS:
         raise ValueError(f"preset must be one of {list(PRESETS)}")
@@ -182,6 +183,15 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
         raise ValueError("follow must be True, False or 'auto'")
     sc = bpy.context.scene
     p = PRESETS[preset]
+    outdoors = outdoor_root() is not None
+    lights = list(p["lights"])
+    if outdoors:
+        lights = [light for light in lights if light[0] != "SUN"]
+        if not lights:
+            lights = [("AREA", 30, 35, 1.8, 180, (1, .92, .83), 1.6),
+                      ("AREA", -45, 25, 1.8, 90, (.72, .84, 1), 2.)]
+            if preset == "night":
+                lights = [(k, a, e, d, power*.32, c, s) for k, a, e, d, power, c, s in lights]
     targets = _subjects(subject)
     lo, hi = scene_bounds(targets) if targets else (Vector((-0.5, -0.5, 0)), Vector((0.5, 0.5, 1.8)))
     H = max(hi.z - lo.z, 0.1)
@@ -192,7 +202,7 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     standing_height = max([H] + [h for _, _, h in samples])
     motion = max(((pos - anchor).length for _, pos, _ in samples), default=0.0) > 1e-4
     following = bool(motion and (follow is True or (follow == "auto" and travel > 0.43 * standing_height))
-                     and any(light[0] != "SUN" for light in p["lights"]))
+                     and any(light[0] != "SUN" for light in lights))
     _clear_c3d("light")
     rig = _follow_rig(samples) if following else None
     if following:
@@ -201,7 +211,7 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     scale = (H / 1.75) ** 2   # keep exposure similar for small/large subjects
 
     made = []
-    for i, (kind, az, el, dist, power, rgb, size) in enumerate(p["lights"]):
+    for i, (kind, az, el, dist, power, rgb, size) in enumerate(lights):
         data = bpy.data.lights.new(f"c3d_{preset}_{i}", kind)
         data.color = rgb
         a, e = math.radians(az + rotate), math.radians(el)
@@ -233,11 +243,13 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     color, wstrength = p["world"]
     if background is not None:
         color = tuple(background[:3])
-    _world(color, wstrength * (strength if preset in ("overcast", "silhouette") else 1.0))
+    sky = configure_sky(preset, strength, rotate, background) if outdoors else None
+    if not outdoors:
+        _world(color, wstrength * (strength if preset in ("overcast", "silhouette") else 1.0))
 
     ground_name = None
     _clear_c3d("ground")
-    if ground:
+    if ground and not outdoors:
         bpy.ops.mesh.primitive_plane_add(size=max(400.0, call_height * 200))   # horizon far away
         g = bpy.context.view_layer.objects.active
         g.name = "c3d_ground"
@@ -248,9 +260,12 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
         ground_name = g.name
     if sc.render.engine == "BLENDER_WORKBENCH":
         sc.render.engine = "BLENDER_EEVEE"
-    return {"preset": preset, "lights": made, "ground": ground_name,
+    result = {"preset": preset, "lights": made, "ground": ground_name,
             "world_color": [round(c, 3) for c in color], "follow": following,
             "travel_m": round(travel, 4), "keys": len(samples) if following else 0}
+    if outdoors:
+        result["outdoor"] = sky
+    return result
 
 
 @command("set_material")
