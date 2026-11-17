@@ -47,7 +47,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera, 8 ukuran shot, multi-shot otomatis; `avoid_occlusion="auto"` menjaga wajah, headroom, ukuran subjek dan area foreground |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
 | `dialog`, `stage_dialog` | Percakapan 2–4 karakter dalam satu panggilan: posisi saling berhadapan, lip sync per baris (audio/teks), saling menatap, pendengar mengangguk, gestur per pembicara, kamera two-shot lalu single per pembicara |
-| `script_to_scene` | Naskah pendek Indonesia/Inggris atau dict → 1–4 karakter, set, aksi jalan/duduk/berdiri/pegang prop, dialog, ekspresi, kamera, subtitle, cahaya dan gerak rambut. `build=False` hanya membuat rencana tanpa mengubah adegan; hasil berisi frame, shot, warning dan waktu proses |
+| `script_to_scene` | Naskah pendek Indonesia/Inggris atau dict → 1–4 karakter, outfit/jenggot/aksesori katalog, set, aksi jalan/duduk/berdiri/pegang prop, dialog, ekspresi, kamera, subtitle, cahaya serta gerak rambut dan kain longgar. `build=False` hanya membuat rencana tanpa mengubah adegan; hasil berisi frame, shot, warning dan waktu proses |
 | `set_environment`, `add_prop`, `clear_environment` | Set prosedural: podcast_studio, classroom, office, stage, living_room, news_desk; furnitur, bangku, stool, cup, phone, book, handheld_microphone + lampu praktis dalam koleksi char3d_env, variant/tema warna dan gambar lokal pada layar/papan; bersihkan tanpa menghapus karakter/kamera |
 | `sit_on`, `stand_up` | Duduk pada kursi/sofa/bangku/stool atau permukaan mesh: kontak bokong diukur, kaki IK menapak, arah mengikuti kursi, transisi halus dan pilihan posisi sofa; bisa dilapisi gerak bicara. Berdiri kembali di depan kursi; dudukan statis dan lantai datar |
 | `hold_prop`, `release_prop` | Tempel cup/phone/book/mic atau prop lain ke telapak kiri/kanan. `upright=None` otomatis menjaga cup tegak dan mic condong 12° ke telapak/mulut; `True`/`False` mengaktifkan/menonaktifkan koreksi pergelangan, yaw mengikuti tangan. Grip jari bertahan saat gestur ditambahkan; release memulihkan animasi pergelangan/jari di bawahnya. Phone/book tetap mengikuti rotasi tangan. Ekspor glTF menyimpan transform tiap frame; tanpa simulasi jatuh atau solver tabrakan lengan/prop. Pose ekstrem dapat menekuk pergelangan tajam; sesuaikan pose lengan |
@@ -108,15 +108,30 @@ ANA: Apa kabar hari ini?
 Gunakan `build=False` untuk memeriksa rencana terlebih dahulu. `TITLE/LOCATION`,
 `[Budi walks to 1, -1]`, `[Ana holds a cup]`, `[Ana looks at Budi]`, serta
 `[pause 1 second]` juga didukung. Format dict memberi kontrol atas karakter
-(`id`, `gender`, `age`, `hair`, `clothes`, `race`) dan beat (`say`/`text`/`audio`/`emotion`,
+(`id`, `gender`, `age`, `hair`, `clothes`, `outfit`, `beard`, `accessories`, `race`) dan beat (`say`/`text`/`audio`/`emotion`,
 atau `do`/`who` dengan `walk`, `sit`, `stand`, `hold`, `gesture`, `pose`, `look`, `pause`).
 Kata deskripsi/arah panggung yang tidak dikenali dilaporkan sebagai warning.
+
+Deskripsi outfit: `kasual/casual`, `formal/jas/resmi/elegant`, `olahraga/sport`,
+`musim panas/summer`, `musim dingin/winter/jaket/coat`; `gaun/dress/rok/skirt` memilih
+summer untuk perempuan. `jenggot/brewok/beard/kumis/moustache` memilih rambut wajah,
+`kacamata/glasses` dan `topi/hat` memilih aksesori terpasang. Kata `suit` tetap memilih
+setelan sistem. Dalam dict, gunakan `outfit="summer"` (juga casual/formal/sport/winter),
+`beard=True` atau nama katalog, dan `accessories=["glasses", "hat"]`.
+Outfit dipilih dengan seed per karakter (`seed + indeks * 101`); `clothes` eksplisit
+(termasuk `[]`) mengesampingkan preset. Nama hair/clothes paket diterima; parse-only
+menandainya unverified dan build memeriksa katalog terpasang. Nama paket dalam teks
+disimpan di `assets` sampai jenisnya diketahui. Paket tidak tersedia → warning dan
+outfit memakai setelan sistem; aksesori/jenggot yang tidak tersedia dilewati.
 
 Teks menghasilkan gerak mulut tanpa suara; rekaman audio memakai Whisper lokal jika
 tersedia dan ikut masuk ke video. MPFB tidak tersedia → manekin ber-rig dengan waktu
 kata, subtitle dan gestur, tanpa animasi wajah. Tanpa waktu kata, subtitle dimatikan
 dengan warning. Karakter yang diam tetap didukung. Aksi tubuh selesai sebelum baris
-berikutnya; cahaya dan gerak rambut dihitung setelah animasi.
+berikutnya; cahaya, gerak rambut serta kain longgar dihitung setelah animasi.
+Rok/gaun mendapat gerak kain otomatis; baju ketat, rambut pendek dan karakter tanpa
+bagian longgar dilewati. Pemilihan outfit belum menyelesaikan clipping baju/rambut/kursi;
+periksa pose berjalan dan duduk di Eevee.
 Nama karakter dibuat unik; objek lama dipertahankan, set terkelola mengikuti perilaku
 `set_environment`. Tidak menyimpan atau merender otomatis. Periksa beberapa shot dengan
 `render_frames(camera="scene", engine_name="eevee", size=512)`, lalu simpan dan render

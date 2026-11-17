@@ -39,7 +39,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
-- Dialog: `dialog`, `stage_dialog`, `script_to_scene`
+- Dialog: `dialog`, `stage_dialog`, `script_to_scene` (catalog outfits/accessories + hair/cloth motion)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
@@ -300,7 +300,20 @@ ANA: Apa kabar hari ini?
 `TITLE`/`LOCATION` are aliases. Declare speakers with `NAME (descriptors): text`;
 later lines can use `NAME: text`. Names/references match without case sensitivity.
 Descriptors recognize gender, age, hair (bob, short/pendek, long/panjang, ponytail/ekor
-kuda, braid/kepang, afro), casual/formal/sport clothing, or exact MPFB catalog names.
+kuda, braid/kepang, afro), outfits, facial hair, accessories or exact MPFB catalog names.
+Outfit descriptors: kasual/casual; formal/jas/resmi/elegant; olahraga/sport;
+musim panas/summer; musim dingin/winter/jaket/coat. Gaun/dress/rok/skirt selects
+summer for females. A literal `suit` still selects the system elegant suit.
+Jenggot/brewok/beard/kumis/moustache requests a deterministic installed beard or
+moustache; kacamata/glasses and topi/hat select installed accessories.
+Dict characters accept `outfit="casual"|"formal"|"sport"|"summer"|"winter"`,
+`beard="catalog_name"` or `beard=True`, and `accessories=["glasses", "hat"]`.
+Without explicit `clothes`, an outfit uses the installed picker, seeded with
+`seed + character_index * 101` (zero-based). Explicit `clothes`, including `[]`,
+overrides it. Pack hair/clothes names are preserved in parse-only plans as
+unverified, then checked against `mpfb_assets()` during building. Exact text pack
+names are deferred in the plan's `assets` list until their type is known.
+Missing optional items produce warnings; outfits fall back to installed system suits.
 Unknown descriptor words and stage directions produce warnings, not guesses.
 Directions: `[Budi walks to 1, -1]`, `[Budi jalan ke kursi]`, `[Budi sits on the chair]`,
 `[Budi berdiri]`, `[Ana holds a cup in the left hand]`, `[Ana menunjuk]`,
@@ -326,7 +339,9 @@ clip/pose library), `look` (`at` character/object/camera or XY/XYZ), `pause` (`s
 and `{"title": "Later", "subtitle": "...", "seconds": 2}`.
 
 Body beats chain on one timeline before dialog, expressions and shot cameras; blinks,
-gaze/gestures follow, then lighting samples the final body motion and hair is baked last.
+gaze/gestures follow, then lighting samples the final body motion and hair plus loose
+clothing are baked last. Skirts/dresses get cloth motion automatically; tight garments
+and short hair are skipped normally, including characters with no eligible parts.
 Speech after a walk/sit waits for the action's end. Staging uses `stage_dialog`; generic
 seat names pick a free environment seat or add a chair. Other known prop kinds are
 created as needed. Exact scene object names also work. MPFB missing uses rigged
@@ -343,6 +358,7 @@ Recipe: `new_scene()` → `script_to_scene(script, build=False)` →
 inspect the frames → `save_project("morning.blend")` → `render_video(quality="draft", wait=True)`.
 Limits inherit the component tools: no obstacle/desk/arm collision avoidance, static
 seats, one held prop per hand, rule-based text pronunciation, no automatic voice generation.
+Outfit/accessory selection does not solve garment/hair/seat intersections; inspect posed Eevee frames.
 Declare characters before using them; invalid references fail with a clear error.
 
 ## Rigging

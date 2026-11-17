@@ -1,5 +1,6 @@
 """Build a screenplay by composing the registered engine commands in-process."""
 import json
+import random
 import time
 from contextlib import contextmanager
 
@@ -10,11 +11,74 @@ from . import command, dispatch
 from ..script_plan import parse_script
 
 
+def _appearance(char, catalog, seed, warnings):
+    """Resolve deferred asset names and accessories only against installed assets."""
+    from .mpfb import _outfit_clothes
+    from ..script_plan import CLOTHES
+
+    ident = char["id"]
+    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories")}
+    args["seed"] = seed
+    assets = catalog["assets"]
+    metadata = catalog.get("clothing_metadata", {})
+    rng = random.Random(seed)
+    additions = []
+    for asset in char.get("assets", []):
+        if asset in assets.get("hair", []):
+            args["hair"] = asset
+        elif asset in assets.get("beards", []):
+            args["beard"] = asset
+        elif asset in assets.get("clothes", []):
+            additions.append(asset)
+        else:
+            warnings.append(f"{ident}: unavailable catalog asset omitted: {asset!r}")
+    if additions:
+        args["clothes"] = list(dict.fromkeys(args.get("clothes", []) + additions))
+        additions = []
+    if "clothes" not in args and not args.get("outfit"):
+        sex = "female" if char["gender"] < 0.5 else "male"
+        args["clothes"] = [f"{sex}_casualsuit{rng.randint(1, 2):02d}", "shoes01"]
+    for kind in ("hair", "clothes"):
+        if kind not in args:
+            continue  # Absent clothes allows create_realistic_human's outfit picker.
+        chosen = [args[kind]] if kind == "hair" and args[kind] else args[kind] or []
+        valid = [a for a in chosen if a in assets.get(kind, [])]
+        if chosen != valid:
+            warnings.append(f"{ident}: unavailable {kind} omitted: {sorted(set(chosen) - set(valid))}")
+        args[kind] = (valid[0] if valid else None) if kind == "hair" else valid
+    beard = args.get("beard")
+    if beard is True:
+        pool = sorted(assets.get("beards", []))
+        args["beard"] = rng.choice(pool) if pool else None
+        if not pool:
+            warnings.append(f"{ident}: no installed beard/moustache; install optional MPFB packs")
+    elif beard and beard not in assets.get("beards", []):
+        warnings.append(f"{ident}: unavailable beard omitted: {beard!r}")
+        args["beard"] = None
+    for category in char.get("accessories", []):
+        sex = "female" if char["gender"] < 0.5 else "male"
+        pool = sorted(n for n, m in metadata.items() if m["category"] == category
+                      and m["gender"] in (sex, "unisex"))
+        if pool:
+            additions.append(rng.choice(pool))
+        else:
+            warnings.append(f"{ident}: no installed {category}; install optional MPFB packs")
+    if args.get("outfit") and not any(n not in CLOTHES and m["category"] in ("top", "bottom", "dress", "suit")
+                                      for n, m in metadata.items()):
+        warnings.append(f"{ident}: optional outfit packs unavailable; using installed system suits")
+    if additions:
+        if "clothes" not in args:
+            args["clothes"], notes = _outfit_clothes(metadata, args["outfit"], char["gender"], seed)
+            warnings.extend(f"{ident}: {note}" for note in notes)
+        args["clothes"] = list(dict.fromkeys(args["clothes"] + additions))
+    return args
+
+
 @contextmanager
 def _bones_only():
     """Defer skin evaluation during skeleton-only commands; restore even on failure.
 
-    Seat contact, bounds and lights still see evaluated meshes. Hair's solver uses
+    Seat contact, bounds and lights still see evaluated meshes. Secondary motion uses
     rest geometry and sampled bones, so it can also defer skin evaluation. This is the
     same viewport optimization used by walk_path's terrain bake, scoped to this build.
     """
@@ -88,13 +152,13 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     sc.name = plan["name"]
     with timed("characters"):
         try:
-            assets = dispatch("mpfb_assets", {})["assets"]
-            realistic = bool(assets.get("skins"))
+            catalog = dispatch("mpfb_assets", {})
+            realistic = bool(catalog["assets"].get("skins"))
         except RuntimeError:
-            assets, realistic = {}, False
+            catalog, realistic = {}, False
         if not realistic:
             warnings.append("MPFB unavailable: using mannequins without facial animation; install scripts/install_mpfb.sh")
-        for char in plan["characters"]:
+        for i, char in enumerate(plan["characters"]):
             ident = char["id"]
             objname = ident
             suffix = 1
@@ -102,14 +166,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 objname = f"{ident}_{suffix}"
                 suffix += 1
             if realistic:
-                args = {k: v for k, v in char.items() if k != "id"}
-                for kind in ("hair", "clothes"):
-                    chosen = [args[kind]] if kind == "hair" and args[kind] else args[kind] or []
-                    valid = [a for a in chosen if a in assets[kind]]
-                    if chosen != valid:
-                        warnings.append(f"{ident}: unavailable {kind} omitted: {sorted(set(chosen) - set(valid))}")
-                    args[kind] = (valid[0] if valid else None) if kind == "hair" else valid
+                args = _appearance(char, catalog, seed + i * 101, warnings)
                 h = dispatch("create_realistic_human", {"name": objname, **args})
+                warnings.extend(f"{ident}: {note}" for note in h.get("warnings", []))
                 rig = h["armature"]
             else:
                 h = dispatch("create_human", {"name": objname, "style": "realistic",
@@ -371,7 +430,8 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 "duration_s": (beat["frames"][1] - beat["frames"][0] + 1) / fps, "name": prefix + f"Title{i}"})
     with timed("secondary_motion"), _bones_only():
         for char in characters.values():
-            dispatch("secondary_motion", {"character": char["rig"], "frame_start": 1, "frame_end": final})
+            dispatch("secondary_motion", {"character": char["rig"], "parts": ["hair", "clothes"],
+                                          "frame_start": 1, "frame_end": final})
     dispatch("set_timeline", {"frame_start": 1, "frame_end": final})
     sc.frame_set(1)
     warnings[:] = list(dict.fromkeys(warnings))

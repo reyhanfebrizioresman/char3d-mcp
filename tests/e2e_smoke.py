@@ -1777,12 +1777,14 @@ Budi (male, 36, short hair, casual): Thank you.
     en = (await data("script_to_scene", script=english, build=False))["plan"]
     assert en["title"] == "Morning" and en["environment"] == "office"
     assert en["characters"][0]["hair"] == "ponytail01"
-    assert en["characters"][0]["clothes"] == ["female_elegantsuit01"]
+    assert en["characters"][0]["outfit"] == "formal" and "clothes" not in en["characters"][0]
     assert en["warnings"] == ["Ana: unknown descriptors: mysterious"]
     assert en["beats"][2]["to"] == [1, -1]
     assert [b.get("do") for b in en["beats"][2:]] == ["walk", "sit", "stand", "gesture", "hold", "gesture", "look", "pause"]
     assert en["beats"][-1]["estimated_frames"][1] - en["beats"][-1]["estimated_frames"][0] + 1 == 24
     assert en["beats"][3]["on"] == "chair" and en["beats"][6]["prop"] == "book"
+    await _script_appearance_checks(call)
+    await call("new_scene")
 
     # Exercise the real fallback even on installations that have MPFB.
     await call("run_blender_python", code="""
@@ -1918,6 +1920,139 @@ result = angles
     assert "No word times available; subtitles disabled" in silent["warnings"], silent
     print(f"script_to_scene: bilingual parse + fallback OK | 4 lines/walk/sit {elapsed:.2f}s | "
           f"{checked['result']['word_counts']} | 3 Eevee shots + draft OK | six lines {benchmark:.2f}s | silent actor OK")
+
+
+async def _script_appearance_checks(call):
+    """Catalog-aware screenplay appearances and automatic keyed dress motion."""
+    import shutil
+    import time
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    before = await data("scene_info")
+    expected = {"name": "ScriptScene", "title": None, "environment": None,
+                "characters": [
+                    {"id": "Ana", "gender": 0., "age": 28., "hair": "bob01", "outfit": "summer"},
+                    {"id": "Budi", "gender": 1., "age": 35., "hair": "short01", "outfit": "casual",
+                     "beard": True, "accessories": ["glasses", "hat"]}],
+                "beats": [{"say": "Ana", "text": "Halo.", "estimated_frames": [1, 12]},
+                          {"say": "Budi", "text": "Ya.", "estimated_frames": [21, 28]}],
+                "estimated_frames": [1, 36], "fps": 24, "seed": 17, "warnings": []}
+    for descriptors in (("perempuan, 28, gaun, musim panas", "laki-laki, 35, kasual, brewok, kacamata, topi"),
+                        ("female, 28, dress, summer", "male, 35, casual, beard, glasses, hat")):
+        script = f"Ana ({descriptors[0]}): Halo.\nBudi ({descriptors[1]}): Ya."
+        assert (await data("script_to_scene", script=script, build=False, seed=17))["plan"] == expected
+    for outfit, aliases in {"winter": ("musim dingin", "winter", "jaket", "coat"),
+                            "sport": ("olahraga", "sport"), "formal": ("formal", "jas", "resmi", "elegant"),
+                            "summer": ("rok", "skirt")}.items():
+        for alias in aliases:
+            plan = (await data("script_to_scene", script=f"Ana (female, {alias}): Hi.", build=False))["plan"]
+            assert plan["characters"][0]["outfit"] == outfit and not plan["warnings"], plan
+    legacy = (await data("script_to_scene", script="Ana (female, suit): Hi.", build=False))["plan"]
+    assert legacy["characters"][0]["clothes"] == ["female_elegantsuit01"]
+    pack_names = {"characters": [{"id": "Pack", "hair": "toigo_inverted_bob",
+                                 "clothes": ["toigo_shift_dress"], "beard": "wdg_scruffy_beard",
+                                 "outfit": "summer"}], "beats": [{"say": "Pack", "text": "Hi."}]}
+    plan = (await data("script_to_scene", script=pack_names, build=False))["plan"]
+    assert plan["characters"][0] == dict(pack_names["characters"][0], gender=.5, age=28.)
+    assert len(plan["warnings"]) == 3 and all("unverified" in w for w in plan["warnings"]), plan
+    pack_text = (await data("script_to_scene", build=False,
+                 script="Ana (female, toigo_inverted_bob, toigo_shift_dress): Hi."))["plan"]
+    assert pack_text["characters"] == [{"id": "Ana", "gender": 0., "age": 28., "hair": "bob01",
+                                       "assets": ["toigo_inverted_bob", "toigo_shift_dress"]}], pack_text
+    assert await data("scene_info") == before, "appearance parse mutated scene"
+
+    # Strip only optional assets in the engine's real catalog; the real outfit
+    # picker and creator must still work with system suits and report omissions.
+    await call("new_scene")
+    await call("run_blender_python", code="""
+from engine.commands import mpfb
+from engine.script_plan import HAIR, CLOTHES
+mpfb._script_saved_catalog = mpfb._catalog
+def system_catalog():
+    cat = mpfb._script_saved_catalog()
+    for kind, known in (('hair', HAIR), ('clothes', CLOTHES), ('beards', ()), ('moustaches', ())):
+        cat[kind] = {n:p for n,p in cat.get(kind, {}).items() if n in known}
+    return cat
+mpfb._catalog = system_catalog
+""")
+    try:
+        fallback = await data("script_to_scene", subtitles=False, script={
+            "characters": [{"id": "SystemOutfit", "gender": 0, "hair": None, "outfit": "summer",
+                            "beard": True, "accessories": ["glasses"]}],
+            "beats": [{"do": "pause", "seconds": .25}]})
+        assert fallback["frames"] == [1, 6] and "clothes" not in fallback["plan"]["characters"][0]
+        assert any("system suits" in w for w in fallback["warnings"]), fallback
+        assert any("no installed beard" in w for w in fallback["warnings"]), fallback
+        assert any("no installed glasses" in w for w in fallback["warnings"]), fallback
+        info = await data("scene_info")
+        assert any("female_" in o["name"] and "suit" in o["name"] for o in info["objects"]), info
+    finally:
+        await call("run_blender_python", code="from engine.commands import mpfb\nmpfb._catalog = mpfb._script_saved_catalog\ndel mpfb._script_saved_catalog")
+
+    catalog = await data("mpfb_assets")
+    assets = catalog["assets"]
+    preferred = ("toigo_halter_dress_knee_length", "toigo_shift_dress", "frankyaye_mini_skirt_01")
+    dress = next((a for a in preferred if a in assets["clothes"]),
+                 next((a for a in assets["clothes"] if "dress" in a or "skirt" in a), None))
+    if not dress:
+        print("script appearances: exact bilingual plans + system fallback OK | cloth SKIPPED (no dress/skirt pack)")
+        return
+    await call("new_scene")
+    hair = "toigo_inverted_bob" if "toigo_inverted_bob" in assets["hair"] else "bob01"
+    fixture = {"characters": [
+        {"id": "ScriptDress", "gender": 0, "hair": hair, "clothes": [dress, "shoes01"]},
+        {"id": "ScriptBeard", "gender": 1, "beard": True, "accessories": ["glasses"],
+         "clothes": ["male_casualsuit01", "shoes01"]}], "beats": [
+            {"do": "walk", "who": "ScriptDress", "to": "chair"},
+            {"do": "sit", "who": "ScriptDress", "on": "chair"},
+            {"say": "ScriptDress", "text": "Senang sekali!"},
+            {"say": "ScriptBeard", "text": "Terima kasih."}]}
+    t = time.perf_counter()
+    built = await data("script_to_scene", script=fixture, language="id", seed=17, subtitles=False, camera="singles")
+    elapsed = time.perf_counter() - t
+    assert 0 < built["timings"]["total"] <= elapsed and built["timings"]["secondary_motion"] > 0, built
+    walk, seated = built["plan"]["beats"][:2]
+    checked = (await data("run_blender_python", code=f"""
+from engine.commands.talk import _fcurves
+r = bpy.data.objects[{built['characters']['ScriptDress']['rig']!r}]
+bones = [b.name for b in r.data.bones if b.name.startswith('cloth_')]
+curves = [fc for fc in _fcurves(r.animation_data.action) if 'cloth_' in fc.data_path]
+keys = [k.co.y for fc in curves for k in fc.keyframe_points if {walk['frames'][0]} <= k.co.x <= {walk['frames'][1]}]
+motion = max((max(v)-min(v) for fc in curves
+              if (v := [k.co.y for k in fc.keyframe_points if {walk['frames'][0]} <= k.co.x <= {walk['frames'][1]}])), default=0)
+male = bpy.data.objects[{built['characters']['ScriptBeard']['rig']!r}]
+parts = [o.name for o in male.children_recursive if o.type == 'MESH']
+result = dict(bones=len(bones), walk_keys=len(keys), motion=motion,
+              parts=parts, dress=any({dress!r} in o.name for o in r.children_recursive))
+"""))["result"]
+    assert checked["dress"] and checked["bones"] >= 6 and checked["walk_keys"] >= checked["bones"] * 4, checked
+    assert checked["motion"] > 1e-5, checked
+    for category, pool in (("beard", assets.get("beards", [])),
+                           ("glasses", catalog["clothing_categories"].get("glasses", []))):
+        if pool:
+            assert any(a in part for a in pool for part in checked["parts"]), (category, checked)
+        else:
+            assert any(f"no installed {category}" in w for w in built["warnings"]), built
+    frames = [(walk["frames"][0] + walk["frames"][1]) // 2, seated["frames"][1], built["lines"][-1]["start"] + 5]
+    # Use the scene's wide/body shots, then a real close-up for beard/glasses.
+    await call("camera_shot", subject=[built["characters"]["ScriptDress"]["rig"]], shot="full",
+               start_frame=1, end_frame=built["lines"][0]["end"], name="ScriptAppearanceBody")
+    await call("camera_shot", subject=[built["characters"]["ScriptBeard"]["rig"]], shot="close_up",
+               start_frame=built["lines"][-1]["start"], end_frame=built["frames"][1], name="ScriptAppearanceFace")
+    rendered = await call("render_frames", frames=frames, camera="scene", engine_name="eevee", size=512)
+    stills = [json.loads(t) for t in text_of(rendered)]
+    assert len(stills) == 3
+    for label, item in zip(("walk", "seated", "closeup"), stills):
+        path = os.path.join(ROOT, "output", "renders", f"script_appearance_{label}.png")
+        shutil.copyfile(item["path"], path)
+        item["path"] = path
+    await call("save_project", path="script_appearance.blend")
+    with open(os.path.join(ROOT, "output", "script_appearance_results.json"), "w") as f:
+        json.dump({"build": built, "checked": checked, "elapsed_s": elapsed, "stills": stills}, f, indent=2)
+    print(f"script appearances: exact bilingual plans + catalog/system fallback OK | {dress} | "
+          f"{checked['bones']} cloth bones, {checked['walk_keys']} walk keys | beard/glasses OK | build {elapsed:.2f}s | 3 Eevee frames")
 
 
 async def _occlusion_checks(call):

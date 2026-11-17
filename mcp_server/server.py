@@ -1064,12 +1064,18 @@ async def script_to_scene(script: dict | str, name: str | None = None,
 
     Text: JUDUL/TITLE: ..., LOKASI/LOCATION: podcast_studio, then
     ANA (perempuan, 28, rambut bob): Halo! and [Ana duduk di kursi].
-    Dict: {title, environment, characters: [{id, gender, age, hair, clothes, race}],
+    Dict: {title, environment, characters: [{id, gender, age, hair, clothes, race,
+    outfit?, beard?, accessories?}],
     beats: [{say: id, text, audio?, emotion?}, {do: walk, who: id, to: [x,y]},
     {do: sit, who: id, on: chair}, {do: stand/hold/gesture/pose/look/pause, ...}]}.
     build=False returns a deterministic normalized plan and estimated frames with NO
     scene changes or audio transcription. Builds use existing body/dialog/camera tools,
-    captions and hair motion; text is mouth-only, audio is placed on the timeline.
+    captions and hair/loose-cloth motion; text is mouth-only, audio is placed on the timeline.
+    Outfit: casual/formal/sport/summer/winter (explicit clothes overrides it).
+    Beard: catalog name or True for a seeded installed choice. Text also recognizes
+    gaun/dress/rok/skirt, jenggot/beard/kumis/moustache, kacamata/glasses and topi/hat;
+    accessories=['glasses', 'hat'] in dicts. Pack names are checked at build time;
+    missing optional assets warn and outfits fall back to installed system suits.
     MPFB missing: rigged mannequins retain word times, audio, gestures and captions,
     without facial animation. Returns plan, character rig/mesh map, frames, shots,
     duration_s, warnings and per-stage timings. Nothing is saved automatically.

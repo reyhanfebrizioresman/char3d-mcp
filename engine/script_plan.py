@@ -11,6 +11,7 @@ CLOTHES = tuple(f"male_casualsuit{i:02d}" for i in range(1, 7)) + (
     "male_elegantsuit01", "male_worksuit01", "female_casualsuit01", "female_casualsuit02",
     "female_elegantsuit01", "female_sportsuit01", "fedora01", "fedora_cocked",
 ) + tuple(f"shoes{i:02d}" for i in range(1, 7))
+OUTFITS = ("casual", "formal", "sport", "summer", "winter")
 PROPS = {"kursi": "chair", "bangku": "bench", "sofa": "sofa", "meja": "table",
          "cangkir": "cup", "gelas": "cup", "telepon": "phone", "ponsel": "phone",
          "buku": "book", "mikrofon": "handheld_microphone"}
@@ -57,12 +58,18 @@ def _descriptors(text, char, warnings):
         char["age"] = int(age.group())
         rest = rest[:age.start()] + " " + rest[age.end():]
     for asset in sorted(HAIR + CLOTHES, key=len, reverse=True):
-        if asset in rest:
+        pattern = r"(?<![\w-])" + re.escape(asset) + r"(?![\w-])"
+        if re.search(pattern, rest):
             if asset in HAIR:
                 char["hair"] = asset
             else:
                 char.setdefault("clothes", []).append(asset)
-            rest = rest.replace(asset, " ")
+            rest = re.sub(pattern, " ", rest)
+    # Pack names cannot be classified without Blender's installed catalog. Keep
+    # their exact spelling for build-time resolution (including hair and beards).
+    for asset in re.findall(r"\b[\w-]*_[\w-]+\b", rest):
+        char.setdefault("assets", []).append(asset)
+        rest = rest.replace(asset, " ")
     for words, asset in ((r"ponytail|ekor kuda", "ponytail01"), (r"braid|kepang", "braid01"),
                          (r"long|panjang", "long01"), (r"short|pendek", "short01"),
                          (r"bob", "bob01"), (r"afro", "afro01")):
@@ -70,10 +77,30 @@ def _descriptors(text, char, warnings):
             char["hair"] = asset
             rest = re.sub(r"\b(?:" + words + r")\b", " ", rest)
     sex = "female" if char.get("gender", 0.5) < 0.5 else "male"
-    for words, suffix in ((r"casual|kasual", "casualsuit01"), (r"suit|formal|jas|elegant", "elegantsuit01"),
-                          (r"sport|sports|olahraga", "sportsuit01" if sex == "female" else "casualsuit01")):
+    # A literal suit keeps the original system mapping; style descriptors use
+    # the installed, seeded outfit picker instead of forcing a system suit.
+    if re.search(r"\bsuit\b", rest):
+        char.setdefault("clothes", []).append(f"{sex}_elegantsuit01")
+        rest = re.sub(r"\bsuit\b", " ", rest)
+    for words, outfit in ((r"casual|kasual", "casual"),
+                          (r"formal|jas|resmi|elegant", "formal"),
+                          (r"sport|sports|olahraga", "sport"),
+                          (r"musim panas|summer", "summer"),
+                          (r"musim dingin|winter|jaket|coat", "winter")):
         if re.search(r"\b(?:" + words + r")\b", rest):
-            char.setdefault("clothes", []).append(f"{sex}_{suffix}")
+            char["outfit"] = outfit
+            rest = re.sub(r"\b(?:" + words + r")\b", " ", rest)
+    if re.search(r"\b(?:gaun|dress|rok|skirt)\b", rest) and sex == "female":
+        char["outfit"] = "summer"
+        rest = re.sub(r"\b(?:gaun|dress|rok|skirt)\b", " ", rest)
+    for words, field, value in ((r"jenggot|brewok|beard|kumis|moustache|mustache", "beard", True),
+                                (r"kacamata|glasses", "accessories", "glasses"),
+                                (r"topi|hat", "accessories", "hat")):
+        if re.search(r"\b(?:" + words + r")\b", rest):
+            if field == "accessories":
+                char.setdefault(field, []).append(value)
+            else:
+                char[field] = value
             rest = re.sub(r"\b(?:" + words + r")\b", " ", rest)
     rest = re.sub(r"\b(?:rambut|hair|baju|clothes|clothing|tahun|years?|old|berusia|aged?|with|dengan)\b", " ", rest)
     unknown = " ".join(re.findall(r"[\w-]+", rest))
@@ -163,19 +190,29 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
         char["age"] = _number(char.get("age", 28), "age", 1, 90)
         sex = "female" if char["gender"] < 0.5 else "male"
         char.setdefault("hair", "bob01" if sex == "female" else "short01")
-        char.setdefault("clothes", [f"{sex}_casualsuit{rng.randint(1, 2):02d}", "shoes01"])
-        if not isinstance(char["clothes"], list):
-            raise ValueError("clothes must be a list of catalog names")
-        if not all(isinstance(a, str) for a in char["clothes"]):
-            raise ValueError("clothes must contain string catalog names")
-        if char["hair"] and char["hair"] not in HAIR:
-            warnings.append(f"{ident}: unknown hair {char['hair']!r}; using default")
-            char["hair"] = "bob01" if sex == "female" else "short01"
-        for asset in char["clothes"]:
-            if asset not in CLOTHES:
-                warnings.append(f"{ident}: unknown clothing {asset!r}; ignored")
-        char["clothes"] = [a for a in char["clothes"] if a in CLOTHES]
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin"}:
+        default_clothes = [f"{sex}_casualsuit{rng.randint(1, 2):02d}", "shoes01"]
+        if char.get("outfit") is not None and char["outfit"] not in OUTFITS:
+            raise ValueError(f"outfit must be one of {list(OUTFITS)} or None")
+        if not char.get("outfit") and not char.get("assets"):
+            char.setdefault("clothes", default_clothes)
+        if char["hair"] is not None and not isinstance(char["hair"], str):
+            raise ValueError("hair must be a catalog name or None")
+        if char.get("beard") is not None and not isinstance(char["beard"], (str, bool)):
+            raise ValueError("beard must be a catalog name, boolean or None")
+        for field, known in (("clothes", CLOTHES), ("assets", ()), ("accessories", ("glasses", "hat"))):
+            if field not in char:
+                continue
+            if not isinstance(char[field], list) or not all(isinstance(a, str) for a in char[field]):
+                raise ValueError(f"{field} must be a list of string catalog names")
+            for asset in char[field]:
+                if asset not in known:
+                    if field == "accessories":
+                        raise ValueError("accessories must contain glasses or hat")
+                    warnings.append(f"{ident}: unverified {field} asset {asset!r}; checked at build time")
+        for field, known in (("hair", HAIR), ("beard", ())):
+            if isinstance(char.get(field), str) and char[field] and char[field] not in known:
+                warnings.append(f"{ident}: unverified {field} asset {char[field]!r}; checked at build time")
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):
