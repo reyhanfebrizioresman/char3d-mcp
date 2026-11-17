@@ -1982,7 +1982,39 @@ async def _occlusion_checks(call):
                             break
                         origin = loc + direction * 0.002
                     total += 1
-            result = dict(fraction=blocked/max(1,total), in_frame=bool(in_frame))
+            # Independent scene-ray grid, ending at the nearest subject eye
+            # depth. Rays skip ignored/self geometry just like the face check.
+            groups = [_points(meshes, root if root.type == 'ARMATURE' else None,
+                              hi.z-lo.z, dg) for root, meshes in probe.groups.items()]
+            eye = sum(groups[0][1], Vector())/len(groups[0][1])
+            top, chest = groups[0][2][-2:]
+            eye_uv, top_uv, chest_uv = [world_to_camera_view(sc, cam, p) for p in (eye,top,chest)]
+            forward = cam.matrix_world.to_quaternion() @ Vector((0,0,-1))
+            depth = min((sum(g[1],Vector())/len(g[1])-cam.location).dot(forward) for g in groups)
+            corners = cam.data.view_frame(scene=sc)
+            covered = 0
+            for y in range(14):
+                for x in range(24):
+                    local = corners[2].lerp(corners[1],(x+0.5)/24).lerp(
+                            corners[3].lerp(corners[0],(x+0.5)/24),(y+0.5)/14)
+                    direction = cam.matrix_world.to_quaternion() @ local.normalized()
+                    origin = cam.matrix_world.translation.copy()
+                    target = origin + direction * (depth/direction.dot(forward))
+                    for step in range(100):
+                        distance = (target-origin).dot(direction)-0.005
+                        if distance <= 0:
+                            break
+                        hit,loc,normal,index,obj,matrix = sc.ray_cast(dg,origin,direction,distance=distance)
+                        if not hit:
+                            break
+                        if (obj not in probe.ignored and not obj.hide_render and obj.visible_get()
+                                and obj.get('c3d_role') != 'ground' and not is_helper(obj)):
+                            covered += 1
+                            break
+                        origin = loc+direction*0.002
+            result = dict(fraction=blocked/max(1,total), in_frame=bool(in_frame),
+                          coverage=covered/(24*14), eye=[eye_uv.x,1-eye_uv.y],
+                          headroom=1-top_uv.y, subject_height=abs(top_uv.y-chest_uv.y))
         ''')
 
     # A script-built seated office presenter, with the supplied set's laptop.
@@ -2005,8 +2037,26 @@ async def _occlusion_checks(call):
     assert before_measure['fraction'] > 0.15, before_measure
     assert after['occlusion']['after'] <= 0.05 and after['occlusion']['adjusted'], after
     assert after_measure['fraction'] <= 0.05 and after_measure['in_frame'], after_measure
-    assert after['occlusion']['seconds'] < 0.5, after
+    assert after['occlusion']['frame_coverage_after'] <= 0.25, after
+    assert after_measure['coverage'] <= 0.25, after_measure
+    assert 0.25 <= after_measure['eye'][1] <= 0.45, after_measure
+    assert 0.85 <= after_measure['subject_height']/before_measure['subject_height'] <= 1.15, (before_measure, after_measure)
+    # Original seated bounds put the eyes above the upper third; the design
+    # translates all three landmarks together, retaining their relative scale.
+    design_headroom = before_measure['headroom'] + 1/3-before_measure['eye'][1]
+    assert abs(after_measure['headroom']-design_headroom) <= 0.04, after_measure
+    assert after['shot_size'] == after['occlusion']['shot_size'] == 'medium', after
+    assert after['occlusion']['seconds'] < 5, after
     await call('save_project', path='occlusion_office.blend')
+
+    # Clear face, excessive foreground: visibility alone must not accept this.
+    clutter_args = dict(args, angle=-30)
+    clutter_before = await data('camera_shot', **clutter_args, avoid_occlusion=False)
+    clutter_after = await data('camera_shot', **clutter_args)
+    assert clutter_before['occlusion']['before'] == 0, clutter_before
+    assert clutter_before['occlusion']['frame_coverage_before'] > 0.25, clutter_before
+    assert clutter_after['occlusion']['frame_coverage_after'] <= 0.25, clutter_after
+    assert clutter_after['occlusion']['adjusted'], clutter_after
 
     # Clear auto and True preserve every transform/lens key, including a moving shot.
     await call('new_scene')
@@ -2121,13 +2171,19 @@ async def _occlusion_checks(call):
         final = await visibility([single['subject']], frame, single['camera'])
         assert final['fraction'] <= 0.05 and final['in_frame'], (single, final)
         assert single['occlusion']['after'] <= 0.05, single
+        assert single['occlusion']['frame_coverage_after'] <= 0.25, single
+        assert final['coverage'] <= 0.25 and 0.25 <= final['eye'][1] <= 0.45, final
+        assert all(0.85 <= v <= 1.15 for v in single['occlusion']['subject_scale']), single
         assert await python(f"bpy.context.scene.frame_set({frame})\n"
                             f"result=bpy.data.objects[{single['camera']!r}].location.y < 0")
         await render(frame, f'occlusion_podcast_{i+1}.png')
     await call('save_project', path='occlusion_podcast.blend')
     print(f"occlusion: office {before['occlusion']['before']:.3f} -> "
           f"{after['occlusion']['after']:.3f} in {after['occlusion']['seconds']:.3f}s | "
-          "clear keys identical | timed blocker/other cast/walls OK | podcast singles clear")
+          f"coverage {before_measure['coverage']:.3f} -> {after_measure['coverage']:.3f}, "
+          f"eye {after_measure['eye'][1]:.3f}, scale "
+          f"{after_measure['subject_height']/before_measure['subject_height']:.3f} | "
+          "clear keys identical | timed blockers/walls OK | podcast composition OK")
 
 
 async def main():

@@ -46,7 +46,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   four, ok)
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
   `retarget_animation`, `lock_feet`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
-- Film: `list_camera_moves`, `camera_shot` (occlusion-aware framing), `list_shots`, `delete_shot`, `set_timeline`,
+- Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
@@ -656,18 +656,34 @@ intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
   head/chest and, for wider sizes, body bounds. Subject meshes, descendants, active
   held props, ground and hidden geometry are excluded; other characters can block
   singles, while every subject in a two-shot is excluded.
-- Blocked faces trigger a deterministic search: raise elevation toward 20°, shift
-  azimuth ±10/20/30°, shorten distance with a wider lens, then small vertical offsets.
-  Adjustments reject camera positions inside scenery, behind walls or crossing walls;
-  dialog stays on the -Y side and honors the set's camera aisle. Clear shots retain
-  exactly the original transform/lens keys; `False` retains the original framing.
-- Results include `occlusion`: worst sampled per-subject face fraction `before` /
-  `after`, `adjusted`, body fractions, `sample_frames`, timing `seconds`, and `warning`
-  when no safe candidate clears the face. Dialog/script shot results include the same
-  report. Inspect before/after with Eevee, especially after changing later animation.
-  This is sampled visibility with approximate face landmarks, not a continuous
-  collision/frustum solver. Own hair/held props can still cover the face; very brief
-  crossings between samples or later animation changes require checking/rerunning.
+- Blocked faces or excessive foreground trigger a deterministic search: pedestal
+  up first, then small azimuth changes, then closer positions past the occluder.
+  Each candidate fits aim and lens to the original projected eye/head-top/chest
+  landmarks. Seated bounds that place eyes outside the upper-third band define
+  their unobstructed design by translating those targets to a 1/3 eye line,
+  retaining their relative size. Candidates allow ±4% of frame height/width for
+  headroom/eye position and ±15% for head-to-chest projected height.
+- Acceptance requires face occlusion <= 5%, clear eyes for close-ups, face samples
+  inside the frame, and foreground coverage <= 25% (close_up, medium_close, medium;
+  also extreme_close_up) or <= 35% for wider sizes. Coverage uses a 24x14 ray grid,
+  ending at the nearest subject's eye-depth plane. Subject geometry uses the same
+  exclusions as face rays. Camera positions inside scenery/subject bounds or
+  across walls are rejected; dialog preserves its action-line side and camera aisle.
+- If no candidate passes, try exactly one wider size (close_up → medium_close →
+  medium → medium_full; extreme_close_up → close_up), with the same checks. If
+  that fails, keep the original camera and return a `warning`. Unobstructed shots
+  retain exactly the original transform/lens keys; `False` retains original framing.
+  Dialog singles additionally require composition even if face/foreground are clear,
+  so bounds-based seated framing cannot leave the eyes against the frame edge.
+- Results include `occlusion`: worst sampled face fraction `before`/`after`,
+  `adjusted`, body fractions, `sample_frames`, timing `seconds`,
+  `frame_coverage_before`/`frame_coverage_after`, `face_screen` (sampled normalized
+  eye positions, top-left origin), `subject_scale` (sampled head-to-chest height
+  relative to the design), and `shot_size` used (also at the top level).
+  Dialog/script shot results include the same report. Inspect with Eevee after
+  changing later animation. Visibility and foreground coverage are sampled, with
+  approximate face landmarks; thin objects/grid gaps and brief crossings between
+  samples may be missed. Own hair/held props can still cover the face.
 
 **Subtitles** — `add_subtitles(style)` turns on captions; `render_video` then burns them in
 (a short Video Sequencer pass after the frames, ~0.1 s/frame) and writes an `.srt` next to the

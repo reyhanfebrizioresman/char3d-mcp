@@ -3,7 +3,8 @@ import math
 import time
 
 import bpy
-from mathutils import Vector
+import numpy as np
+from mathutils import Euler, Vector
 from mathutils.bvhtree import BVHTree
 
 from .anim import semantic_map
@@ -112,6 +113,86 @@ class _Mesh:
         return True
 
 
+# All screen coordinates are normalized (0..1), measured from the top-left.
+def _project(position, rotation, lens, points, sensor):
+    inverse = rotation.to_matrix().transposed()
+    return [Vector((0.5 + lens / sensor[0] * q.x / max(1e-6, -q.z),
+                    0.5 - lens / sensor[1] * q.y / max(1e-6, -q.z), -q.z))
+            for p in points for q in [inverse @ (p - position)]]
+
+
+def _landmarks(group):
+    face, eyes, body = group
+    if not eyes:
+        return []
+    eye = sum(eyes, Vector()) / len(eyes)
+    # Rigged bounds finish with posed head-top/chest landmarks. The fallback is
+    # deliberately based on bounds, for non-humanoid props and imported meshes.
+    top = body[-2] if len(body) > 9 else max(body, key=lambda p: p.z)
+    chest = body[-1] if len(body) > 9 else eye + Vector((0, 0, -(top.z-eye.z)*4))
+    return [eye, top, chest]
+
+
+def framing_targets(pos, rot, mm, groups, sensor, shot):
+    targets = [_project(pos, rot, mm, _landmarks(g), sensor) for g in groups]
+    # Bounds-based framing of a seated body can put its eyes against the top edge.
+    # Define the unobstructed design once, retaining its scale and relative
+    # head/chest positions, but place the eye line in the upper third.
+    if len(targets) == 1 and shot in {"close_up", "medium_close", "medium"}:
+        eye = targets[0][0].y
+        if not 0.25 <= eye <= 0.45:
+            for p in targets[0]:
+                p.y += 1/3 - eye
+    return targets
+
+
+def fit_frame(pos, rot, mm, groups, sensor, targets):
+    """Fit yaw, pitch and focal length to original eye/head/chest projections.
+
+    A tiny finite-difference least-squares solve keeps the original roll/shake.
+    No camera datablock is mutated, so scoring and baking use the exact same fit.
+    """
+    points = [p for g in groups for p in _landmarks(g)]
+    goal = np.array([[p.x, p.y] for group in targets for p in group])
+    if not points:
+        return rot.copy(), mm
+    weight = np.ones_like(goal)
+    weight[::3] = 4  # keep the eye line/looking room while fitting subject scale
+    def evaluate(x):
+        rotation = (rot.to_quaternion() @ Euler((x[0], x[1], 0)).to_quaternion()).to_euler()
+        lens = max(8.0, min(300.0, mm * math.exp(float(x[2]))))
+        screen = np.array([[p.x, p.y] for p in _project(pos, rotation, lens, points, sensor)])
+        return ((screen-goal)*weight).ravel(), rotation, lens
+    x = np.zeros(3)
+    for _ in range(7):
+        residual, rotation, lens = evaluate(x)
+        if np.max(np.abs(residual)) < 1e-4:
+            break
+        jacobian = np.column_stack([(evaluate(x + np.eye(3)[i]*0.001)[0]-residual)/0.001
+                                    for i in range(3)])
+        delta = np.linalg.lstsq(jacobian, -residual, rcond=None)[0]
+        x += np.clip(delta, -0.25, 0.25)
+    _, rotation, lens = evaluate(x)
+    return rotation, lens
+
+
+def frame_coverage(pos, rot, lens, sensor, meshes, groups):
+    """24x14 camera rays, stopping at the nearest subject's eye-depth plane."""
+    forward = rot.to_matrix() @ Vector((0, 0, -1))
+    depth = min((p-pos).dot(forward) for g in groups for p in _landmarks(g)[:1])
+    if depth <= 0:
+        return 1.0
+    basis = rot.to_matrix()
+    covered = 0
+    for y in range(14):
+        for x in range(24):
+            direction = Vector((((x+0.5)/24-0.5)*sensor[0]/lens,
+                                (0.5-(y+0.5)/14)*sensor[1]/lens, -1))
+            target = pos + basis @ direction * depth
+            covered += any(m.hit(pos, target) for m in meshes)
+    return covered / (24*14)
+
+
 class VisibilityProbe:
     def __init__(self, targets, shot, height, angle_limits=None, action_line=None):
         self.shot, self.height = shot, height
@@ -131,24 +212,31 @@ class VisibilityProbe:
         self.ignored = ignored
         self.cache, self.samples = {}, []
         self.seconds = 0.0
+        aspect = bpy.context.scene.render.resolution_y / bpy.context.scene.render.resolution_x
+        self.sensor = (36 * max(1, aspect), 36 * min(1, aspect))
 
-    def capture(self, frame, position, aim):
+    def points(self):
+        dg = bpy.context.evaluated_depsgraph_get()
+        return [_points(parts, root if root.type == "ARMATURE" else None, self.height, dg)
+                for root, parts in self.groups.items()]
+
+    def capture(self, frame, position, aim, rotation=None, lens=50):
         started = time.perf_counter()
         dg = bpy.context.evaluated_depsgraph_get()
         collections = set(_render_collections(bpy.context.scene.collection))
-        meshes = []
+        meshes, solids = [], []
         for obj in bpy.context.scene.objects:
             if obj.type != "MESH" or obj in self.ignored or is_helper(obj):
                 continue
             chain = list(_ancestors(obj))
-            if (obj.get("c3d_role") == "ground" or obj.hide_render or not obj.visible_get() or
+            if (obj.hide_render or not obj.visible_get() or
                     any(o.hide_render for o in chain) or
                     not any(c in collections for c in obj.users_collection)):
                 continue
             held = next((o for o in chain if o.get("c3d_hold_character")), None)
-            if (held and held.get("c3d_hold_character") in {r.name for r in self.rigs} and
-                    held.get("c3d_hold_start", 0) <= frame <= held.get("c3d_hold_release", math.inf)):
-                continue
+            ignored_sight = (obj.get("c3d_role") == "ground" or
+                             (held and held.get("c3d_hold_character") in {r.name for r in self.rigs} and
+                              held.get("c3d_hold_start", 0) <= frame <= held.get("c3d_hold_release", math.inf)))
             dynamic = (any(o.animation_data or o.constraints for o in chain) or
                        any(m.type not in {"BEVEL", "SUBSURF", "WEIGHTED_NORMAL", "SOLIDIFY",
                                           "TRIANGULATE", "MIRROR"} for m in obj.modifiers) or
@@ -159,24 +247,29 @@ class VisibilityProbe:
                 if not dynamic:
                     self.cache[obj] = mesh
             if mesh.tree is not None:
-                meshes.append(mesh)
-        groups = [_points(parts, root if root.type == "ARMATURE" else None, self.height, dg)
-                  for root, parts in self.groups.items()]
+                solids.append(mesh)
+                if not ignored_sight:
+                    meshes.append(mesh)
+        groups = self.points()
+        rotation = rotation or (aim-position).to_track_quat("-Z", "Y").to_euler()
+        targets = framing_targets(position, rotation, lens, groups, self.sensor, self.shot)
         line = []
         for name in (self.action_line or [])[:2]:
             rig = bpy.data.objects[name]
             ev = rig.evaluated_get(dg)
             hips = semantic_map(rig).get("hips")
             line.append(ev.matrix_world @ ev.pose.bones[hips].head if hips else ev.matrix_world.translation.copy())
-        self.samples.append((frame, position.copy(), aim.copy(), meshes, groups, line))
+        self.samples.append((frame, position.copy(), aim.copy(), meshes, groups, line, rotation.copy(), lens, targets, solids))
         self.seconds += time.perf_counter() - started
 
     def measure(self, adjustment=None):
         worst, body_worst, eye_blocked, safe = 0.0, 0.0, False, True
-        for _, pos, aim, meshes, groups, line in self.samples:
+        coverage, composed, screens, sizes = 0.0, True, [], []
+        for _, pos, aim, meshes, groups, line, rot, mm, targets, solids in self.samples:
             original = pos
-            if adjustment:
+            if adjustment is not None:
                 pos, aim = adjusted(pos, aim, self.height, adjustment)
+                rot, mm = fit_frame(pos, rot, mm, groups, self.sensor, targets)
                 az = math.degrees(math.atan2((pos - aim).x, -(pos - aim).y))
                 if self.angle_limits and not self.angle_limits[0] <= az <= self.angle_limits[1]:
                     safe = False
@@ -184,64 +277,99 @@ class VisibilityProbe:
                     axis = line[1] - line[0]
                     if axis.cross(original - line[0]).z * axis.cross(pos - line[0]).z < 0:
                         safe = False
-                if any(m.wall and (m.hit(aim, pos) or m.hit(original, pos))
-                       for m in meshes):
+                if any(m.wall and (m.hit(aim, pos) or m.hit(original, pos)) for m in meshes):
                     safe = False
-                # The subject is excluded from sight rays, but the camera must
-                # remain outside its geometry too. Bounds are conservative here.
                 for _, _, body in groups:
                     if body and all(min(p[i] for p in body) - 0.025 <= pos[i] <=
                                     max(p[i] for p in body) + 0.025 for i in range(3)):
                         safe = False
-            inside = any(m.inside(pos) for m in meshes)
+            inside = any(m.inside(pos) for m in solids)
             safe &= not inside
-            for face, eyes, body in groups:
+            for group, target in zip(groups, targets):
+                face, eyes, body = group
                 blocked = lambda p: inside or any(m.hit(pos, p) for m in meshes)
                 frac = sum(blocked(p) for p in face) / max(1, len(face))
                 worst = max(worst, frac)
                 eye_blocked |= any(blocked(p) for p in eyes)
                 points = body if self.shot in {"full", "wide", "extreme_wide", "medium_full"} else body[-2:]
                 body_worst = max(body_worst, sum(blocked(p) for p in points) / max(1, len(points)))
-        return worst, eye_blocked, body_worst, safe
+                screen = _project(pos, rot, mm, _landmarks(group), self.sensor)
+                face_screen = _project(pos, rot, mm, face, self.sensor)
+                if not screen:
+                    continue
+                scale = abs(screen[2].y-screen[1].y) / max(1e-5, abs(target[2].y-target[1].y))
+                composed &= (all(0.01 <= p.x <= 0.99 and 0.01 <= p.y <= 0.99 and p.z > 0
+                                 for p in face_screen) and
+                             abs(screen[0].x-target[0].x) <= 0.04 and
+                             abs(screen[0].y-target[0].y) <= 0.04 and
+                             abs(screen[1].y-target[1].y) <= 0.04 and
+                             0.85 <= scale <= 1.15)
+                if len(groups) == 1 and self.shot in {"close_up", "medium_close", "medium"}:
+                    composed &= 0.25 <= screen[0].y <= 0.45
+                screens.append([round(screen[0].x, 4), round(screen[0].y, 4)])
+                sizes.append(round(scale, 4))
+            # Avoid spending grid rays on candidates that already fail visibility,
+            # composition or collision checks. The original always gets a report.
+            if adjustment is None or (safe and composed and worst <= 0.05):
+                coverage = max(coverage, frame_coverage(pos, rot, mm, self.sensor, meshes, groups))
+            else:
+                return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
+                            coverage=1.0, composed=False, screens=screens, sizes=sizes)
+        return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
+                    coverage=coverage, composed=composed, screens=screens, sizes=sizes)
 
-    def resolve(self, enabled, elevation):
+    def accepts(self, value):
+        limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
+        return (value['safe'] and value['face'] <= 0.05 and value['composed'] and
+                not (self.shot in {"close_up", "extreme_close_up"} and value['eyes']) and
+                value['coverage'] <= limit)
+
+    def resolve(self, enabled, elevation, require_composition=False):
         started = time.perf_counter()
         before = self.measure()
-        close = self.shot in {"close_up", "extreme_close_up"}
-        wide = self.shot in {"full", "wide", "extreme_wide", "medium_full"}
-        blocked = before[0] > 0.15 or (close and before[1]) or (wide and before[2] > 0.4)
+        limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
+        # Preserve the exact keys of an unobstructed design, including intentional
+        # pans/tilts and close crops. Composition constraints apply to corrections.
+        blocked = (before['face'] > 0.05 or before['coverage'] > limit or
+                   (self.shot in {"close_up", "extreme_close_up"} and before['eyes']) or
+                   (require_composition and not self.accepts(before)))
         chosen, after = None, before
         if enabled and blocked:
             for candidate in _candidates(elevation):
                 value = self.measure(candidate)
-                if value[3] and value[0] <= 0.05 and not (close and value[1]) and (not wide or value[2] <= 0.4):
+                if self.accepts(value):
                     chosen, after = candidate, value
                     break
-        report = {"before": round(before[0], 4), "after": round(after[0], 4),
+        report = {"before": round(before['face'], 4), "after": round(after['face'], 4),
                   "adjusted": [] if chosen is None else [
-                      f"{key}={value:g}" for key, value in chosen.items() if value != (1 if key == "distance" else 0)],
-                  "body_before": round(before[2], 4), "body_after": round(after[2], 4),
-                  "sample_frames": [s[0] for s in self.samples]}
+                      f"{key}={value:g}" for key, value in chosen.items()],
+                  "body_before": round(before['body'], 4), "body_after": round(after['body'], 4),
+                  "frame_coverage_before": round(before['coverage'], 4),
+                  "frame_coverage_after": round(after['coverage'], 4),
+                  "face_screen": after['screens'], "subject_scale": after['sizes'],
+                  "shot_size": self.shot, "sample_frames": [s[0] for s in self.samples]}
         if enabled and blocked and chosen is None:
-            report["warning"] = "No safe camera adjustment clears the subject; original camera retained."
+            report["warning"] = "No safe camera adjustment preserves composition; original camera retained."
         self.seconds += time.perf_counter() - started
         report["seconds"] = round(self.seconds, 4)
         return chosen, report
 
 
 def _candidates(elevation):
-    lift = max(0, 20 - float(elevation))
-    for el in (5, 10, 15, 20):
-        if el <= lift:
-            yield {"elevation": el}
-    for az in (10, -10, 20, -20, 30, -30):
-        yield {"angle": az}
-        if lift:
-            yield {"angle": az, "elevation": lift}
-    for distance in (0.85, 0.7):
-        yield {"distance": distance, "elevation": lift}
-    for up in (0.04, 0.08):
-        yield {"vertical": up, "elevation": lift}
+    # Smallest physical change first within each preferred class. A pedestal
+    # translates vertically (not around the low bounds-based focus of a seat).
+    for up in (0.06, 0.12, 0.2, 0.3, 0.45, 0.6, 0.8):
+        yield {"pedestal": up}
+    lift = max(0, 20-float(elevation))
+    angular = [{"angle": az, "pedestal": up} for az in (10, -10, 20, -20, 30, -30)
+               for up in (0, 0.12, 0.3)]
+    yield from sorted(angular, key=lambda c: abs(c['angle'])/30+c['pedestal'])
+    # Include positions in front of the blocker, rather than only tiny dollies.
+    closer = [{"distance": d, "pedestal": up} for d in (0.85, 0.7, 0.55, 0.4, 0.3, 0.2)
+              for up in (0, 0.15, 0.3)]
+    yield from sorted(closer, key=lambda c: 1-c['distance']+c['pedestal'])
+    if lift:
+        yield {"elevation": lift}
 
 
 def adjusted(pos, aim, height, adjustment):
@@ -251,4 +379,5 @@ def adjusted(pos, aim, height, adjustment):
     el = math.atan2(delta.z, math.hypot(delta.x, delta.y)) + math.radians(adjustment.get("elevation", 0))
     aim = aim + Vector((0, 0, height * adjustment.get("vertical", 0)))
     pos = aim + Vector((math.sin(az)*math.cos(el), -math.cos(az)*math.cos(el), math.sin(el))) * distance
+    pos.z += height * adjustment.get("pedestal", 0)
     return pos, aim

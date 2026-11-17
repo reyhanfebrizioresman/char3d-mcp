@@ -462,10 +462,13 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
     Each shot adds a timeline marker, so consecutive shots CUT automatically in
     render_video. Chain with start_frame = previous next_start_frame. Re-using `name`
     replaces that shot. avoid_occlusion="auto" (or True) samples evaluated face/eyes,
-    head/chest and body visibility across the shot and adjusts blocked framing with
-    small elevation/angle/distance/vertical changes. Clear shots keep identical keys.
-    False retains the original framing. Returns occlusion before/after fractions,
-    adjustments, sampled frames, timing and a warning if no safe framing is found.
+    head/chest visibility and foreground coverage across the shot. Fits aim/lens to
+    preserve eye line, headroom and subject size while trying pedestal, angle and
+    closer positions. Requires <=5% face occlusion and <=25% foreground (35% wide).
+    Tries one wider size before retaining the original camera with a warning.
+    Clear shots keep identical keys; False retains original framing. Returns
+    occlusion fractions, frame_coverage_before/after, normalized face_screen eye
+    positions (top-left origin), subject_scale, shot_size, adjustments and timing.
     Subject parts/held props and ground are ignored; other characters can occlude."""
     return await run("camera_shot", subject=subject, shot=shot, move=move,
                      start_frame=start_frame, end_frame=end_frame, angle=angle,

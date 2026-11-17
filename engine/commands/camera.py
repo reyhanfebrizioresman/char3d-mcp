@@ -16,7 +16,7 @@ from mathutils import Euler, Vector
 
 from . import command
 from .util import RENDERABLE, is_helper, obj_or_raise, scene_bounds
-from .occlusion import VisibilityProbe, adjusted, sample_frames
+from .occlusion import VisibilityProbe, adjusted, fit_frame, framing_targets, sample_frames
 
 # shot size: (visible height as multiple of subject height, aim height fraction, lens mm)
 SHOTS = {
@@ -135,8 +135,8 @@ def list_camera_moves():
 def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_frame=72,
                 angle=20.0, elevation=5.0, intensity=1.0, ease="ease_in_out", lens=None,
                 handheld=0.0, roll=0.0, depth_of_field=False, f_stop=2.8, name=None,
-                avoid_occlusion="auto", angle_limits=None, action_line=None):
-    """Create a baked shot and cut marker. Auto/True clear sampled face obstructions;
+                avoid_occlusion="auto", angle_limits=None, action_line=None, require_composition=False):
+    """Create a baked shot and cut marker, preserving composition while clearing faces.
     False keeps old framing. angle_limits/action_line constrain internal dialog coverage.
     """
     if shot not in SHOTS:
@@ -166,98 +166,113 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     cam["c3d_shot"] = {"subject": subject, "shot": shot, "move": move}
     cam.rotation_mode = "XYZ"
 
-    frac_h, aim_frac, base_lens = SHOTS[shot]
-    base_lens = float(lens or base_lens)
     aspect = sc.render.resolution_y / sc.render.resolution_x
-    sensor_v = cam_data.sensor_width * min(1.0, aspect)   # sensor_fit AUTO
-
-    # subject size measured once (start frame) so crouches/jumps don't change framing
+    sensor_v = cam_data.sensor_width * min(1.0, aspect)
     sc.frame_set(start)
     lo, hi = scene_bounds(targets)
     H = max(hi.z - lo.z, 0.05)
-    probe = VisibilityProbe(targets, shot, H, angle_limits, action_line)
-    samples = set(sample_frames(start, end, sc.render.fps / sc.render.fps_base))
-    trajectory = []
-    fn = MOVES[move][0]
-    smooth_focus, prev_rot = None, None
-    base_focus = None
-    for f in range(start, end + 1):
-        sc.frame_set(f)
-        lo, hi = scene_bounds(targets)
-        focus = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z + (hi.z - lo.z) * aim_frac))
-        smooth_focus = focus if smooth_focus is None else smooth_focus.lerp(focus, 0.25)
-        if base_focus is None:
-            base_focus = smooth_focus.copy()
-        u = _ease((f - start) / (end - start), ease)
-        p = fn(u, float(intensity))
-        follow = p.get("follow", False)
-        anchor = smooth_focus if follow else base_focus
 
-        lens_mm = base_lens * p.get("lens", 1.0)
-        dist_base = (H * frac_h / 2) / (sensor_v / 2 / base_lens)
-        dist = dist_base * p.get("dist", 1.0)
-        az = math.radians(p["az_abs"] if "az_abs" in p else angle + p.get("az", 0.0))
-        el = math.radians(elevation + p.get("el", 0.0))
-        offset = Vector((math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)))
-        right = Vector((math.cos(az), math.sin(az), 0.0))
-        pos = anchor + offset * dist + Vector((0, 0, p.get("lift", 0.0) * H)) + right * p.get("side", 0.0) * H
-        aim = smooth_focus + right * p.get("aim_side", 0.0) * H \
-            + Vector((0, 0, p.get("aim_up", 0.0) * H))
-        if move in ("static", "handheld", "pan_left", "pan_right", "tilt_up", "tilt_down",
-                    "zoom_in", "crash_zoom"):
-            aim = base_focus + right * p.get("aim_side", 0.0) * H + Vector((0, 0, p.get("aim_up", 0.0) * H))
+    def design(size):
+        frac_h, aim_frac, default_lens = SHOTS[size]
+        base_lens = float(lens or default_lens)
+        probe = VisibilityProbe(targets, size, H, angle_limits, action_line)
+        samples = set(sample_frames(start, end, sc.render.fps / sc.render.fps_base))
+        trajectory = []
+        fn = MOVES[move][0]
+        smooth_focus, prev_rot = None, None
+        base_focus = None
+        for f in range(start, end + 1):
+            sc.frame_set(f)
+            lo, hi = scene_bounds(targets)
+            focus = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z + (hi.z - lo.z) * aim_frac))
+            smooth_focus = focus if smooth_focus is None else smooth_focus.lerp(focus, 0.25)
+            if base_focus is None:
+                base_focus = smooth_focus.copy()
+            u = _ease((f - start) / (end - start), ease)
+            p = fn(u, float(intensity))
+            follow = p.get("follow", False)
+            anchor = smooth_focus if follow else base_focus
 
-        if "to_face" in p:   # zooms drift the aim from the shot's focus up to the face
-            aim = aim + Vector((0, 0, (0.92 - aim_frac) * H * max(0.0, p["to_face"])))
-        rot = (aim - pos).to_track_quat("-Z", "Y").to_euler("XYZ", prev_rot or Euler())
-        shake = float(handheld) + p.get("shake", 0.0)
-        if shake:
-            t = f / sc.render.fps
-            rot.x += math.radians(1.2 * shake * _noise(t, 1.0))
-            rot.y += math.radians(0.6 * shake * _noise(t, 4.0))
-            rot.z += math.radians(1.2 * shake * _noise(t, 7.0))
-            pos = pos + Vector((_noise(t, 2.0), _noise(t, 5.0), _noise(t, 9.0))) * 0.01 * shake * H
-        if roll:
-            rot.y += math.radians(roll)
+            lens_mm = base_lens * p.get("lens", 1.0)
+            dist_base = (H * frac_h / 2) / (sensor_v / 2 / base_lens)
+            dist = dist_base * p.get("dist", 1.0)
+            az = math.radians(p["az_abs"] if "az_abs" in p else angle + p.get("az", 0.0))
+            el = math.radians(elevation + p.get("el", 0.0))
+            offset = Vector((math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)))
+            right = Vector((math.cos(az), math.sin(az), 0.0))
+            pos = anchor + offset * dist + Vector((0, 0, p.get("lift", 0.0) * H)) + right * p.get("side", 0.0) * H
+            aim = smooth_focus + right * p.get("aim_side", 0.0) * H \
+                + Vector((0, 0, p.get("aim_up", 0.0) * H))
+            if move in ("static", "handheld", "pan_left", "pan_right", "tilt_up", "tilt_down",
+                        "zoom_in", "crash_zoom"):
+                aim = base_focus + right * p.get("aim_side", 0.0) * H + Vector((0, 0, p.get("aim_up", 0.0) * H))
+
+            if "to_face" in p:   # zooms drift the aim from the shot's focus up to the face
+                aim = aim + Vector((0, 0, (0.92 - aim_frac) * H * max(0.0, p["to_face"])))
+            rot = (aim - pos).to_track_quat("-Z", "Y").to_euler("XYZ", prev_rot or Euler())
+            shake = float(handheld) + p.get("shake", 0.0)
+            if shake:
+                t = f / sc.render.fps
+                rot.x += math.radians(1.2 * shake * _noise(t, 1.0))
+                rot.y += math.radians(0.6 * shake * _noise(t, 4.0))
+                rot.z += math.radians(1.2 * shake * _noise(t, 7.0))
+                pos = pos + Vector((_noise(t, 2.0), _noise(t, 5.0), _noise(t, 9.0))) * 0.01 * shake * H
+            if roll:
+                rot.y += math.radians(roll)
+            prev_rot = rot.copy()
+            trajectory.append((f, pos.copy(), aim.copy(), rot.copy(), lens_mm, focus.copy()))
+            if f in samples:
+                probe.capture(f, pos, aim, rot, lens_mm)
+        return trajectory, probe
+
+    trajectory, probe = design(shot)
+    adjustment, occlusion = probe.resolve(avoid_occlusion is not False, elevation, require_composition=require_composition)
+    used_size = shot
+    wider = {"extreme_close_up": "close_up", "close_up": "medium_close",
+             "medium_close": "medium", "medium": "medium_full"}
+    if avoid_occlusion is not False and "warning" in occlusion and shot in wider:
+        wider_trajectory, wider_probe = design(wider[shot])
+        wider_adjustment, wider_report = wider_probe.resolve(True, elevation, require_composition=True)
+        # A one-step fallback has to pass composition too, even if its face was
+        # already clear and resolve deliberately preserved the original keys.
+        if "warning" not in wider_report and wider_probe.accepts(wider_probe.measure(wider_adjustment)):
+            wider_report["before"] = occlusion["before"]
+            wider_report["frame_coverage_before"] = occlusion["frame_coverage_before"]
+            wider_report["adjusted"].insert(0, "shot_size="+wider[shot])
+            wider_report["seconds"] += occlusion["seconds"]
+            trajectory, probe = wider_trajectory, wider_probe
+            adjustment, occlusion = wider_adjustment, wider_report
+            used_size = wider[shot]
+        else:
+            occlusion["seconds"] += wider_report["seconds"]
+    cam["c3d_shot"]["shot_size"] = used_size
+
+    adjustment_started = time.perf_counter()
+    prev_rot = None
+    lenses = []
+    for f, pos, aim, rot, mm, focus in trajectory:
+        if adjustment is not None:
+            sc.frame_set(f)
+            groups = probe.points()
+            targets_screen = framing_targets(pos, rot, mm, groups, probe.sensor, used_size)
+            pos, aim = adjusted(pos, aim, H, adjustment)
+            rot, mm = fit_frame(pos, rot, mm, groups, probe.sensor, targets_screen)
+            rot = rot.to_quaternion().to_euler("XYZ", prev_rot or rot)
         prev_rot = rot.copy()
-        trajectory.append((f, pos.copy(), aim.copy(), rot.copy(), lens_mm, focus.copy()))
-        if f in samples:
-            probe.capture(f, pos, aim)
-
-        cam.location = pos
-        cam.rotation_euler = rot
-        cam_data.lens = lens_mm
+        lenses.append(mm)
+        cam.location, cam.rotation_euler = pos, rot
+        cam_data.lens = mm
         cam_data.clip_start = 0.05
-        cam_data.clip_end = max(200.0, dist * 10)
+        cam_data.clip_end = max(200.0, (aim-pos).length * 10)
         cam.keyframe_insert("location", frame=f)
         cam.keyframe_insert("rotation_euler", frame=f)
         cam_data.keyframe_insert("lens", frame=f)
         if depth_of_field:
             cam_data.dof.use_dof = True
             cam_data.dof.aperture_fstop = float(f_stop)
-            cam_data.dof.focus_distance = (focus - pos).length
+            cam_data.dof.focus_distance = (focus-pos).length
             cam_data.dof.keyframe_insert("focus_distance", frame=f)
-
-    adjustment, occlusion = probe.resolve(avoid_occlusion is not False, elevation)
-    if adjustment:
-        adjustment_started = time.perf_counter()
-        prev_rot = None
-        for f, pos, aim, rot, mm, focus in trajectory:
-            new_pos, new_aim = adjusted(pos, aim, H, adjustment)
-            old_rot = (aim - pos).to_track_quat("-Z", "Y").to_euler("XYZ", rot)
-            new_rot = (new_aim - new_pos).to_track_quat("-Z", "Y").to_euler("XYZ", prev_rot or rot)
-            # Retain the original roll and deterministic handheld shake.
-            new_rot = Euler(tuple(new_rot[i] + rot[i] - old_rot[i] for i in range(3)))
-            prev_rot = new_rot.copy()
-            cam.location, cam.rotation_euler = new_pos, new_rot
-            cam_data.lens = mm * adjustment.get("distance", 1)
-            cam.keyframe_insert("location", frame=f)
-            cam.keyframe_insert("rotation_euler", frame=f)
-            cam_data.keyframe_insert("lens", frame=f)
-            if depth_of_field:
-                cam_data.dof.focus_distance = (focus - new_pos).length
-                cam_data.dof.keyframe_insert("focus_distance", frame=f)
-        occlusion["seconds"] = round(occlusion["seconds"] + time.perf_counter() - adjustment_started, 4)
+    occlusion["seconds"] = round(occlusion["seconds"] + time.perf_counter()-adjustment_started, 4)
     cam["c3d_occlusion"] = json.dumps(occlusion)
 
     # timeline: cut to this camera at its start frame
@@ -274,10 +289,9 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     sc.frame_set(start)
     return {"camera": cam.name, "shot": shot, "move": move, "frames": [start, end],
             "next_start_frame": end + 1, "subject_height": round(H, 3),
-            "occlusion": occlusion,
+            "occlusion": occlusion, "shot_size": used_size,
             "replaced_shots_at_start_frame": replaced,
-            "lens_mm": [round(base_lens * (adjustment or {}).get("distance", 1), 1),
-                        round(lens_mm * (adjustment or {}).get("distance", 1), 1)]}
+            "lens_mm": [round(lenses[0], 1), round(lenses[-1], 1)]}
 
 
 @command("list_shots")
