@@ -10,6 +10,7 @@ from .security import redact
 TERMINAL = {"completed", "failed", "cancelled"}
 AI_GENERATORS = {"ai_text_to_3d", "ai_image_to_3d", "ai_image_to_video",
                  "ai_text_to_video", "ai_text_to_speech"}
+INDEPENDENT = {"direct_scene", "director_status"}
 
 
 @dataclass
@@ -34,20 +35,28 @@ class JobQueue:
         self.lock = asyncio.Lock()
         self.current = None
         self.monitors = set()
+        self.independent = set()
 
     def submit(self, tool, arguments):
         if self.queue.qsize() >= 50:
             raise ValueError("Antrean penuh. Tunggu pekerjaan selesai.")
+        if tool in INDEPENDENT and sum(j.tool == "direct_scene" and j.status not in TERMINAL for j in self.jobs.values()) >= 2:
+            raise ValueError("Dua draf sutradara masih berjalan. Tunggu salah satunya selesai.")
         job = Job(tool=tool, arguments=arguments)
         self.jobs[job.id] = job
-        self.queue.put_nowait(job)
+        if tool in INDEPENDENT:
+            task = asyncio.create_task(self.run_independent(job))
+            self.independent.add(task)
+            task.add_done_callback(self.independent.discard)
+        else:
+            self.queue.put_nowait(job)
         done = [key for key, j in self.jobs.items() if j.status in TERMINAL]
         for key in done[:-100]:
             del self.jobs[key]
         return job
 
     def public(self, job):
-        waiting = [j.id for j in self.jobs.values() if j.status == "queued"]
+        waiting = [j.id for j in self.jobs.values() if j.status == "queued" and j.tool not in INDEPENDENT]
         now = job.finished or time.time()
         return redact({"id": job.id, "tool": job.tool, "status": job.status,
                        "created": job.created, "started": job.started,
@@ -56,8 +65,11 @@ class JobQueue:
                        "result": job.result, "error": job.error, "progress": job.progress})
 
     async def invoke(self, tool, arguments):
-        async with self.lock:
+        if tool in INDEPENDENT:
             blocks = await self.mcp.call_tool(tool, arguments)
+        else:
+            async with self.lock:
+                blocks = await self.mcp.call_tool(tool, arguments)
         # FastMCP versions may return (content, structured) for structured tools.
         if isinstance(blocks, tuple):
             blocks = blocks[0]
@@ -99,6 +111,17 @@ class JobQueue:
             value = texts[0] if len(texts) == 1 else texts
         return redact({"data": value,
                        "text": texts, "images": images, "files": files})
+
+    async def run_independent(self, job):
+        """Director network/text work never acquires the Blender queue or lock."""
+        job.started, job.status = time.time(), "running"
+        try:
+            job.result = await self.invoke(job.tool, job.arguments)
+            job.status = "completed"
+        except Exception as exc:
+            job.error, job.status = redact(str(exc)), "failed"
+        finally:
+            job.finished = time.time()
 
     async def worker(self):
         while True:

@@ -546,6 +546,76 @@ seats, one held prop per hand, rule-based text pronunciation and approximate tex
 Outfit/accessory selection does not solve garment/hair/seat intersections; inspect posed Eevee frames.
 Declare characters before using them; invalid references fail with a clear error.
 
+## Sutradara AI (idea → script)
+`director_status()` reports offline/API/Claude Code availability, configured yes/no,
+model, privacy and billing, without a request or Blender. `direct_scene(idea,
+generator="auto", language="id", duration_s=30, characters=None, style=None,
+look=None, location=None, seed=0, consent=False)` returns a detailed Markdown
+`brief`, editable text `script`, character metadata, parse-only `plan`, warnings
+and suggested `build_options`. It never builds, renders or starts Blender.
+**Agents should prefer writing scripts themselves**; this tool is for the web UI
+and quick drafts. Then edit → `script_to_scene(..., build=False)` → build as usual.
+
+- `offline`: free, local keyword/scenario rules (Indonesian + English input),
+  deterministic by seed; 1–4 characters, indoor/outdoor sets, all looks/weather,
+  relations/age/gender and seeded dialogue. It uses templates, not a language model;
+  review how well the draft matches the idea. `language="ms"` warns that offline
+  dialogue uses Indonesian templates. English drafts need a local English TTS voice.
+- `claude_cli`: online via Claude Code and the owner's Claude subscription,
+  personal use. Requires `consent=True`; uses subscription quota, no char3d per-call
+  USD charge. Discovery: `CHAR3D_CLAUDE_BIN` → PATH → newest Desktop bundled CLI at
+  `~/.config/Claude/claude-code/<version>/<hash>/claude`. Status checks existence,
+  not login. If needed, run `claude` once in a terminal and log in (use the discovered
+  full path if it is not on PATH). Headless generation has no tools, strict empty
+  MCP config, safe mode, no persistence, temporary empty cwd, stdin prompt, 5 min
+  timeout; it never launches the char3d MCP server recursively. API credential env
+  vars are removed from this subprocess so this route uses subscription auth.
+- `claude`: online paid Anthropic Messages API; requires `consent=True` and local
+  SDK credentials (env API key/auth token or SDK profiles). Put `ANTHROPIC_API_KEY=...`
+  in `~/.config/char3d/env`, then restart MCP/UI; launchers already source it.
+  Never log, persist, return or display credentials. Default `claude-opus-5-5`,
+  override `CHAR3D_DIRECTOR_MODEL`; adaptive thinking stays on, effort defaults to
+  medium (`CHAR3D_DIRECTOR_EFFORT`). SDK 2.10 structured JSON + cached stable system
+  prompt + server-side default refusal fallbacks. No temperature or token thinking
+  budget. Maximum output 16000 tokens/request, 180 s timeout, no automatic retries.
+  `usage`/`cost_usd_estimate` include the optional repair. Opus 5.5 list prices:
+  input $4/output $20 per MTok, cache write 5m $5/read $0.20 per MTok. Typical drafts
+  roughly $0.05–$0.25; one full 16000-token output is $0.32 plus input, and repair
+  can double requests. Model overrides still use this labelled Opus estimate;
+  actual account pricing may differ. [Official pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+- `auto`: CLI first when available **and consent=True**, then configured API with
+  consent, otherwise offline with a note. Explicit online without consent is
+  rejected. Online failure/refusal/truncation falls back to offline with a visible
+  warning; it never switches from failed CLI to paid API. `requested_generator`
+  retains the attempted service and `privacy` states the transmission to Anthropic.
+
+All generated scripts are checked by `engine.script_plan.parse_script` without
+Blender. Online drafts with parser errors/unknown directions/descriptors get one
+repair round; unresolved errors produce a valid offline draft, unresolved parser
+warnings remain visible. Network/subprocess work stays in `providers/director/`,
+with a small registry like TTS. No network code goes in `engine/`.
+
+The brief includes logline, mood, look/palette/light, weather/dressing, cast/outfit/
+voice, blocking, timed shot suggestions, pacing and sound/music mood. Text builds
+only supported headers, dialogue and directions. Detailed shot moves, costume
+colors, extra dressing and music remain manual art direction; scripts use standard
+mixed coverage, local Piper voice hints and installed seeded outfits. Runtime is
+approximate. Cinematic look, collision and TTS limits above still apply.
+
+Studio's **Sutradara AI** panel above the script editor offers examples/options,
+explicit Anthropic consent with API estimate or subscription quota, progress,
+**Prompt sutradara** / **Naskah char3d** tabs, copy/apply and recoverable previous
+editor text/settings. Director jobs run outside the Blender queue/lock. The HTTP
+adapter also requires `confirm_external=True` for an online request.
+
+Verify: `.venv/bin/python tests/test_director.py` (prints `DIRECTOR UNIT OK`, no
+network/Blender), `tests/test_webui.py`, `tests/test_tts.py`, `tests/test_cinematic.py`,
+`tests/test_phonemes.py`. Real UI smoke: `CHAR3D_PORT=9989 CHAR3D_WORKSPACE="$PWD/output"
+.venv/bin/python tests/webui_smoke.py --ui-port 8789`. Real offline pipeline:
+`CHAR3D_PORT=9989 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/director_e2e.py`.
+With UI on 8789, `node tests/director_ui.cjs` captures dark/light desktop/mobile
+states in `output/director_screens/`. Keep 9876 untouched; stop isolated test servers.
+
 ## Rigging
 `auto_rig_humanoid(mesh, rig_type)`:
 - `basic` (default): 21 deform bones — `hips, spine, chest, neck, head`,

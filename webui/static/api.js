@@ -6,6 +6,7 @@ export const state = {
   assets: null,
   plan: null,
   latestScript: null,
+  latestDirector: null,
   build: null,
   previews: [],
   characterViews: [],
@@ -110,6 +111,7 @@ function remember(job) {
   }
   if (job.tool === "scene_info") state.scene = value;
   if (job.tool === "list_shots") state.shots = value;
+  if (job.tool === "direct_scene") state.latestDirector = value;
   if (job.tool === "mpfb_assets") state.assets = value;
   if (job.tool === "script_to_scene") {
     const built = !!Object.keys(value.characters || {}).length;

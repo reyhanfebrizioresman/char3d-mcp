@@ -118,5 +118,8 @@ export function mountVoices(root, getScriptArgs) {
     if (state.latestScript) updatePlan(state.latestScript.data);
     else status();
   }).catch(e => { if (!disposed) $("#voice-status", root).innerHTML = errorHTML(e); });
-  return { parameters, updatePlan, dispose: () => { disposed = true; root.querySelectorAll("audio").forEach(a => a.pause()); } };
+  return { parameters, updatePlan, resetPlan: () => {
+    current = null;
+    $("#voice-cast", root).innerHTML = '<p class="voice-empty">Klik <strong>Lihat rencana</strong> untuk memilih suara setiap karakter.</p>';
+  }, dispose: () => { disposed = true; root.querySelectorAll("audio").forEach(a => a.pause()); } };
 }

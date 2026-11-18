@@ -171,6 +171,54 @@ atau `avoid=False`. Footprint convex tiap mesh bersifat konservatif. Rintangan t
 bergerak selama perencanaan; tidak ada collision solver khusus tangan/kaki/anggota
 tubuh atau prediksi gerakan karakter lain.
 
+## Sutradara AI — dari ide menjadi treatment dan naskah
+
+Di layar **Naskah → Adegan**, tulis ide seperti “dua sahabat bertemu lagi di taman
+saat senja setelah 10 tahun, haru” pada panel **Sutradara AI**. Pilih durasi, tokoh,
+genre, suasana dan lokasi bila perlu. Hasilnya dua tab: **Prompt sutradara** berisi
+treatment visual rinci, dan **Naskah char3d** siap diedit. Klik **Pakai naskah ini**,
+**Lihat rencana**, lalu **Bangun adegan**. Tombol **Kembalikan naskah sebelumnya**
+memulihkan teks dan pengaturan editor sebelum draf dipakai.
+
+- **Offline · gratis** (default): lokal, templat Indonesia/English, variasi tetap
+  untuk seed yang sama. Tidak mengirim ide atau membutuhkan API key.
+- **Claude langganan · via Claude Code**: memakai kuota langganan Claude untuk
+  penggunaan pribadi. CLI ditemukan dari `CHAR3D_CLAUDE_BIN`, PATH, atau bundel
+  Claude Desktop terbaru. Jalankan `claude` sekali lalu login (gunakan path lengkap
+  jika tidak ada di PATH). Tidak ada tagihan API per draf dari char3d. CLI dijalankan
+  tanpa tools/MCP, tanpa penyimpanan sesi, di folder sementara kosong.
+- **Claude API · berbayar**: tambahkan baris berikut ke `~/.config/char3d/env`
+  menggunakan editor teks, lalu restart MCP/web UI. Jangan menyimpan key di repo:
+
+  ```dotenv
+  ANTHROPIC_API_KEY=isi_key_Anda_di_sini
+  ```
+
+  SDK juga mendukung `ANTHROPIC_AUTH_TOKEN` dan profil Anthropic. Default model
+  `claude-opus-5-5`; opsi `CHAR3D_DIRECTOR_MODEL` dan `CHAR3D_DIRECTOR_EFFORT=medium`.
+  Estimasi memakai tarif Opus 5.5 $4 input/$20 output per juta token (cache tulis
+  5 menit $5, baca $0.20), biasanya sekitar $0.05–$0.25 per draf. Output maksimal
+  16000 token adalah sekitar $0.32 + input per permintaan; satu perbaikan dapat
+  menambah biaya. Pemakaian token dan estimasi aktual tampil bersama hasil.
+  Override model tetap memakai estimasi Opus berlabel; tagihan aktual dapat berbeda.
+  [Tarif resmi Anthropic](https://platform.claude.com/docs/en/about-claude/pricing).
+
+Kedua pilihan Claude meminta persetujuan sebelum mengirim ide dan opsi ke Anthropic.
+**Auto** memilih CLI tersedia, lalu API dikonfigurasi, hanya dengan persetujuan;
+selain itu offline. Jika layanan gagal, draf offline disertai peringatan yang jelas,
+tanpa berpindah diam-diam ke API berbayar. Tidak ada panggilan online saat memeriksa
+status. Model tidak diberi akses file, tools atau engine.
+
+MCP: `director_status()` dan `direct_scene(idea, generator="offline", seed=0)`
+menghasilkan `brief`, `script`, `characters`, `plan`, `build_options`, `warnings`.
+Keluaran API juga berisi `usage` dan `cost_usd_estimate`; CLI menyebut kuota
+langganan. Tidak membangun adegan atau memulai Blender. Semua naskah diperiksa parser;
+Claude mendapat maksimal satu perbaikan. Arahan shot rinci, musik, warna kostum dan
+dressing khusus dalam treatment perlu penataan manual; naskah membangun fitur teks
+yang didukung dan coverage kamera standar. Durasi perkiraan, pakaian mengikuti aset
+terpasang; periksa frame Eevee sebelum render akhir. Agen sebaiknya menulis naskah
+sendiri; generator ini terutama untuk UI dan draf cepat.
+
 ## Dari naskah menjadi adegan
 
 ```python

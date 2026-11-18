@@ -34,6 +34,7 @@ const paths = {
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
   upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
   check: '<path d="m4 12 5 5L20 6"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
   external: '<path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/>',
   image:

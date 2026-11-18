@@ -1198,6 +1198,33 @@ async def talk_gestures(character: str, frame_start: int | None = None,
 
 # --- dialog --------------------------------------------------------------------------
 @mcp.tool()
+async def director_status() -> dict:
+    """Available draft generators, configured yes/no, privacy and pricing. No requests
+    to Anthropic, no auth probe, no Blender. CLI login is checked on the first call."""
+    from providers.director import status
+    return await anyio.to_thread.run_sync(status)
+
+
+@mcp.tool()
+async def direct_scene(idea: str, generator: str = "auto", language: str = "id",
+                        duration_s: float = 30, characters: int | None = None,
+                        style: str | None = None, look: str | None = None,
+                        location: str | None = None, seed: int = 0,
+                        consent: bool = False) -> dict:
+    """Idea → detailed director brief + validated char3d text script, without Blender
+    or building a scene. Prefer writing scripts yourself as an agent; this drafts for
+    the web UI/quick ideas. offline is free and seeded. claude uses the paid API;
+    claude_cli uses Claude Code subscription quota. Both send the idea/options to
+    Anthropic and require consent=True. auto prefers CLI, then API ONLY with consent;
+    otherwise offline with a note. Failure returns offline with an explicit warning.
+    Includes parse-only plan, manual camera/music limits, usage and API cost estimate.
+    Edit the script then call script_to_scene to preview/build it."""
+    from providers.director import direct
+    return await anyio.to_thread.run_sync(lambda: direct(
+        idea, generator, language, duration_s, characters, style, look, location, seed, consent))
+
+
+@mcp.tool()
 async def script_to_scene(script: dict | str, name: str | None = None,
                           environment: str | None = None, lighting: str = "studio",
                           camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",

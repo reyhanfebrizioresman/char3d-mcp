@@ -2,6 +2,7 @@ import { lookPicker, mountLookPicker, lookLabel } from "./looks.js";
 import { screenRoot } from "./ui.js";
 import { mountVoices, needsSpeechConsent, authorizeSpeech } from "./voices.js";
 import { run, state, scene } from "./api.js";
+import { panel as directorPanel, mountDirector } from "./director.js";
 import {
   icon,
   esc,
@@ -55,7 +56,7 @@ export function mount(root) {
       "Tulis percakapan. Atur suasana. Hidupkan dunia Anda.",
       `<span class="chip">${icon("script")} Naskah → Adegan</span>`,
     ) +
-    `
+    directorPanel() + `
  <div class="step-line" id="script-steps"><span class="step active" data-step="1"><b>01</b> Tulis cerita <span class="step-arrow">→</span></span><span class="step" data-step="2"><b>02</b> Periksa rencana <span class="step-arrow">→</span></span><span class="step" data-step="3"><b>03</b> Hidupkan adegan</span></div>
  <div class="script-layout"><div><section class="panel"><div class="editor-bar"><div class="editor-tab">${icon("script")} naskah.char3d <span class="dot"></span></div>${button("example", "Pakai contoh", "", "small subtle")}</div><div class="script-editor"><div class="line-numbers" aria-hidden="true">01<br>02<br>03<br>04<br>05<br>06<br>07<br>08<br>09<br>10</div><textarea id="script-text" class="screenplay" aria-label="Editor naskah" spellcheck="false" wrap="soft"></textarea></div><div class="editor-footer"><span>BAHASA NASKAH · INDONESIA / ENGLISH</span><span id="script-count"></span></div><div class="editor-actions"><span class="help">Periksa rencana sebelum<br>membangun adegan Anda.</span><div class="row">${button("plan", "Lihat rencana", "eye", "subtle")}${button("build", "Bangun adegan", "spark", "primary")}</div></div></section>
  <section class="panel voice-section" id="script-voices" aria-label="Suara dialog"></section>
@@ -200,6 +201,44 @@ export function mount(root) {
     };
   };
   const voiceControls = mountVoices($("#script-voices", root), () => args(false));
+  const resetDraft = () => {
+    state.latestScript = null;
+    state.plan = null;
+    setStep(root, 1);
+    target.innerHTML = '<div class="notice">Naskah berubah. Klik <strong>Lihat rencana</strong> untuk memeriksa sebelum membangun.</div>';
+  };
+  const settingIds = ["script-language", "script-location", "script-lighting", "script-weather", "script-camera", "script-seed"];
+  const disposeDirector = mountDirector(root, (draft) => {
+    if (editor.value === draft.script) return;
+    const previous = { script: editor.value, look: looks.dataset.value,
+      settings: Object.fromEntries(settingIds.map(id => [id, $(`#${id}`, root).value])),
+      voices: JSON.parse(JSON.stringify(state.voiceSettings?.overrides || {})) };
+    localStorage.setItem("char3d-director-previous", JSON.stringify(previous));
+    editor.value = draft.script;
+    $("#script-language", root).value = draft.build_options.language;
+    $("#script-location", root).value = "";
+    $("#script-weather", root).value = "";
+    $("#script-lighting", root).value = draft.build_options.lighting;
+    $("#script-camera", root).value = draft.build_options.camera;
+    $("#script-seed", root).value = draft.build_options.seed;
+    const follow = looks.querySelector('input[value=""]');
+    follow.checked = true;
+    follow.dispatchEvent(new Event("change", { bubbles: true }));
+    state.voiceSettings.overrides = {};
+    voiceControls.updatePlan({ plan: draft.plan });
+    update(); resetDraft();
+  }, () => {
+    const previous = JSON.parse(localStorage.getItem("char3d-director-previous") || "null");
+    if (!previous) return;
+    editor.value = previous.script;
+    for (const [id, value] of Object.entries(previous.settings)) $(`#${id}`, root).value = value;
+    const choice = [...looks.querySelectorAll("input")].find(el => el.value === previous.look);
+    if (choice) { choice.checked = true; choice.dispatchEvent(new Event("change", { bubbles: true })); }
+    state.voiceSettings.overrides = previous.voices;
+    voiceControls.resetPlan();
+    localStorage.removeItem("char3d-director-previous");
+    update(); resetDraft();
+  });
   const perform = async (build) => {
     const parameters = args(build);
     const online = needsSpeechConsent("script_to_scene", parameters);
@@ -263,7 +302,7 @@ export function mount(root) {
   ])
     $(`#${id}`, root).onclick = () =>
       action($(`#${id}`, root), () => perform(build), target);
-  return () => { resize.disconnect(); voiceControls.dispose(); };
+  return () => { resize.disconnect(); voiceControls.dispose(); disposeDirector(); };
 }
 function setStep(root, current) {
   for (const step of root.querySelectorAll("#script-steps .step")) {
