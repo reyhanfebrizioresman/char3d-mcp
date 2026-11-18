@@ -41,7 +41,7 @@ export function mountVoices(root, getScriptArgs) {
     badge.textContent = name === "none" ? "TEKS SAJA" : online ? "ONLINE" : "OFFLINE";
     badge.className = `chip ${online ? "warm" : "green"}`;
     const descriptions = {
-      piper: "Lokal di perangkat Anda. Satu speaker Indonesia dengan variasi pitch dan tempo. Model news_tts: penggunaan pribadi karena lisensi dataset belum jelas.",
+      piper: "Lokal di perangkat Anda. Satu speaker Indonesia; nada dan formant digeser otomatis sesuai gender dan usia tokoh. Model news_tts: penggunaan pribadi karena lisensi dataset belum jelas.",
       edge: "Suara neural Ardi & Gadis. Teks dikirim ke Microsoft hanya setelah Anda setuju. API tidak resmi dapat berubah.",
       f5: "Kloning suara lokal. Perlu rekaman dan transkrip milik sendiri atau berizin. Bobot dasar untuk penggunaan nonkomersial.",
       chatterbox: "Hugging Face Space online, dengan kuota harian. Bahasa Indonesia belum tersedia; pilih Melayu secara eksplisit.",

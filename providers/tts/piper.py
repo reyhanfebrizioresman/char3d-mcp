@@ -47,6 +47,13 @@ class Backend:
                               "language": "id_ID", "gender": "variant", "installed": False})
         return [v for v in result if not language or v["language"].lower().replace("_", "-").startswith(language.lower().replace("_", "-"))]
 
+    # Median speaking F0 measured on the raw voice; casting shifts from it to a
+    # gender/age target. Unknown voices assume a neutral 210 Hz.
+    BASE_F0 = {DEFAULT_VOICE: 257.}
+
+    def base_f0(self, voice):
+        return self.BASE_F0.get(voice.split("#", 1)[0], 210.)
+
     def model_path(self, voice):
         model = voice.split("#", 1)[0]
         return next((p for p in self.root.rglob("*.onnx") if p.stem == model), None)

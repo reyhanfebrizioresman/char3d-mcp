@@ -78,7 +78,7 @@ def _descriptors(text, char, warnings):
     for pattern, pitch in ((r"suara\s+berat|deep\s+voice", -3),
                             (r"suara\s+tinggi|high\s+voice", 3)):
         if re.search(pattern, rest):
-            char["pitch"] = pitch
+            char["pitch_offset"] = pitch
             rest = re.sub(pattern, " ", rest)
     genders = {"perempuan": 0, "wanita": 0, "female": 0, "laki-laki": 1, "pria": 1, "male": 1}
     for word, gender in genders.items():
@@ -251,10 +251,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
                 warnings.append(f"{ident}: unverified {field} asset {char[field]!r}; checked at build time")
         if "voice" in char and (not isinstance(char["voice"], str) or not char["voice"].strip()):
             raise ValueError("voice must be a nonempty engine:name string")
-        for key, default, low, high in (("pitch", 0, -12, 12), ("rate", 1, .5, 2)):
+        for key, default, low, high in (("pitch", 0, -12, 12), ("pitch_offset", 0, -12, 12), ("rate", 1, .5, 2)):
             if key in char:
                 char[key] = _number(char.get(key, default), key, low, high)
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "rate"}:
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):

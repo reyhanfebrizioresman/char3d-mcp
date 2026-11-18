@@ -125,11 +125,22 @@ class RegistryTests(unittest.TestCase):
     def test_descriptors_preserve_case_and_hints(self):
         p = parse_script("ANA (perempuan, 28, suara: edge:id-ID-GadisNeural): Halo!\nBUDI (laki-laki, 60, suara berat): Ya.")
         self.assertEqual(p["characters"][0]["voice"], "edge:id-ID-GadisNeural")
-        self.assertEqual(p["characters"][1]["pitch"], -3)
+        self.assertEqual(p["characters"][1]["pitch_offset"], -3)
         self.assertFalse(p["warnings"], p["warnings"])
         p = parse_script("ANA (female, 28, voice: piper:id_ID-news_tts-medium, high voice): Hi!")
-        self.assertEqual(p["characters"][0]["pitch"], 3)
+        self.assertEqual(p["characters"][0]["pitch_offset"], 3)
         self.assertEqual(p["characters"][0]["age"], 28)
+
+    def test_hints_shift_cast_and_limits_stay_distinct(self):
+        old = [{"id": n, "gender": 1, "age": 75, "pitch_offset": -3} for n in ("A", "B", "C")]
+        cast = self.service.cast(old + [{"id": "D", "gender": 0, "age": 30}], "piper")
+        pitches = [cast[n]["pitch"] for n in "ABC"]
+        self.assertTrue(all(-12 <= p <= 12 for p in pitches), pitches)
+        self.assertEqual(len({round(p) for p in pitches}), 3)
+        plain = self.service.cast([{"id": "D", "gender": 0, "age": 30}], "piper")["D"]["pitch"]
+        hinted = self.service.cast([{"id": "D", "gender": 0, "age": 30, "pitch_offset": -3}],
+                                   "piper")["D"]["pitch"]
+        self.assertAlmostEqual(hinted, plain - 3, places=1)
 
     def test_catalog_default_never_refreshes_online(self):
         with patch.object(self.service.backends["edge"], "voices", wraps=self.service.backends["edge"].voices) as voices:
@@ -173,6 +184,28 @@ class AudioTests(unittest.TestCase):
             peak = np.fft.rfftfreq(len(middle), 1 / 22050)[np.argmax(fft)]
             self.assertLess(abs(peak / (220 * 2 ** (semitones / 12)) - 1), .015)
             self.assertLess(np.max(np.abs(np.diff(y))), .09)
+
+    def test_large_voice_shift_reaches_male_f0_with_stable_duration(self):
+        # Glottal-like pulse train through a vowel-ish resonance: a 250 Hz "female" source.
+        rate, hz = 22050, 250.
+        t = np.arange(rate * 2) / rate
+        pulses = (np.sin(2 * np.pi * hz * t) > .995).astype(float)
+        kernel = np.exp(-np.arange(200) / 40.) * np.sin(2 * np.pi * 700 * np.arange(200) / rate)
+        x = np.convolve(pulses, kernel)[:len(t)] * .3
+        self.assertLess(abs(audio.median_f0(x, rate) / hz - 1), .03)
+        for semitones in (-11, -6, 3):
+            y = audio.pitch_shift(x, semitones, rate)
+            self.assertEqual(len(y), len(x))
+            self.assertLess(abs(audio.median_f0(y, rate) / (hz * 2 ** (semitones / 12)) - 1), .04)
+
+    def test_casting_targets_typical_f0_by_gender_and_age(self):
+        from providers.tts import target_f0
+        self.assertLess(target_f0(1, 40), 130)
+        self.assertGreater(target_f0(0, 30), 200)
+        self.assertGreater(target_f0(0, 8), target_f0(0, 30))
+        self.assertLess(target_f0(1, 70), target_f0(1, 30))
+        self.assertLess(target_f0(.5, 30), target_f0(0, 30))
+        self.assertGreater(target_f0(.5, 30), target_f0(1, 30))
 
     def test_normalization_trim_fades_peak_and_loudness(self):
         for gain in (.05, 1, 5):

@@ -43,6 +43,27 @@ def parse_voice(voice=None, engine="piper"):
     return engine, voice
 
 
+_F0_FEMALE = ((0, 11, 17, 30, 55, 80), (290, 270, 225, 215, 205, 195))
+_F0_MALE = ((0, 11, 13, 16, 30, 55, 80), (280, 255, 220, 150, 125, 118, 112))
+
+
+def _interp(table, age):
+    ages, values = table
+    if age <= ages[0]:
+        return values[0]
+    for (a0, v0), (a1, v1) in zip(zip(ages, values), zip(ages[1:], values[1:])):
+        if age <= a1:
+            return v0 + (v1 - v0) * (age - a0) / (a1 - a0)
+    return values[-1]
+
+
+def target_f0(gender, age):
+    """Typical speaking F0 (Hz) for gender 0 (female) .. 1 (male) and age in years."""
+    gender = min(1., max(0., float(gender)))
+    female, male = _interp(_F0_FEMALE, float(age)), _interp(_F0_MALE, float(age))
+    return math.exp(math.log(female) * (1 - gender) + math.log(male) * gender)
+
+
 def controls(rate, pitch):
     rate, pitch = float(rate), float(pitch)
     if not math.isfinite(rate) or not .5 <= rate <= 2:
@@ -106,13 +127,25 @@ class TTS:
                 if options:
                     name = options[0]["id"].split(":", 1)[1]
             rng = random.Random(hashlib.sha256(f"{seed}:{ident}:{gender}:{age}".encode()).digest())
-            base = (2.2 if gender < .5 else -2.0) if chosen == "piper" else 0
-            base += 2.0 if age < 16 else -.8 if age > 55 else 0
-            pitch = round(base + rng.uniform(-.45, .45), 2)
+            if chosen == "piper":
+                # Single-speaker Piper voices: shift the speaker's own F0 to a typical
+                # F0 for this gender/age (PSOLA + proportional formant shift).
+                base_f0 = backend.base_f0(name) if name and hasattr(backend, "base_f0") else 210.
+                base = 12 * math.log2(target_f0(gender, age) / base_f0)
+                pitch = round(max(-12., min(12., base + rng.uniform(-.6, .6))), 2)
+            else:
+                base = 2.0 if age < 16 else -.8 if age > 55 else 0
+                pitch = round(base + rng.uniform(-.45, .45), 2)
             rate = round((.94 if age > 55 else 1.03 if age < 16 else 1) + rng.uniform(-.025, .025), 3)
-            # Ensure same-gender casts still have distinct profiles, including Edge pairs.
+            # Descriptive hints ("suara berat"/"deep voice") shift the cast, not replace it.
+            pitch = max(-12., min(12., pitch + float(char.get("pitch_offset", 0))))
+            # Ensure same-gender casts still have distinct profiles, including Edge pairs;
+            # step away from the ±12 limit when a profile is already pinned there.
+            step = .8 if gender < .5 else -.8
             while (chosen, name, round(pitch)) in used:
-                pitch += .8 if gender < .5 else -.8
+                if not -12 <= pitch + step <= 12:
+                    step = -step
+                pitch += step
             used.add((chosen, name, round(pitch)))
             rate, pitch = controls(char.get("rate", rate), char.get("pitch", round(pitch, 2)))
             usable = backend.available() and bool(name)

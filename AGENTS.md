@@ -346,10 +346,13 @@ files. Tools never download models. Missing models report the exact install comm
   [news_tts model card](https://huggingface.co/rhasspy/piper-voices/blob/main/id/id_ID/news_tts/medium/MODEL_CARD)
   belongs to an MIT-labelled repository but its dataset link is unclear; treat this
   Indonesian voice as **personal use**, pending clarification. One Indonesian speaker
-  exists; age/gender/seed select distinct pitch/rate profiles. These are timbre variants
-  of that speaker, with modest numpy WSOLA pitch shifts, not separate trained voices
-  or full formant conversion. Large shifts can sound less natural. Rate uses Piper
-  `length_scale`; pitch shifting preserves its duration. Other Piper `.onnx` +
+  exists (median F0 ~257 Hz, female). Casting shifts it to a typical speaking F0 for
+  the character's gender/age (adult men ~125 Hz, older men ~115 Hz, women ~215 Hz,
+  children ~270 Hz; seed adds ±0.6 semitone) with numpy TD-PSOLA, plus a formant shift
+  of ~28% of the pitch shift (≤3.5 semitones) so men also get a longer vocal tract.
+  These are signal transforms of one speaker, not separately trained voices; deep male
+  shifts stay intelligible (Whisper round-trips) but sound less natural than Edge.
+  Rate uses Piper `length_scale`; pitch shifting preserves its duration. Other Piper `.onnx` +
   `.onnx.json` pairs can be placed under `tts/piper/`; multi-speaker IDs use `#speaker`.
 - **edge**: online, explicit only. `edge:id-ID-ArdiNeural` / `edge:id-ID-GadisNeural`
   supply Indonesian male/female voices; `list_voices(engine="edge")` refreshes other
@@ -378,7 +381,7 @@ and voices. The default catalog and all casting are offline; explicitly requesti
 `engine="edge"` refreshes its list. `text_to_speech(text, voice=None, engine="piper",
 language="id", rate=1.0, pitch=0.0, gender=None, output=None)` returns `path` relative to
 `imports/`, `duration_s`, `engine`, `voice`, `cached`, and online `privacy`. `rate` is a
-0.5..2 multiplier; `pitch` is -12..12 semitones (small shifts recommended). `output`
+0.5..2 multiplier; `pitch` is -12..12 semitones relative to the raw voice. `output`
 optionally copies the cached WAV to another `.wav` path inside `imports/`.
 All engines normalize to 48 kHz mono 16-bit PCM, target active RMS ~-18.4 dBFS with
 a -1 dBFS peak ceiling, short fades and 40 ms silence pads. Peak limiting can reduce
@@ -388,7 +391,8 @@ language, rate, pitch and DSP version under `imports/audio/tts/`.
 `script_to_scene(..., voice=True, tts_engine="piper")` casts deterministically per
 character from gender, age and seed. Explicit `voice`/`pitch`/`rate` override the
 profile. Text: `ANA (perempuan, 28, suara: edge:id-ID-GadisNeural): Halo!` or English
-`voice: ...`; `suara berat` / `suara tinggi` set pitch -3 / +3. Dict:
+`voice: ...`; `suara berat` / `suara tinggi` (deep/high voice) shift the cast pitch by
+-3 / +3 semitones (`pitch_offset`); an explicit `pitch` replaces the cast pitch. Dict:
 `{"id":"Ana", "gender":0, "voice":"piper:id_ID-news_tts-medium", "pitch":1, "rate":1.05}`.
 Both script and dialog also accept `voices={"Ana": {"voice":"edge:id-ID-GadisNeural",
 "pitch":1, "rate":1.05}}`; dialog keys are rig/speaker names and may include age/gender.

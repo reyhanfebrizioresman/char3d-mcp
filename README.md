@@ -90,8 +90,9 @@ mengaktifkan fitur yang sama; default `dialog` tetap tanpa TTS.
 Tool tidak mengunduh model otomatis; saat TTS belum tersedia, adegan tetap dibangun
 dengan gerak mulut dan peringatan.
 
-Piper Indonesia hanya memiliki satu speaker, sehingga perbedaan karakter adalah
-variasi pitch/tempo. Runtime Piper berlisensi GPL-3.0; repo model berlabel MIT tetapi
+Piper Indonesia hanya memiliki satu speaker (wanita), sehingga suara tokoh dibuat dengan
+menggeser nada (PSOLA) dan formant ke nada khas gender/usia: pria dewasa ~125 Hz,
+wanita ~215 Hz, anak ~270 Hz. `suara berat`/`suara tinggi` menggeser ±3 semiton. Runtime Piper berlisensi GPL-3.0; repo model berlabel MIT tetapi
 tautan dataset pada model card belum jelas, jadi perlakukan model Indonesia sebagai
 **penggunaan pribadi**. Edge memakai API Microsoft tidak resmi yang dapat berubah;
 **teks dikirim ke Microsoft hanya bila Edge dipilih** (Ardi/Gadis). Chatterbox juga

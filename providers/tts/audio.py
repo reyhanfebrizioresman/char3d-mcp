@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 SAMPLE_RATE = 48000
-DSP_VERSION = "wsola-normalize-1"
+DSP_VERSION = "psola-formant-normalize-2"
 
 
 def read(path):
@@ -91,17 +91,133 @@ def time_stretch(samples, length, sample_rate=22050):
     return (out / np.maximum(weights, 1e-8))[:length]
 
 
-def pitch_shift(samples, semitones, sample_rate=22050):
-    """Change pitch by resampling, then WSOLA back to the exact input duration.
+def f0_track(samples, sample_rate, hop_s=.005, fmin=60., fmax=500., threshold=.2):
+    """YIN-style F0 per hop (Hz; 0 = unvoiced), median-smoothed, short runs removed."""
+    x = np.asarray(samples, dtype=np.float64)
+    hop = max(1, round(sample_rate * hop_s))
+    width = round(sample_rate * .025)
+    tmin, tmax = max(2, int(sample_rate / fmax)), int(sample_rate / fmin) + 1
+    span = width + tmax
+    if len(x) < span + 1:
+        return np.zeros(max(1, len(x) // hop)), hop
+    frames = len(x) // hop
+    padded = np.pad(x, (0, span))
+    starts = np.arange(frames) * hop
+    rms = np.array([np.sqrt(np.mean(padded[s:s + width] ** 2)) for s in starts])
+    gate = max(1e-4, float(rms.max()) * .04)
+    size = 1 << int(np.ceil(np.log2(2 * span)))
+    f0 = np.zeros(frames)
+    taus = np.arange(tmax + 1)
+    for i, s in enumerate(starts):
+        if rms[i] < gate:
+            continue
+        frame = padded[s:s + span]
+        head = frame[:width]
+        corr = np.fft.irfft(np.fft.rfft(frame, size) * np.conj(np.fft.rfft(head, size)), size)[:tmax + 1]
+        energy = np.cumsum(np.concatenate(([0.], frame ** 2)))
+        e_tau = energy[taus + width] - energy[taus]
+        diff = e_tau[0] + e_tau - 2 * corr
+        diff[0] = 0
+        cmnd = np.ones_like(diff)
+        cumulative = np.cumsum(diff[1:])
+        cmnd[1:] = diff[1:] * taus[1:] / np.maximum(cumulative, 1e-12)
+        below = np.flatnonzero(cmnd[tmin:tmax] < threshold)
+        if not len(below):
+            continue
+        tau = tmin + int(below[0])
+        while tau + 1 < tmax and cmnd[tau + 1] < cmnd[tau]:
+            tau += 1
+        a, b = cmnd[tau - 1], cmnd[tau]
+        c = cmnd[tau + 1] if tau + 1 <= tmax else b
+        curve = a - 2 * b + c
+        shift = .5 * (a - c) / curve if abs(curve) > 1e-12 else 0.
+        f0[i] = sample_rate / (tau + float(np.clip(shift, -1, 1)))
+    voiced = f0 > 0
+    smooth = f0.copy()
+    for i in np.flatnonzero(voiced):
+        window = f0[max(0, i - 2):i + 3]
+        smooth[i] = np.median(window[window > 0])
+    # Drop voiced runs shorter than 15 ms (isolated octave errors / noise bursts).
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], voiced.astype(int), [0]))))
+    for start, end in zip(edges[::2], edges[1::2]):
+        if end - start < 3:
+            smooth[start:end] = 0
+    return smooth, hop
 
-    Local waveform/formant relationships survive the time stretch; this is a timbre
-    variation, not a new speaker or a full formant/voice conversion model.
+
+def median_f0(samples, sample_rate):
+    f0, _ = f0_track(samples, sample_rate)
+    voiced = f0[f0 > 0]
+    return float(np.median(voiced)) if len(voiced) else 0.
+
+
+def _psola(x, sample_rate, factor, length):
+    """TD-PSOLA: pitch-synchronous grains keep the spectral envelope (formants)."""
+    f0, hop = f0_track(x, sample_rate)
+    smooth = np.convolve(x, np.ones(max(1, round(sample_rate * .0008))), "same")
+    polarity = 1. if smooth.max() >= -smooth.min() else -1.
+    unvoiced = sample_rate * .005
+    marks, periods, voiced = [], [], []
+    t = 0.
+    while t < len(x):
+        fi = min(int(t / hop), len(f0) - 1)
+        if f0[fi] > 0:
+            period = sample_rate / f0[fi]
+            if voiced and voiced[-1]:
+                lo, hi = int(t - period * .3), int(t + period * .3) + 1
+            else:
+                lo, hi = int(t), int(t + period) + 1
+            lo, hi = max(0, lo), min(len(x), hi)
+            mark = lo + int(np.argmax(polarity * smooth[lo:hi])) if hi > lo else int(t)
+            if marks and mark <= marks[-1] + period * .5:
+                mark = int(marks[-1] + period)
+            marks.append(mark)
+            periods.append(period)
+            voiced.append(True)
+            t = mark + period
+        else:
+            marks.append(int(t))
+            periods.append(unvoiced)
+            voiced.append(False)
+            t += unvoiced
+    marks = np.asarray(marks, dtype=np.float64)
+    pad = int(max(periods) * 2) + 2
+    src = np.pad(x, (pad, pad))
+    out = np.zeros(length + 2 * pad)
+    ratio = len(x) / max(1, length)
+    gain = 1 / np.sqrt(factor)
+    ts = 0.
+    while ts < length:
+        target = ts * ratio
+        i = int(np.clip(np.searchsorted(marks, target), 0, len(marks) - 1))
+        if i and abs(marks[i - 1] - target) < abs(marks[i] - target):
+            i -= 1
+        half = max(2, int(round(periods[i])))
+        center = int(marks[i]) + pad
+        grain = src[center - half:center + half] * np.hanning(2 * half)
+        pos = int(round(ts)) + pad - half
+        out[pos:pos + 2 * half] += grain * (gain if voiced[i] else 1.)
+        ts += periods[i] / factor if voiced[i] else periods[i]
+    return out[pad:pad + length]
+
+
+def pitch_shift(samples, semitones, sample_rate=22050, formant=None):
+    """Shift pitch by `semitones`, keeping duration, with an optional formant shift.
+
+    TD-PSOLA moves the fundamental while keeping the vocal-tract envelope; a separate
+    resampling step then moves formants by `formant` semitones (default ~28% of the
+    pitch shift, the typical female/male ratio, capped at ±3.5). Large shifts turn the
+    single Indonesian Piper speaker into clearly lower/higher voices, but this is a
+    signal transform, not a newly trained speaker.
     """
     x = np.asarray(samples, dtype=np.float64)
-    if abs(semitones) < 1e-6:
+    if formant is None:
+        formant = float(np.clip(semitones * .28, -3.5, 3.5))
+    if abs(semitones) < 1e-6 and abs(formant) < 1e-6:
         return x.copy()
-    pitched = resample(x, round(len(x) / (2 ** (semitones / 12))))
-    return time_stretch(pitched, len(x), sample_rate)
+    k = 2 ** (formant / 12)
+    shaped = resample(x, round(len(x) / k)) if abs(formant) > 1e-6 else x
+    return _psola(shaped, sample_rate, 2 ** (semitones / 12) / k, len(x))
 
 
 def normalize(samples, sample_rate=SAMPLE_RATE):
