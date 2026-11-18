@@ -81,7 +81,7 @@ class WorldTests(unittest.TestCase):
                       clouds(.2,35,'wisps',7)):
             self.assertEqual(asset.metadata['seed'],7)
         catalog=world_schema()
-        self.assertEqual(len(catalog['generators']),38)
+        self.assertEqual(len(catalog['generators']),41)
         for name,fn in GENERATORS.items():
             a=fn(seed=7);b=fn(seed=7)
             self.assertEqual(a,b)
