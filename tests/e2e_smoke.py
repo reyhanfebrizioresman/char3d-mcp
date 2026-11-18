@@ -2513,6 +2513,218 @@ async def _rotated_rig_checks(call):
           f"walk along facing | rotated walk_path target OK")
 
 
+async def _cinematic_checks(call):
+    """Visual reversible atmosphere, live focus, persistence and background snapshot."""
+    import av
+    import numpy as np
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[0])
+
+    async def python(code):
+        return (await data('run_blender_python', code=textwrap.dedent(code)))['result']
+
+    def pixels(path):
+        with av.open(path) as stream:
+            return next(stream.decode(video=0)).to_ndarray(format='rgb24')
+
+    await call('scene_info')
+    await call('new_scene', frame_end=4)
+    await call('create_human', name='LookHero', style='realistic')
+    await call('auto_rig_humanoid', mesh='LookHero')
+    await call('set_environment', preset='park', subject=['LookHero_rig'])
+    await call('set_lighting', preset='studio', subject=['LookHero_rig'])
+    await call('camera_shot', subject=['LookHero_rig'], shot='close_up',
+               start_frame=1, end_frame=4, name='LookTest', avoid_occlusion=False)
+    await python('''
+        sc=bpy.context.scene;sc.render.resolution_x=320;sc.render.resolution_y=180;sc.frame_set(1)
+        sc.render.threads_mode='FIXED';sc.render.threads=8
+        group=bpy.data.node_groups.new('UserCinematicPipeline','CompositorNodeTree')
+        group.interface.new_socket(name='Image',in_out='OUTPUT',socket_type='NodeSocketColor')
+        source=group.nodes.new('CompositorNodeRLayers');source.scene=sc
+        output=group.nodes.new('NodeGroupOutput')
+        group.links.new(source.outputs['Image'],output.inputs['Image'])
+        sc.compositing_node_group=group;sc.render.use_compositing=True
+        result=True
+    ''')
+    snapshot = '''
+        sc=bpy.context.scene
+        def scalar(obj):
+            result={}
+            for p in obj.bl_rna.properties:
+                if p.identifier=='rna_type' or p.is_readonly: continue
+                v=getattr(obj,p.identifier)
+                if p.type in ('BOOLEAN','INT','FLOAT','STRING','ENUM'):
+                    result[p.identifier]=list(v) if getattr(p,'is_array',False) else sorted(v) if isinstance(v,set) else v
+                elif p.type=='POINTER': result[p.identifier]=getattr(v,'name',None)
+            return result
+        def graph(tree):
+            if tree is None: return None
+            return [[(n.name,n.bl_idname,[(s.name,list(s.default_value) if hasattr(s.default_value,'__len__') and not isinstance(s.default_value,str) else s.default_value)
+                    for s in n.inputs if hasattr(s,'default_value')]) for n in tree.nodes],
+                    [(l.from_node.name,l.from_socket.identifier,l.to_node.name,l.to_socket.identifier) for l in tree.links]]
+        result=dict(world=sc.world.name if sc.world else None,
+            worlds=[(w.name,scalar(w),graph(w.node_tree)) for w in bpy.data.worlds],
+            lights=[(l.name,scalar(l)) for l in bpy.data.lights],
+            cameras=[(c.name,scalar(c),scalar(c.dof)) for c in bpy.data.cameras],
+            objects=[(o.name,o.data.name if o.data else None,list(o.rotation_euler)) for o in sc.objects],
+            view=scalar(sc.view_settings),eevee=scalar(sc.eevee),render=scalar(sc.render),
+            compositor=sc.compositing_node_group.name if sc.compositing_node_group else None,
+            pools={pool:sorted(i.name for i in getattr(bpy.data,pool) if i.name not in ('Render Result','Viewer Node'))
+                   for pool in ('meshes','materials','node_groups','images','actions')})
+    '''
+    async def still():
+        return json.loads(text_of(await call('render_frames',frames=[1],camera='scene',engine_name='eevee',size=256,graphics=False,subtitles=False))[0])['path']
+
+    original = await python(snapshot)
+    baseline = pixels(await still())
+    assert baseline.mean()>10, 'user compositor baseline is black'
+    original = await python(snapshot)  # Renderer-created Render Result is excluded.
+    for preset in ('golden_hour','night','dreamy'):
+        cfg = await data('cinematic_look',preset=preset,
+                         grade={'chromatic_aberration':.002,'grain':.001} if preset=='dreamy' else None)
+        assert cfg['preset']==preset
+        assert await python(snapshot)==original, 'applying a look edited original scene data'
+        styled = pixels(await still())
+        assert styled.mean()>10, 'styled user compositor is black: '+preset
+        assert np.abs(styled.astype(float)-baseline.astype(float)).mean()>.5
+        assert await python(snapshot)==original, 'lit override leaked '+preset
+        await call('cinematic_look',clear=True)
+        assert await python(snapshot)==original
+    reset = pixels(await still())
+    assert np.array_equal(reset,baseline), 'clear changed baseline pixels'
+    await call('cinematic_look',preset='epic',intensity=0)
+    assert np.array_equal(pixels(await still()),baseline), 'zero intensity changed pixels'
+    await call('cinematic_look',preset='golden_hour')
+    await call('render_style',style='film',grade={'contrast':1.3,'exposure':.2})
+    post=await python('''
+        from engine.commands.cinematic import compositor_config
+        from engine.commands.render_style import get_config
+        result=compositor_config(bpy.context.scene,get_config(bpy.context.scene))
+    ''')
+    assert post['grade']['contrast']==1.3 and post['grade']['exposure']==.2
+    assert post['effects']['bloom']==.1, post
+    assert pixels(await still()).mean()>10
+    await call('render_style',style='noir')
+    mono=pixels(await still()).astype(float)
+    assert np.abs(mono[:,:,0]-mono[:,:,2]).mean()<1.5, 'noir inherited cinematic split-tone'
+    await call('render_style',style='anime')
+    assert pixels(await still()).mean()>10, 'anime outlined the haze volume'
+    await call('render_style',style='none')
+    await call('cinematic_look',clear=True)
+    await call('cinematic_look',preset='golden_hour',grade={'saturation':0,'temperature':0,'tint':0,'teal_orange':False},particles={'kind':'petals','count':12,'seed':31})
+    focus = await python('''
+        from engine.commands.cinematic import applied_look, _eye
+        sc=bpy.context.scene
+        with applied_look(sc):
+            cam=bpy.data.objects['LookTest'];bpy.context.view_layer.update()
+            target=cam.data.dof.focus_object.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.translation
+            result=dict(dof=cam.data.dof.use_dof,stop=cam.data.dof.aperture_fstop,
+                        error=(target-_eye(bpy.data.objects['LookHero_rig'])).length,
+                        sky=sc.world.node_tree.nodes.get('Sky Texture').sky_type)
+    ''')
+    assert focus['dof'] and focus['error']<.001 and abs(focus['stop']-2.8)<.001, focus
+    await call('camera_shot',subject=['LookHero_rig'],shot='medium',start_frame=2,end_frame=4,name='LookFuture')
+    future = await python('''
+        from engine.commands.cinematic import applied_look
+        with applied_look(bpy.context.scene):
+            result=bpy.data.objects['LookFuture'].data.dof.use_dof
+    ''')
+    assert future
+    await call('camera_shot',subject=['LookHero_rig'],shot='close_up',start_frame=2,end_frame=4,
+               name='LookExplicitOn',depth_of_field=True,f_stop=1.4)
+    assert await python('''
+        from engine.commands.cinematic import applied_look
+        with applied_look(bpy.context.scene):
+            result=abs(bpy.data.objects['LookExplicitOn'].data.dof.aperture_fstop-1.4)<.001
+    ''')
+    await call('camera_shot',subject=['LookHero_rig'],shot='medium',start_frame=2,end_frame=4,
+               name='LookExplicitOff',depth_of_field=False)
+    await call('camera_shot',shot='medium',start_frame=2,end_frame=4,name='LookImplicitSubject')
+    assert await python('''
+        from engine.commands.cinematic import applied_look
+        with applied_look(bpy.context.scene):
+            result=(not bpy.data.objects['LookExplicitOff'].data.dof.use_dof and
+                    bpy.data.objects['LookImplicitSubject'].data.dof.use_dof)
+    ''')
+    # Correct ownership on every exception path, including partially built effects.
+    before_fail = await python(snapshot)
+    await python('''
+        from unittest.mock import patch
+        from engine.commands.cinematic import applied_look
+        try:
+            with patch('engine.commands.cinematic._particles',side_effect=RuntimeError('intentional')):
+                with applied_look(bpy.context.scene): pass
+        except RuntimeError: pass
+        else: raise AssertionError('failure injection did not execute')
+        result=True
+    ''')
+    assert await python(snapshot)==before_fail
+    await python('''
+        from unittest.mock import patch
+        from engine.commands.cinematic import applied_look
+        from engine.commands.render_style import applied_style
+        try:
+            with patch('engine.commands.render_style._compositor',side_effect=RuntimeError('intentional')):
+                with applied_look(bpy.context.scene), applied_style(bpy.context.scene): pass
+        except RuntimeError: pass
+        else: raise AssertionError('compositor failure injection did not execute')
+        result=True
+    ''')
+    assert await python(snapshot)==before_fail
+    await python('''
+        from unittest.mock import patch
+        from engine.commands.cinematic import applied_look
+        try:
+            with patch('engine.commands.weather.make_material',side_effect=RuntimeError('partial particle build')):
+                with applied_look(bpy.context.scene): pass
+        except RuntimeError: pass
+        else: raise AssertionError('partial builder failure did not execute')
+        result=True
+    ''')
+    assert await python(snapshot)==before_fail, 'partial particle builder leaked allocations'
+    saved=await data('save_project',path='cinematic_e2e.blend')
+    cfg=await python("result=bpy.context.scene['char3d_cinematic_look']")
+    await call('new_scene')
+    await call('open_project',path=saved['path'])
+    assert await python("result=bpy.context.scene['char3d_cinematic_look']")==cfg
+    opts=await data('render_options',quality='preview',frame_start=1,frame_end=4)
+    assert opts['look_cost_factor']>1 and opts['style_cost_factor']==1
+    draft=await data('render_options',quality='draft')
+    assert draft['look_cost_factor']==1
+    # The separate-process render must load the saved JSON and compositor. A
+    # monochrome override is an unambiguous pixel-level assertion of application.
+    movie=await data('render_video',path='cinematic_snapshot.mp4',quality='preview',
+                     resolution='480p',frame_start=1,frame_end=4,wait=True)
+    assert movie['status']=='done' and movie['progress']=='4/4', movie
+    assert movie.get('learned_speed',{}).get('engine')=='eevee', movie
+    rgb=pixels(movie['path']).astype(float)
+    assert np.abs(rgb[:,:,0]-rgb[:,:,1]).mean()<3 and np.abs(rgb[:,:,1]-rgb[:,:,2]).mean()<3
+    assert rgb.mean()>10
+    await call('cinematic_look',clear=True)
+    # No header / look=None must leave an already configured scene alone.
+    await call('cinematic_look',preset='night')
+    active=await python("result=bpy.context.scene['char3d_cinematic_look']")
+    p=await data('script_to_scene',script='ANA: Halo!',look=None,build=False,voice=False)
+    assert p['plan']['look'] is None and p['plan']['recommended_look']=='studio_film'
+    assert await python("result=bpy.context.scene['char3d_cinematic_look']")==active
+    for header in ('SUASANA','LOOK','MOOD'):
+        p=await data('script_to_scene',script=f'{header}: pagi berkabut\nANA: Halo!',build=False,voice=False)
+        assert p['plan']['look']['preset']=='misty_morning'
+    await call('cinematic_look',clear=True)
+    # Shared fog contributes once, independent of command order.
+    await call('set_weather',kind='fog')
+    await call('cinematic_look',preset='epic')
+    assert await python('''
+        from engine.commands.cinematic import applied_look
+        with applied_look(bpy.context.scene):
+            result=not any(o.name.startswith('__c3d_look_haze') for o in bpy.context.scene.objects)
+    ''')
+    await call('set_weather',kind='clear')
+    await call('cinematic_look',clear=True)
+    print('CINEMATIC E2E OK: exact clear/settings/pixels | live head DOF | future shots | failure cleanup | save/open | video snapshot | look=None | weather',flush=True)
+
+
 async def _render_style_checks(call):
     """Real lit frames, lossless reset, persisted look and background styled MP4s."""
     import av
@@ -3484,6 +3696,8 @@ async def main():
         assert "auto_expression" in tools
 
         async def call(tool, **args):
+            if any(flag in sys.argv for flag in ("--cinematic-only", "--render-style-only", "--outdoor-only")):
+                print("CHECK", tool, flush=True)
             res = await s.call_tool(tool, args)
             if res.isError:
                 raise RuntimeError(f"{tool} failed: {text_of(res)}")
@@ -3492,6 +3706,14 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
+        for flag, section in (("--cinematic-only", _cinematic_checks),
+                              ("--render-style-only", _render_style_checks),
+                              ("--outdoor-only", _outdoor_checks)):
+            if flag in sys.argv:
+                await section(call)
+                await call("engine_shutdown")
+                print(flag[2:].upper()+" OK", flush=True)
+                return
         await _tts_checks(call)
         if "--tts-only" in sys.argv:
             if "--tts-edge" in sys.argv:
@@ -3508,6 +3730,8 @@ async def main():
         assert "script_to_scene" in tools
         await _rotated_rig_checks(call)
         await _render_style_checks(call)
+        assert "cinematic_look" in tools
+        await _cinematic_checks(call)
         await _script_scene_checks(call)
         await _occlusion_checks(call)
         await _dialog_gaze_checks(call)

@@ -1,6 +1,8 @@
+import { lookPicker, mountLookPicker, lookLabel } from "./looks.js";
 import { screenRoot } from "./ui.js";
 import { mountVoices, needsSpeechConsent, authorizeSpeech } from "./voices.js";
 import { run, state, scene } from "./api.js";
+import { panel as directorPanel, mountDirector } from "./director.js";
 import {
   icon,
   esc,
@@ -54,11 +56,11 @@ export function mount(root) {
       "Tulis percakapan. Atur suasana. Hidupkan dunia Anda.",
       `<span class="chip">${icon("script")} Naskah → Adegan</span>`,
     ) +
-    `
+    directorPanel() + `
  <div class="step-line" id="script-steps"><span class="step active" data-step="1"><b>01</b> Tulis cerita <span class="step-arrow">→</span></span><span class="step" data-step="2"><b>02</b> Periksa rencana <span class="step-arrow">→</span></span><span class="step" data-step="3"><b>03</b> Hidupkan adegan</span></div>
  <div class="script-layout"><div><section class="panel"><div class="editor-bar"><div class="editor-tab">${icon("script")} naskah.char3d <span class="dot"></span></div>${button("example", "Pakai contoh", "", "small subtle")}</div><div class="script-editor"><div class="line-numbers" aria-hidden="true">01<br>02<br>03<br>04<br>05<br>06<br>07<br>08<br>09<br>10</div><textarea id="script-text" class="screenplay" aria-label="Editor naskah" spellcheck="false" wrap="soft"></textarea></div><div class="editor-footer"><span>BAHASA NASKAH · INDONESIA / ENGLISH</span><span id="script-count"></span></div><div class="editor-actions"><span class="help">Periksa rencana sebelum<br>membangun adegan Anda.</span><div class="row">${button("plan", "Lihat rencana", "eye", "subtle")}${button("build", "Bangun adegan", "spark", "primary")}</div></div></section>
  <section class="panel voice-section" id="script-voices" aria-label="Suara dialog"></section>
- <div class="script-hint">${icon("bulb")}<div><h3>Sutradara ada di tangan Anda.</h3><p>Tulis <code>[Budi duduk di kursi]</code> untuk aksi, atau <code>[Ana melambai]</code> untuk gestur. Deklarasikan karakter dengan <code>NAMA (deskripsi): dialog</code>.</p><details><summary>Panduan format naskah</summary><p><code>JUDUL:</code> memberi nama adegan. <code>LOKASI: park</code> memilih set. <code>CUACA: hujan</code> menambah cuaca. Satu dialog per baris; maksimal 4 karakter. Suara otomatis memakai Piper offline. Pilih mesin dan suara tiap karakter di bagian Suara. Gunakan <code>suara: edge:id-ID-GadisNeural</code> atau <code>suara berat</code> di deskripsi karakter; layanan online meminta persetujuan.</p></details></div></div></div>
+ <div class="script-hint">${icon("bulb")}<div><h3>Sutradara ada di tangan Anda.</h3><p>Tulis <code>[Budi duduk di kursi]</code> untuk aksi, atau <code>[Ana melambai]</code> untuk gestur. Deklarasikan karakter dengan <code>NAMA (deskripsi): dialog</code>.</p><details><summary>Panduan format naskah</summary><p><code>JUDUL:</code> memberi nama adegan. <code>LOKASI: park</code> memilih set. <code>CUACA: hujan</code> menambah cuaca. <code>SUASANA: senja</code> memilih tampilan sinematik. Satu dialog per baris; maksimal 4 karakter. Suara otomatis memakai Piper offline. Pilih mesin dan suara tiap karakter di bagian Suara. Gunakan <code>suara: edge:id-ID-GadisNeural</code> atau <code>suara berat</code> di deskripsi karakter; layanan online meminta persetujuan.</p></details></div></div></div>
  <aside class="panel script-settings"><div class="panel-head"><h2>${icon("settings")} Pengaturan adegan</h2><span class="mono muted">SCENE</span></div><div class="settings-body"><div class="form-grid">
  ${field(
    "Bahasa",
@@ -108,8 +110,10 @@ export function mount(root) {
    "span-2",
  )}
  ${field("Seed variasi", input("script-seed", 0, "number", 'min="0" step="1"'), "span-2")}
+ <div class="span-2 look-field"><label class="field-label">Suasana</label>${lookPicker("script-look", true, localStorage.getItem("char3d-script-look") || "")}</div>
  </div><div class="divider"></div><div class="row between">${check("script-subtitles", "Subtitle", true)}${check("script-sound", "Efek suara", true)}</div></div><div class="settings-footer">${icon("shield")} Piper lokal · suara online dengan persetujuan</div></aside></div>
  <section class="result-section"><div class="section-label"><h2>Ruang pratinjau</h2><span id="script-stage">IDE → RENCANA → ADEGAN</span></div><div id="script-result"></div></section>`;
+  const looks = mountLookPicker(root, "script-look", (value) => localStorage.setItem("char3d-script-look", value));
   const editor = $("#script-text", root);
   const numbers = $(".line-numbers", root);
   editor.value = localStorage.getItem("char3d-script") || example;
@@ -188,6 +192,7 @@ export function mount(root) {
       language: $("#script-language", root).value,
       environment: $("#script-location", root).value || null,
       lighting: $("#script-lighting", root).value,
+      look: looks.dataset.value || null,
       camera: $("#script-camera", root).value,
       seed: Number($("#script-seed", root).value),
       subtitles: $("#script-subtitles", root).checked,
@@ -196,6 +201,44 @@ export function mount(root) {
     };
   };
   const voiceControls = mountVoices($("#script-voices", root), () => args(false));
+  const resetDraft = () => {
+    state.latestScript = null;
+    state.plan = null;
+    setStep(root, 1);
+    target.innerHTML = '<div class="notice">Naskah berubah. Klik <strong>Lihat rencana</strong> untuk memeriksa sebelum membangun.</div>';
+  };
+  const settingIds = ["script-language", "script-location", "script-lighting", "script-weather", "script-camera", "script-seed"];
+  const disposeDirector = mountDirector(root, (draft) => {
+    if (editor.value === draft.script) return;
+    const previous = { script: editor.value, look: looks.dataset.value,
+      settings: Object.fromEntries(settingIds.map(id => [id, $(`#${id}`, root).value])),
+      voices: JSON.parse(JSON.stringify(state.voiceSettings?.overrides || {})) };
+    localStorage.setItem("char3d-director-previous", JSON.stringify(previous));
+    editor.value = draft.script;
+    $("#script-language", root).value = draft.build_options.language;
+    $("#script-location", root).value = "";
+    $("#script-weather", root).value = "";
+    $("#script-lighting", root).value = draft.build_options.lighting;
+    $("#script-camera", root).value = draft.build_options.camera;
+    $("#script-seed", root).value = draft.build_options.seed;
+    const follow = looks.querySelector('input[value=""]');
+    follow.checked = true;
+    follow.dispatchEvent(new Event("change", { bubbles: true }));
+    state.voiceSettings.overrides = {};
+    voiceControls.updatePlan({ plan: draft.plan });
+    update(); resetDraft();
+  }, () => {
+    const previous = JSON.parse(localStorage.getItem("char3d-director-previous") || "null");
+    if (!previous) return;
+    editor.value = previous.script;
+    for (const [id, value] of Object.entries(previous.settings)) $(`#${id}`, root).value = value;
+    const choice = [...looks.querySelectorAll("input")].find(el => el.value === previous.look);
+    if (choice) { choice.checked = true; choice.dispatchEvent(new Event("change", { bubbles: true })); }
+    state.voiceSettings.overrides = previous.voices;
+    voiceControls.resetPlan();
+    localStorage.removeItem("char3d-director-previous");
+    update(); resetDraft();
+  });
   const perform = async (build) => {
     const parameters = args(build);
     const online = needsSpeechConsent("script_to_scene", parameters);
@@ -259,7 +302,7 @@ export function mount(root) {
   ])
     $(`#${id}`, root).onclick = () =>
       action($(`#${id}`, root), () => perform(build), target);
-  return () => { resize.disconnect(); voiceControls.dispose(); };
+  return () => { resize.disconnect(); voiceControls.dispose(); disposeDirector(); };
 }
 function setStep(root, current) {
   for (const step of root.querySelectorAll("#script-steps .step")) {
@@ -278,7 +321,7 @@ function showResult(target, data, built) {
   const plan = data.plan || data;
   const frames = data.frames || plan.estimated_frames || [1, 1];
   const fps = plan.fps || 24;
-  target.innerHTML = `<div class="panel"><div class="panel-head"><h2>${icon(built ? "check" : "eye")} ${esc(plan.title || plan.name || "Rencana adegan")}</h2><span class="chip ${built ? "green" : "warm"}">${built ? "Adegan terbangun" : "Rencana siap"}</span></div><div class="stats"><div class="stat"><strong>${plan.characters?.length || 0}</strong><span>KARAKTER</span></div><div class="stat"><strong>${plan.beats?.length || 0}</strong><span>BEAT CERITA</span></div><div class="stat"><strong>${Number(data.duration_s || (frames[1] - frames[0] + 1) / fps).toFixed(1)}<small class="muted" style="font-size:11px"> dtk</small></strong><span>${built ? "DURASI" : "ESTIMASI DURASI"} · ${fps} FPS</span></div><div class="stat"><strong>${built ? data.shots?.length || 0 : "—"}</strong><span>SHOT KAMERA</span></div></div><div class="panel-body"><div class="cast-grid">${(plan.characters || []).map((c) => `<div class="cast-card"><div class="avatar">${esc(c.id?.slice(0, 1) || "?")}</div><div><h3>${esc(c.id)}</h3><p>${esc(c.age || 25)} tahun · ${c.gender === 0 ? "Perempuan" : c.gender === 1 ? "Laki-laki" : "Karakter"} · ${esc(c.hair || "tanpa rambut")}</p></div></div>`).join("")}</div><div class="beats">${(
+  target.innerHTML = `<div class="panel"><div class="panel-head"><h2>${icon(built ? "check" : "eye")} ${esc(plan.title || plan.name || "Rencana adegan")}</h2><span class="chip ${built ? "green" : "warm"}">${built ? "Adegan terbangun" : "Rencana siap"}</span></div><div class="stats"><div class="stat"><strong>${plan.characters?.length || 0}</strong><span>KARAKTER</span></div><div class="stat"><strong>${plan.beats?.length || 0}</strong><span>BEAT CERITA</span></div><div class="stat"><strong>${Number(data.duration_s || (frames[1] - frames[0] + 1) / fps).toFixed(1)}<small class="muted" style="font-size:11px"> dtk</small></strong><span>${built ? "DURASI" : "ESTIMASI DURASI"} · ${fps} FPS</span></div><div class="stat"><strong>${built ? data.shots?.length || 0 : "—"}</strong><span>SHOT KAMERA</span></div></div><div class="panel-body">${plan.look ? `<p class="help">Suasana: ${esc(lookLabel(plan.look.preset))}</p>` : plan.recommended_look ? `<p class="help">Saran suasana: ${esc(lookLabel(plan.recommended_look))} · pilih di pengaturan untuk mencoba.</p>` : ""}<div class="cast-grid">${(plan.characters || []).map((c) => `<div class="cast-card"><div class="avatar">${esc(c.id?.slice(0, 1) || "?")}</div><div><h3>${esc(c.id)}</h3><p>${esc(c.age || 25)} tahun · ${c.gender === 0 ? "Perempuan" : c.gender === 1 ? "Laki-laki" : "Karakter"} · ${esc(c.hair || "tanpa rambut")}</p></div></div>`).join("")}</div><div class="beats">${(
     plan.beats || []
   )
     .map((beat, i) => {

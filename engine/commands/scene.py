@@ -1,5 +1,6 @@
 """Scene inspection and basic object manipulation."""
 import math
+import json
 import os
 
 import bpy
@@ -76,6 +77,7 @@ def scene_info():
             "engine": sc.render.engine,
             "resolution": [sc.render.resolution_x, sc.render.resolution_y],
         },
+        "cinematic_look": json.loads(sc["char3d_cinematic_look"]) if sc.get("char3d_cinematic_look") else None,
         "active_camera": sc.camera.name if sc.camera else None,
         "bounds": {"min": vec(lo), "max": vec(hi)} if lo else None,
         "objects": [_describe(o) for o in sc.objects if not is_helper(o)],

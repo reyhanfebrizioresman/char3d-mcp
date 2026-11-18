@@ -135,7 +135,7 @@ def list_camera_moves():
 @command("camera_shot")
 def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_frame=72,
                 angle=20.0, elevation=5.0, intensity=1.0, ease="ease_in_out", lens=None,
-                handheld=0.0, roll=0.0, depth_of_field=False, f_stop=2.8, name=None,
+                handheld=0.0, roll=0.0, depth_of_field=None, f_stop=2.8, name=None,
                 avoid_occlusion="auto", angle_limits=None, action_line=None, require_composition=False,
                 face_coverage=False, coverage_turns=None):
     """Create a baked shot and cut marker, preserving composition while clearing faces.
@@ -166,6 +166,9 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     cam = bpy.data.objects.new(name, cam_data)
     sc.collection.objects.link(cam)
     cam["c3d_shot"] = {"subject": subject, "shot": shot, "move": move}
+    cam["c3d_focus_turns"] = json.dumps(coverage_turns or [])
+    if depth_of_field is not None:
+        cam["c3d_dof_explicit"] = bool(depth_of_field)
     cam.rotation_mode = "XYZ"
 
     aspect = sc.render.resolution_y / sc.render.resolution_x

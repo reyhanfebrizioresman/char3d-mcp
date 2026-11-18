@@ -75,7 +75,9 @@ def main():
             raise AssertionError("UI server did not start")
         names = {tool["name"] for tool in catalog}
         assert "script_to_scene" in names and "run_blender_python" not in names
-        assert {"list_voices", "text_to_speech"} <= names
+        assert {"list_voices", "text_to_speech", "cinematic_look"} <= names
+        assert {"director_status", "direct_scene"} <= names
+        assert "look" in http("/api/tools/script_to_scene")["inputSchema"]["properties"]
         assert http("/api/tools/create_human")["inputSchema"]["properties"]["style"]["enum"]
         print("PASS tool catalog + JSON schema; Python hidden even when enabled", flush=True)
         reject("/api/run", 403, data={"tool": "new_scene"}, headers={"Origin": "https://evil.example"})
@@ -88,6 +90,15 @@ def main():
         reject("/api/run", 403, data={"tool": "ai_text_to_video", "confirm_external": "true"})
         reject("/api/run", 400, data={"tool": "open_project", "arguments": {"path": "/etc/passwd"}})
         print("PASS local Origin/Host; AI consent; Python invocation blocked", flush=True)
+        director = tool("director_status")["data"]
+        assert director["generators"]["offline"]["available"]
+        for generator in ("claude", "claude_cli", "auto"):
+            reject("/api/run", 403, data={"tool": "direct_scene", "arguments": {
+                "idea": "Halo", "generator": generator, "consent": True}})
+        drafted = tool("direct_scene", {"idea": "Dua sahabat di taman saat senja", "generator": "offline"})["data"]
+        assert drafted["generator"] == "offline" and drafted["plan"]["environment"] == "park"
+        assert "SUASANA: sunset" in drafted["script"] and drafted["brief"]
+        print("PASS director_status + direct_scene offline → valid plan; both online generators require confirmation", flush=True)
         voices = tool("list_voices", {"language": "id"})["data"]
         assert set(voices["engines"]) == {"piper", "edge", "f5", "chatterbox"}
         assert voices["engines"]["edge"]["online"] and "install_hint" in voices["engines"]["f5"]
@@ -107,6 +118,13 @@ def main():
             print("PASS list_voices + Piper text_to_speech → cached WAV/playable gallery; online TTS consent", flush=True)
         else:
             print("PASS list_voices + online TTS consent; Piper synthesis SKIP: scripts/install_tts.sh piper", flush=True)
+        plan = tool("script_to_scene", {"script": "SUASANA: senja\nANA: Halo!", "build": False, "voice": False})["data"]
+        assert plan["plan"]["look"]["preset"] == "sunset"
+        cfg = tool("cinematic_look", {"preset": "pagi berkabut"})["data"]
+        assert cfg["preset"] == "misty_morning"
+        assert tool("scene_info")["data"]["cinematic_look"]["preset"] == "misty_morning"
+        tool("cinematic_look", {"clear": True})
+        print("PASS Suasana schema + script header + apply/clear through UI adapter", flush=True)
         tool("scene_info")
         tool("new_scene", {"frame_end": 24})
         human = tool("create_human", {"name": "WebUISmoke", "style": "stylized"})["data"]

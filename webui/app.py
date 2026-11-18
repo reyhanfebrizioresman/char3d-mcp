@@ -16,6 +16,7 @@ from starlette.staticfiles import StaticFiles
 
 from mcp_server.server import engine, mcp
 from providers.tts import online_request
+from providers.director import online_request as director_online
 
 from .jobs import AI_GENERATORS, JobQueue
 from .security import LocalOnlyMiddleware, Workspace, redact
@@ -42,9 +43,10 @@ def create_app(port=8765):
                 catalog[tool.name] = tool.model_dump(by_alias=True)
         worker = asyncio.create_task(jobs.worker())
         yield
-        for task in [worker, *jobs.monitors]:
+        tasks = [worker, *jobs.monitors, *jobs.independent]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(worker, *jobs.monitors, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         # BlenderClient owns its process lifecycle; no subprocess launch here.
 
     async def index(request):
@@ -68,7 +70,8 @@ def create_app(port=8765):
                 raise HTTPException(404, "Tool tidak tersedia")
             if not isinstance(arguments, dict):
                 raise ValueError("arguments harus berupa objek JSON")
-            if (name in AI_GENERATORS or online_request(name, arguments)) and body.get("confirm_external") is not True:
+            if (name in AI_GENERATORS or online_request(name, arguments) or
+                    name == "direct_scene" and director_online(arguments)) and body.get("confirm_external") is not True:
                 raise HTTPException(403, "Konfirmasi diperlukan: prompt/gambar/audio dikirim ke layanan AI pihak ketiga")
             workspace.validate_arguments(name, arguments)
             job = jobs.submit(name, arguments)

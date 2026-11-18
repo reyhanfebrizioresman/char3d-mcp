@@ -45,7 +45,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.worker = asyncio.create_task(self.queue.worker())
 
     async def asyncTearDown(self):
-        tasks = [self.worker, *self.queue.monitors]
+        tasks = [self.worker, *self.queue.monitors, *self.queue.independent]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -79,6 +79,34 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(video.status, "cancelled")
         self.assertIsNotNone(video.finished)
 
+    async def test_director_runs_outside_engine_lane_both_directions(self):
+        blocked, started = asyncio.Event(), asyncio.Event()
+        original = self.mcp.call_tool
+        slow_tool = 'direct_scene'
+        async def controlled(name, arguments):
+            if name == slow_tool:
+                started.set()
+                await blocked.wait()
+            return await original(name, arguments)
+        self.mcp.call_tool = controlled
+        director = self.queue.submit('direct_scene', {})
+        await asyncio.wait_for(started.wait(), 1)
+        engine = self.queue.submit('scene_info', {})
+        await asyncio.wait_for(self.queue.queue.join(), 1)
+        self.assertEqual(engine.status, 'completed')
+        self.assertEqual(director.status, 'running')
+        blocked.set()
+        await asyncio.gather(*self.queue.independent)
+        blocked.clear(); started.clear(); slow_tool = 'scene_info'
+        engine = self.queue.submit('scene_info', {})
+        await asyncio.wait_for(started.wait(), 1)
+        director = self.queue.submit('direct_scene', {})
+        await asyncio.wait_for(asyncio.gather(*self.queue.independent), 1)
+        self.assertEqual(director.status, 'completed')
+        self.assertEqual(engine.status, 'running')
+        blocked.set()
+        await self.queue.queue.join()
+
 
 class SecurityTests(unittest.TestCase):
     def test_traversal_absolute_path_and_symlink_escape(self):
@@ -94,9 +122,9 @@ class SecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):
                 Workspace(root).validate_arguments("script_to_scene", {"script": {"beats": [{"audio": "/etc/passwd"}]}})
-        with patch.dict(os.environ, {"FAL_KEY": "private-fal", "HF_TOKEN": "private-hf"}):
-            self.assertEqual(redact({"error": "private-fal private-hf", "HF_TOKEN": "anything"}),
-                             {"error": "[RAHASIA] [RAHASIA]", "HF_TOKEN": "[RAHASIA]"})
+        with patch.dict(os.environ, {"FAL_KEY": "private-fal", "HF_TOKEN": "private-hf", "ANTHROPIC_API_KEY": "private-claude"}):
+            self.assertEqual(redact({"error": "private-fal private-hf private-claude", "HF_TOKEN": "anything", "ANTHROPIC_API_KEY": "anything"}),
+                             {"error": "[RAHASIA] [RAHASIA] [RAHASIA]", "HF_TOKEN": "[RAHASIA]", "ANTHROPIC_API_KEY": "[RAHASIA]"})
 
 
 if __name__ == "__main__":

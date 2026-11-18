@@ -30,7 +30,8 @@ Working loop:
 4. save_project at milestones; export_asset (.glb) to deliver assets.
 Characters: create_human -> auto_rig_humanoid -> set_pose test -> render_views.
 Motion: apply_pose / animate / import_mocap -> render_frames to check it.
-Film: set_lighting -> camera_shot (one per shot, consecutive frames) -> render_frames
+Film: set_lighting -> camera_shot (one per shot, consecutive frames) -> optional
+cinematic_look (after weather; golden_hour outdoors, studio_film indoors) -> render_frames
 camera="scene" -> (add_subtitles for captions) -> render_video(quality="draft") -> render_options (let the user pick a
 resolution, shown with estimated time) -> render_video(quality="preview"/"final", resolution=...).
 Read resource char3d://guide for the full workflow guide.
@@ -455,13 +456,15 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                       angle: float = 20.0, elevation: float = 5.0, intensity: float = 1.0,
                       ease: Literal["linear", "ease_in", "ease_out", "ease_in_out"] = "ease_in_out",
                       lens: float | None = None, handheld: float = 0.0, roll: float = 0.0,
-                      depth_of_field: bool = False, f_stop: float = 2.8,
+                      depth_of_field: bool | None = None, f_stop: float = 2.8,
                       name: str | None = None,
                       avoid_occlusion: Literal["auto"] | bool = "auto") -> dict:
     """Create a cinematic shot camera for frames start..end, framed on `subject` (mesh or
     armature names; default = everything) even while it moves. angle: 0 = in front,
     90 = subject's left, 180 = behind. elevation: degrees (negative = low angle, heroic).
     intensity scales the move. handheld 0..1 adds shake, roll = dutch angle.
+    depth_of_field=None follows an active cinematic look (otherwise off); explicit
+    False opts this shot out, and True keeps its own f_stop and keyed focus distance.
     Each shot adds a timeline marker, so consecutive shots CUT automatically in
     render_video. Chain with start_frame = previous next_start_frame. Re-using `name`
     replaces that shot. avoid_occlusion="auto" (or True) samples evaluated face/eyes,
@@ -682,6 +685,30 @@ async def set_material(objects: list[str], color: list[float] = [0.8, 0.8, 0.8],
 
 
 Resolution = Literal["480p", "540p", "720p", "1080p", "1440p", "4k"]
+
+
+@mcp.tool()
+async def cinematic_look(preset: str = "golden_hour", intensity: float = 1.0,
+                         haze: float | bool | None = None, god_rays: float | bool | None = None,
+                         bloom: float | bool | None = None, dof: str | bool = "auto",
+                         particles: str | dict | bool | None = None, grade: dict | None = None,
+                         sun: dict | None = None, clear: bool = False) -> dict:
+    """Art-directed procedural atmosphere for lit stills and videos. Presets: golden_hour,
+    sunset, misty_morning, blue_hour, night, overcast_soft, dreamy, epic, studio_film, none.
+    Indonesian aliases: senja, matahari terbenam, pagi berkabut, malam, mimpi, epik.
+    haze: density 0..0.1 per meter; god_rays/bloom: 0..1 or boolean. dof=auto tracks
+    live eyes/head on existing/future character shots; explicit camera DOF takes precedence.
+    particles: none/dust/pollen/petals/embers or {kind,count:0..500,seed}. sun: elevation,
+    azimuth (degrees, 0=-Y, 90=+X). Grade supports render_style primitives plus lifted_blacks,
+    vignette, grain, chromatic_aberration. All overrides are temporary and restored in finally.
+    JSON survives save/open and video snapshots. render_style grade keys override look keys;
+    bloom/vignette are merged once. Weather fog replaces look haze. Workbench is unchanged.
+    clear=True or none removes the look, preserving original world/lights/cameras/settings.
+    Apply after environment, lighting, cameras and weather. CPU cost is in render_options.
+    """
+    return await run("cinematic_look", preset=preset, intensity=intensity, haze=haze,
+                     god_rays=god_rays, bloom=bloom, dof=dof, particles=particles,
+                     grade=grade, sun=sun, clear=clear)
 
 
 @mcp.tool()
@@ -1171,14 +1198,44 @@ async def talk_gestures(character: str, frame_start: int | None = None,
 
 # --- dialog --------------------------------------------------------------------------
 @mcp.tool()
+async def director_status() -> dict:
+    """Available draft generators, configured yes/no, privacy and pricing. No requests
+    to Anthropic, no auth probe, no Blender. CLI login is checked on the first call."""
+    from providers.director import status
+    return await anyio.to_thread.run_sync(status)
+
+
+@mcp.tool()
+async def direct_scene(idea: str, generator: str = "auto", language: str = "id",
+                        duration_s: float = 30, characters: int | None = None,
+                        style: str | None = None, look: str | None = None,
+                        location: str | None = None, seed: int = 0,
+                        consent: bool = False) -> dict:
+    """Idea → detailed director brief + validated char3d text script, without Blender
+    or building a scene. Prefer writing scripts yourself as an agent; this drafts for
+    the web UI/quick ideas. offline is free and seeded. claude uses the paid API;
+    claude_cli uses Claude Code subscription quota. Both send the idea/options to
+    Anthropic and require consent=True. auto prefers CLI, then API ONLY with consent;
+    otherwise offline with a note. Failure returns offline with an explicit warning.
+    Includes parse-only plan, manual camera/music limits, usage and API cost estimate.
+    Edit the script then call script_to_scene to preview/build it."""
+    from providers.director import direct
+    return await anyio.to_thread.run_sync(lambda: direct(
+        idea, generator, language, duration_s, characters, style, look, location, seed, consent))
+
+
+@mcp.tool()
 async def script_to_scene(script: dict | str, name: str | None = None,
                           environment: str | None = None, lighting: str = "studio",
                           camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
                           subtitles: bool = True, language: str = "auto", seed: int = 0,
                           build: bool = True, sound: bool = True, voice: bool = True,
-                          tts_engine: str = "piper", voices: dict | None = None) -> dict:
+                          tts_engine: str = "piper", voices: dict | None = None,
+                          look: str | dict | None = None) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
+    Optional look="golden_hour" or SUASANA:/LOOK:/MOOD: senja selects atmosphere.
+    look=None with no header keeps existing output/cost; plan recommends a look.
     Text: JUDUL/TITLE: ..., LOKASI/LOCATION: podcast_studio, then
     ANA (perempuan, 28, rambut bob): Halo! and [Ana duduk di kursi].
     Dict: {title, environment, characters: [{id, gender, age, hair, clothes, race,
@@ -1215,7 +1272,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     import time
     from engine.script_plan import parse_script
     started = time.perf_counter()
-    prepared = parse_script(script, name=name, environment=environment, seed=seed)
+    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look)
     parse_warnings = list(prepared["warnings"])
     casting = tts.cast(prepared["characters"], tts_engine, language, seed, voices) if voice else {}
     report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
@@ -1237,7 +1294,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     audio_seconds = time.perf_counter() - audio_started
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
-                  language=language, seed=seed, build=build, sound=sound)
+                  language=language, seed=seed, build=build, sound=sound, look=look)
     r["voices"] = casting
     r["generated_files"] = report["generated_files"]
     r["cache_hits"] = report["cache_hits"]

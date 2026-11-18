@@ -143,9 +143,15 @@ document.addEventListener("job-finished", (event) => {
       "list_shots",
       "mpfb_assets",
       "render_options",
+      "director_status",
+      "list_voices",
     ].includes(job.tool)
   )
     return;
+  if (job.tool === "direct_scene") {
+    toast(job.status === "completed" ? "Draf sutradara siap ditinjau." : "Draf sutradara gagal. Periksa pesan pada panel.", job.status === "failed" ? "error" : "success");
+    return;
+  }
   toast(
     `${job.tool} · ${labels[job.status]}`,
     job.status === "failed" ? "error" : "success",

@@ -103,7 +103,7 @@ def _skeleton(command_name, params):
 
 @command("script_to_scene")
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
-                    subtitles=True, language="auto", seed=0, build=True, sound=True):
+                    subtitles=True, language="auto", seed=0, build=True, sound=True, look=None):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -124,7 +124,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
 
     sc = bpy.context.scene
     with timed("parse"):
-        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps)
+        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps, look=look)
         if camera not in ("mixed", "singles", "two_shot", "none"):
             raise ValueError("camera must be mixed, singles, two_shot or none")
         if plan["environment"] and plan["environment"] not in PRESETS:
@@ -551,6 +551,15 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     if "weather" in plan:
         with timed("weather"):
             result["weather"] = dispatch("set_weather", {"kind": plan["weather"], "seed": abs(int(seed))})
+    if plan["look"] is not None:
+        from ..cinematic import look_spec
+        with timed("look"):
+            cfg = look_spec(plan["look"])
+            result["look"] = dispatch("cinematic_look", {"preset": cfg["preset"],
+                **({"intensity": cfg["intensity"], "haze": cfg["haze"], "god_rays": cfg["rays"],
+                    "bloom": cfg["bloom"], "dof": cfg["dof"], "particles": cfg["particles"],
+                    "grade": cfg["grade"], "sun": {k: cfg[k] for k in ("elevation", "azimuth")}}
+                   if cfg["preset"] != "none" else {})})
     with timed("graphics"):
         words_available = any(load_words(bpy.data.objects[c["mesh"]], 1, final) for c in characters.values())
         if subtitles and words_available:

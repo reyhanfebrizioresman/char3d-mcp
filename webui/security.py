@@ -10,13 +10,13 @@ from starlette.responses import JSONResponse
 def redact(value):
     """Redact configured secrets even when a provider includes one in an error."""
     if isinstance(value, str):
-        for key in ("FAL_KEY", "HF_TOKEN"):
+        for key in ("FAL_KEY", "HF_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
             secret = os.environ.get(key)
             if secret:
                 value = value.replace(secret, "[RAHASIA]")
-        return re.sub(r"(?i)(FAL_KEY|HF_TOKEN)(\s*[=:]\s*)[^\s,;\"']+", r"\1\2[RAHASIA]", value)
+        return re.sub(r"(?i)(FAL_KEY|HF_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)(\s*[=:]\s*)[^\s,;\"']+", r"\1\2[RAHASIA]", value)
     if isinstance(value, dict):
-        return {k: "[RAHASIA]" if k.upper() in {"FAL_KEY", "HF_TOKEN"} else redact(v)
+        return {k: "[RAHASIA]" if k.upper() in {"FAL_KEY", "HF_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} else redact(v)
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(v) for v in value]

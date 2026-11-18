@@ -199,16 +199,20 @@ def _mix(tree, image, value, blend='MULTIPLY'):
 
 
 def _compositor(sc, cfg, images, tree):
-    tree.interface.new_socket(name='Image', in_out='OUTPUT', socket_type='NodeSocketColor')
+    if not any(getattr(s, 'in_out', None) == 'OUTPUT' for s in tree.interface.items_tree):
+        tree.interface.new_socket(name='Image', in_out='OUTPUT', socket_type='NodeSocketColor')
     nodes, links = tree.nodes, tree.links
-    # Preserve the user's compositor as an upstream group; never edit its nodes.
-    if sc.compositing_node_group and sc.render.use_compositing:
-        source = nodes.new('CompositorNodeGroup')
-        source.node_tree = sc.compositing_node_group
+    # Extend a COPY of the user's graph. Nesting an entire scene compositor in
+    # a Group can hide Render Layers from Blender 5.2's render dependency scan,
+    # producing black animation frames without ever rendering the scene.
+    output = next((n for n in nodes if n.type == 'GROUP_OUTPUT' and n.is_active_output), None)
+    socket = (output.inputs.get('Image') or output.inputs[0]) if output else None
+    if socket and socket.is_linked:
+        image = socket.links[0].from_socket
     else:
         source = nodes.new('CompositorNodeRLayers')
         source.scene = sc
-    image = source.outputs.get('Image') or source.outputs[0]
+        image = source.outputs.get('Image') or source.outputs[0]
     original = image
     grade, style, strength = cfg['grade'], cfg['style'], cfg['strength']
     exp = nodes.new('CompositorNodeExposure')
@@ -227,16 +231,18 @@ def _compositor(sc, cfg, images, tree):
     image = _mix(tree, image, (1 + temp * .18 + tint * .06, 1 - tint * .12, 1 - temp * .18 + tint * .06, 1))
     if grade.get('teal_orange'):
         balance = nodes.new('CompositorNodeColorBalance')
-        balance.inputs['Color Lift'].default_value = (.97, 1.006, 1.018, 1)
-        balance.inputs['Color Gain'].default_value = (1.04, 1.008, .97, 1)
+        amount = float(grade['teal_orange'])
+        balance.inputs['Color Lift'].default_value = (1-.03*amount, 1+.006*amount, 1+.018*amount, 1)
+        balance.inputs['Color Gain'].default_value = (1+.04*amount, 1+.008*amount, 1-.03*amount, 1)
         links.new(image, balance.inputs['Image'])
         image = balance.outputs[0]
-    if style == 'film':
+    effects = cfg.get('effects')
+    if (effects and effects['bloom'] > 0) or (effects is None and style == 'film'):
         glow = nodes.new('CompositorNodeGlare')
         glow.inputs['Type'].default_value = 'Fog Glow'
         glow.inputs['Quality'].default_value = 'Low'
         glow.inputs['Threshold'].default_value = 1.3
-        glow.inputs['Strength'].default_value = .08
+        glow.inputs['Strength'].default_value = effects['bloom'] if effects else .08
         links.new(image, glow.inputs['Image'])
         image = glow.outputs[0]
     w = round(sc.render.resolution_x * sc.render.resolution_percentage / 100)
@@ -252,18 +258,27 @@ def _compositor(sc, cfg, images, tree):
         node.image = img
         return node.outputs[0]
 
-    if style in ('film', 'noir', 'vintage'):
+    if effects is not None or style in ('film', 'noir', 'vintage'):
         y, x = np.mgrid[-1:1:complex(h), -1:1:complex(w)]
-        amount = .24 if style == 'noir' else .17 if style == 'film' else .11
+        amount = effects['vignette'] if effects else .24 if style == 'noir' else .17 if style == 'film' else .11
         mask = np.ones((h, w, 4), dtype=np.float32)
         mask[:, :, :3] = (1 - amount * np.clip((x*x + y*y) / 1.5, 0, 1))[:, :, None]
         image = _mix(tree, image, texture('__c3d_style_vignette', mask))
         noise = np.ones((h, w, 4), dtype=np.float32)
         rng = np.random.default_rng(733 + sc.frame_current)
-        noise[:, :, :3] = rng.normal(0, .008 if style == 'noir' else .004, (h, w, 1))
+        noise[:, :, :3] = rng.normal(0, effects['grain'] if effects else .008 if style == 'noir' else .004, (h, w, 1))
         image = _mix(tree, image, texture('__c3d_style_grain', noise), 'ADD')
-        if style == 'vintage':
+        if effects and effects['lifted_blacks']:
+            lift = effects['lifted_blacks']
+            color = (lift, lift, lift, 0) if style == 'noir' else (lift, lift*.9, lift*.85, 0)
+            image = _mix(tree, image, color, 'ADD')
+        elif style == 'vintage':
             image = _mix(tree, image, (.025, .019, .012, 0), 'ADD')
+        if effects and effects['chromatic_aberration']:
+            lens = nodes.new('CompositorNodeLensdist')
+            lens.inputs['Dispersion'].default_value = effects['chromatic_aberration']
+            links.new(image, lens.inputs['Image'])
+            image = lens.outputs[0]
     blend = nodes.new('ShaderNodeMix')
     blend.data_type = 'RGBA'
     blend.inputs[0].default_value = strength
@@ -276,18 +291,21 @@ def _compositor(sc, cfg, images, tree):
         if rows:
             mask[:rows, :, :3] = mask[-rows:, :, :3] = 0
         image = _mix(tree, image, texture('__c3d_style_bars', mask))
-    out = nodes.new('NodeGroupOutput')
-    links.new(image, out.inputs['Image'])
+    output = output or nodes.new('NodeGroupOutput')
+    links.new(image, output.inputs.get('Image') or output.inputs[0])
     return tree
 
 
 @contextmanager
 def applied_style(sc):
     """Apply only for the render duration; user datablocks are never edited."""
+    from .cinematic import compositor_config
     cfg = get_config(sc)
-    if not cfg or cfg['strength'] == 0 or sc.render.engine == 'BLENDER_WORKBENCH':
+    post = compositor_config(sc, cfg)
+    if not post or post['strength'] == 0 or sc.render.engine == 'BLENDER_WORKBENCH':
         yield []
         return
+    cfg = cfg or dict(style='cinematic', strength=1., outline=False)
     slots, materials, meshes, hulls, images, groups = [], [], [], [], [], []
     compositor = None
     old_group = sc.compositing_node_group
@@ -302,7 +320,7 @@ def applied_style(sc):
             cache = {}
             black = None
             for obj in list(sc.objects):
-                if obj.type != 'MESH' or obj.hide_render:
+                if obj.type != 'MESH' or obj.hide_render or obj.get('c3d_role') in ('weather', 'cinematic'):
                     continue
                 hull = cfg['outline'] and _opaque(obj)
                 if not obj.material_slots:
@@ -355,8 +373,9 @@ def applied_style(sc):
                         slot.link, slot.material = 'OBJECT', black
                     displace = shell.modifiers.new('__c3d_style_outline', 'DISPLACE')
                     displace.strength, displace.mid_level = -.0012 * cfg['strength'], 0
-        compositor = bpy.data.node_groups.new('__c3d_style_compositor', 'CompositorNodeTree')
-        _compositor(sc, cfg, images, compositor)
+        compositor = old_group.copy() if old_group and old_compositing else bpy.data.node_groups.new('__c3d_style_compositor', 'CompositorNodeTree')
+        compositor.name = '__c3d_style_compositor'
+        _compositor(sc, post, images, compositor)
         sc.compositing_node_group = compositor
         sc.render.use_compositing = True
         yield images

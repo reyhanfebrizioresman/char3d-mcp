@@ -1629,3 +1629,105 @@ dialog.media-modal {
     padding: 0 18px 18px;
   }
 }
+
+/* Idea → treatment and script. Uses the same tokens in both studio themes. */
+.director-panel { margin: 0 0 28px; border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.director-heading { display: flex; align-items: center; gap: 15px; padding: 23px 25px 19px; background: linear-gradient(115deg, var(--accent-soft), transparent 72%); }
+.director-symbol { width: 45px; height: 45px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 12px; flex-shrink: 0; }
+.director-symbol .icon { width: 23px; height: 23px; }
+.director-heading h2 { font-size: 22px; letter-spacing: -.6px; margin: 2px 0 4px; }
+.director-heading p { color: var(--muted); font-size: 12px; }
+.director-draft-tag { margin-left: auto; font: 9px var(--mono); letter-spacing: 1px; }
+.director-body { padding: 5px 25px 22px; }
+.director-body > label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 9px; }
+textarea#director-idea { min-height: 112px; font-size: 15px; padding: 16px 18px; line-height: 1.7; border-color: color-mix(in srgb, var(--accent) 22%, var(--line)); }
+.director-examples { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 11px; }
+.director-examples > span { color: var(--faint); font-size: 10px; margin-right: 4px; }
+.director-example { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 16px; background: transparent; color: var(--muted); padding: 5px 10px; font-size: 10px; }
+.director-example .icon { width: 11px; height: 11px; }
+.director-example:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.director-options { border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); margin: 20px 0 17px; }
+.director-options > summary { padding: 13px 0; color: var(--text); font-weight: 550; }
+.director-options summary > span { color: var(--faint); font-size: 10px; font-weight: 400; margin-left: 12px; }
+.director-options-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 12px; padding: 4px 0 18px; }
+.director-controls { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.director-generator { max-width: 560px; flex: 1; min-width: 0; }
+.director-generator .field { display: grid; grid-template-columns: 70px minmax(0, 330px); align-items: center; gap: 14px; }
+.director-generator .help { margin-top: 8px; }
+#director-generate { min-height: 40px; padding-inline: 22px; }
+.director-loading { display: flex; align-items: center; gap: 13px; margin: 22px 0 15px; }
+.director-loading > span:first-child { color: var(--accent); }
+.director-loading strong { font-size: 12px; }
+.director-loading p { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.director-loading .chip { margin-left: auto; }
+#director-progress .skeleton { min-height: 75px; }
+#director-error:not(:empty) { margin-top: 16px; }
+#director-result { border-top: 1px solid var(--line); }
+.director-result-bar { display: flex; align-items: center; justify-content: space-between; padding: 12px 21px 0; gap: 8px; background: var(--panel-raised); }
+.director-tabs { display: flex; gap: 20px; }
+.director-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 8px 0 14px; font-size: 12px; color: var(--muted); }
+.director-tabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); }
+.director-content { max-height: 460px; overflow: auto; padding: 24px 28px; scrollbar-gutter: stable; }
+.director-treatment { font-size: 12px; line-height: 1.85; overflow-wrap: anywhere; }
+.director-treatment h2 { font-size: 24px; font-weight: 550; letter-spacing: -.6px; margin-bottom: 20px; }
+.director-treatment h3 { color: var(--accent); font-size: 13px; margin: 21px 0 8px; }
+.director-treatment h4 { margin: 16px 0 6px; }
+.director-treatment p + p { margin-top: 12px; }
+.director-treatment ul { padding-left: 18px; margin: 9px 0; }
+.director-treatment li + li { margin-top: 7px; }
+.director-screenplay { background: var(--input); }
+.director-screenplay pre { border: 0; padding: 0; max-height: none; line-height: 1.9; font-size: 12px; overflow: visible; }
+.director-result-footer { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding: 16px 25px; border-top: 1px solid var(--line-soft); }
+.director-notes { padding: 0 25px 14px; font-size: 11px; color: var(--muted); }
+.director-notes p { overflow-wrap: anywhere; }
+.director-notes .notice { font-size: 11px; }
+.director-restore { padding: 13px 25px; border-top: 1px solid var(--line); background: var(--green-soft); display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--green); font-size: 11px; flex-wrap: wrap; }
+.director-restore > span { display: flex; gap: 8px; align-items: center; }
+@media (max-width: 1120px) { .director-options-grid { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+@media (max-width: 680px) {
+  .director-heading { padding: 20px 17px 16px; gap: 12px; align-items: flex-start; }
+  .director-heading h2 { font-size: 21px; }
+  .director-heading p { font-size: 11px; }
+  .director-symbol { width: 37px; height: 37px; }
+  .director-draft-tag { display: none; }
+  .director-body { padding: 5px 17px 18px; }
+  textarea#director-idea { font-size: 14px; min-height: 138px; padding: 13px; }
+  .director-examples > span { width: 100%; }
+  .director-options summary > span { display: block; margin: 4px 0 0 14px; }
+  .director-options-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .director-options-grid .field:last-child { grid-column: 1 / -1; }
+  .director-controls { flex-direction: column; gap: 14px; }
+  .director-generator { width: 100%; }
+  .director-generator .field { display: flex; align-items: stretch; }
+  #director-generate { width: 100%; }
+  .director-result-bar { padding: 8px 15px 0; }
+  .director-tabs { gap: 16px; }
+  .director-tabs button { font-size: 11px; }
+  .director-content { padding: 18px; max-height: 420px; }
+  .director-result-footer { padding: 15px 17px; }
+  .director-result-footer > .button { width: 100%; }
+  .director-notes { padding-inline: 17px; }
+  .director-restore { padding: 14px 17px; }
+  .director-loading .chip { display: none; }
+}
+
+/* Procedural mood swatches, shared by screenplay and scene controls. */
+.look-picker { min-width: 0; }
+.settings-body .look-field { grid-column: 1 / -1; }
+.settings-body .look-field .look-grid { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+.look-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.look-choice { position: relative; cursor: pointer; padding: 5px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--input); min-width: 0; }
+.look-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+.look-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.look-choice input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.look-swatch { display: block; height: 36px; border-radius: 4px; overflow: hidden; position: relative; background: linear-gradient(155deg, var(--look-colors)); }
+.look-swatch::before { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, #ffefc12b 46%, transparent 56%); }
+.look-swatch i { position: absolute; left: 19%; bottom: -13px; width: 27px; height: 33px; border-radius: 40% 40% 0 0; background: #132029aa; }
+.look-swatch i::before { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #132029aa; left: 7px; top: -13px; }
+.look-name { display: block; font-size: 11px; font-weight: 600; padding: 4px 2px 0; line-height: 1.5; }
+.look-description { margin-top: 10px; min-height: 18px; }
+.scene-look-body { padding: 18px; }
+.scene-look-body .look-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.scene-look-body .look-swatch { height: 48px; }
+.scene-look-body .look-actions { margin-top: 14px; justify-content: space-between; }
+@media (max-width: 600px) { .scene-look-body .look-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .look-name { font-size: 12px; } }
