@@ -33,11 +33,17 @@ def serve(host, port, workspace):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(8)
+    srv.settimeout(0.5)
     print(f"CHAR3D_READY {host}:{port} workspace={workspace}", flush=True)
 
     running = True
     while running:
-        conn, _ = srv.accept()
+        from .commands.film import tick
+        tick()
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            continue
         with conn:
             stream = conn.makefile("rwb")
             for raw in stream:
@@ -49,6 +55,8 @@ def serve(host, port, workspace):
                     resp = {"id": None, "ok": False, "error": f"bad json: {exc}"}
                 else:
                     if req.get("cmd") == "shutdown":
+                        from .commands.film import shutdown
+                        shutdown()
                         resp = {"id": req.get("id"), "ok": True, "result": "bye"}
                         running = False
                     else:

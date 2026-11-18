@@ -723,6 +723,11 @@ async def isolate_mpfb(session):
     ''')
     res = await session.call_tool("run_blender_python", {"code": code})
     assert not res.isError, text_of(res)
+    if os.environ.get("CHAR3D_TEST_SAMPLES"):
+        samples = max(1, int(os.environ["CHAR3D_TEST_SAMPLES"]))
+        res = await session.call_tool("run_blender_python", {"code":
+            f"bpy.context.scene.eevee.taa_render_samples={samples}\nbpy.context.scene.render.threads_mode='FIXED'\nbpy.context.scene.render.threads=4\nresult=True"})
+        assert not res.isError, text_of(res)
 
 
 async def _mpfb_pack_checks(call):
@@ -3739,6 +3744,71 @@ async def _motion_checks(call):
     await scene_checks(call, text_of)
 
 
+async def _video_checks(call, setup=True):
+    if setup:
+        await call("new_scene", frame_end=36)
+        await call("create_human", name="Walker", style="stylized")
+        await call("auto_rig_humanoid", mesh="Walker")
+        await call("animate", armature="Walker_rig", clip="wave", cycles=1)
+    # phase 4: lighting, two shots, scene-camera check, draft video
+    await call("set_lighting", preset="studio", subject=["Walker"])
+    s1 = json.loads(text_of(await call("camera_shot", subject=["Walker"], shot="full",
+                                       move="tracking_side", start_frame=1, end_frame=20))[0])
+    await call("camera_shot", subject=["Walker"], shot="medium", move="crash_zoom",
+               start_frame=s1["next_start_frame"], end_frame=36)
+    shots = json.loads(text_of(await call("list_shots"))[0])["shots"]
+    assert [x["camera"] for x in shots][:2] == ["Shot1", "Shot2"], shots
+    look = await call("render_frames", frames=[1, 30], camera="scene", size=160)
+    assert [c.type for c in look.content].count("image") == 2
+    vid = json.loads(text_of(await call("render_video", path="e2e.mp4", quality="draft",
+                                        width=320, height=180, frame_start=1, frame_end=36,
+                                        wait=True))[0])
+    assert vid["status"] == "done" and vid["bytes"] > 1000, vid
+    opts = json.loads(text_of(await call("render_options", quality="final", vertical=True))[0])
+    sizes = {o["resolution"]: o["size"] for o in opts["options"]}
+    assert sizes["1080p"] == "1080x1920" and sizes["4k"] == "2160x3840", opts
+    times = [o["total_s"] for o in opts["options"]]
+    assert times == sorted(times) and times[0] > 0, opts
+    vid2 = json.loads(text_of(await call("render_video", path="e2e_480.mp4", quality="draft",
+                                         resolution="480p", frame_start=1, frame_end=6,
+                                         wait=True))[0])
+    assert vid2["status"] == "done" and vid2["size"] == [854, 480], vid2
+    # subtitles: explicit lines -> preview frame with caption, burned-in video + .srt
+    sub = json.loads(text_of(await call("add_subtitles", style="tiktok", lines=[
+        {"text": "Halo semua, ini tes subtitle.", "start": 0.1, "end": 1.4}]))[0])
+    assert sub["captions"] == 2 and sub["preview"][0]["text"] == "Halo semua,", sub
+    capf = await call("render_frames", frames=[8], camera="scene", size=200)
+    assert json.loads(text_of(capf)[0])["caption"] is True
+    vs = json.loads(text_of(await call("render_video", path="e2e_subs.mp4", quality="draft",
+                                       width=320, height=180, frame_start=1, frame_end=36,
+                                       wait=True))[0])
+    assert vs["status"] == "done" and vs["subtitles"]["captions"] == 2, vs
+    assert "warning" not in vs and os.path.exists(vs["subtitles"]["srt"]), vs
+    import av
+    with av.open(vs["path"]) as mv:
+        assert mv.streams.video[0].frames == 36, mv.streams.video[0].frames
+    await call("remove_subtitles")
+    # speed calibration: finished renders teach workbench speed, a test frame eevee
+    assert vid["learned_speed"]["engine"] == "workbench", vid
+    cal = json.loads(text_of(await call("render_options", quality="preview",
+                                        calibrate=True))[0])
+    assert cal["test_frame"]["engine"] == "eevee" and cal["test_frame"]["measured_s"] > 0, cal
+    assert cal["machine_speed"]["measurements"] >= 1, cal
+    speeds = json.load(open(CALIB))
+    assert {"workbench", "eevee"} <= set(speeds), speeds
+    print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes",
+          "| options final 1080p", next(o["total"] for o in opts["options"]
+                                        if o["resolution"] == "1080p"),
+          "| test frame", cal["test_frame"], "| preview 1080p",
+          next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
+
+
+
+async def _film_checks(call):
+    from film_checks import run
+    await run(call, text_of)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -3752,6 +3822,11 @@ async def main():
         async def call(tool, **args):
             if any(flag in sys.argv for flag in ("--cinematic-only", "--render-style-only", "--outdoor-only")):
                 print("CHECK", tool, flush=True)
+            if tool == "render_frames" and args.get("engine_name") == "eevee" and os.environ.get("CHAR3D_TEST_SAMPLES"):
+                samples = max(1, int(os.environ["CHAR3D_TEST_SAMPLES"]))
+                setup = await s.call_tool("run_blender_python", {"code":
+                    f"bpy.context.scene.eevee.taa_render_samples={samples}\nbpy.context.scene.render.threads_mode='FIXED'\nbpy.context.scene.render.threads=4\nresult=True"})
+                assert not setup.isError, text_of(setup)
             res = await s.call_tool(tool, args)
             if res.isError:
                 raise RuntimeError(f"{tool} failed: {text_of(res)}")
@@ -3760,7 +3835,12 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
-        for flag, section in (("--cinematic-only", _cinematic_checks),
+        for flag, section in (("--film-only", _film_checks),
+                              ("--script-only", _script_scene_checks),
+                              ("--dialog-only", _dialog_gaze_checks),
+                              ("--graphics-only", _graphics_checks),
+                              ("--video-only", _video_checks),
+                              ("--cinematic-only", _cinematic_checks),
                               ("--render-style-only", _render_style_checks),
                               ("--outdoor-only", _outdoor_checks)):
             if flag in sys.argv:
@@ -3858,57 +3938,7 @@ async def main():
 
         await _animation_checks(call)
 
-        # phase 4: lighting, two shots, scene-camera check, draft video
-        await call("set_lighting", preset="studio", subject=["Walker"])
-        s1 = json.loads(text_of(await call("camera_shot", subject=["Walker"], shot="full",
-                                           move="tracking_side", start_frame=1, end_frame=20))[0])
-        await call("camera_shot", subject=["Walker"], shot="medium", move="crash_zoom",
-                   start_frame=s1["next_start_frame"], end_frame=36)
-        shots = json.loads(text_of(await call("list_shots"))[0])["shots"]
-        assert [x["camera"] for x in shots][:2] == ["Shot1", "Shot2"], shots
-        look = await call("render_frames", frames=[1, 30], camera="scene", size=160)
-        assert [c.type for c in look.content].count("image") == 2
-        vid = json.loads(text_of(await call("render_video", path="e2e.mp4", quality="draft",
-                                            width=320, height=180, frame_start=1, frame_end=36,
-                                            wait=True))[0])
-        assert vid["status"] == "done" and vid["bytes"] > 1000, vid
-        opts = json.loads(text_of(await call("render_options", quality="final", vertical=True))[0])
-        sizes = {o["resolution"]: o["size"] for o in opts["options"]}
-        assert sizes["1080p"] == "1080x1920" and sizes["4k"] == "2160x3840", opts
-        times = [o["total_s"] for o in opts["options"]]
-        assert times == sorted(times) and times[0] > 0, opts
-        vid2 = json.loads(text_of(await call("render_video", path="e2e_480.mp4", quality="draft",
-                                             resolution="480p", frame_start=1, frame_end=6,
-                                             wait=True))[0])
-        assert vid2["status"] == "done" and vid2["size"] == [854, 480], vid2
-        # subtitles: explicit lines -> preview frame with caption, burned-in video + .srt
-        sub = json.loads(text_of(await call("add_subtitles", style="tiktok", lines=[
-            {"text": "Halo semua, ini tes subtitle.", "start": 0.1, "end": 1.4}]))[0])
-        assert sub["captions"] == 2 and sub["preview"][0]["text"] == "Halo semua,", sub
-        capf = await call("render_frames", frames=[8], camera="scene", size=200)
-        assert json.loads(text_of(capf)[0])["caption"] is True
-        vs = json.loads(text_of(await call("render_video", path="e2e_subs.mp4", quality="draft",
-                                           width=320, height=180, frame_start=1, frame_end=36,
-                                           wait=True))[0])
-        assert vs["status"] == "done" and vs["subtitles"]["captions"] == 2, vs
-        assert "warning" not in vs and os.path.exists(vs["subtitles"]["srt"]), vs
-        import av
-        with av.open(vs["path"]) as mv:
-            assert mv.streams.video[0].frames == 36, mv.streams.video[0].frames
-        await call("remove_subtitles")
-        # speed calibration: finished renders teach workbench speed, a test frame eevee
-        assert vid["learned_speed"]["engine"] == "workbench", vid
-        cal = json.loads(text_of(await call("render_options", quality="preview",
-                                            calibrate=True))[0])
-        assert cal["test_frame"]["engine"] == "eevee" and cal["test_frame"]["measured_s"] > 0, cal
-        assert cal["machine_speed"]["measurements"] >= 1, cal
-        speeds = json.load(open(CALIB))
-        assert {"workbench", "eevee"} <= set(speeds), speeds
-        print("phase 4: shots", len(shots), "| video", vid["progress"], vid["bytes"], "bytes",
-              "| options final 1080p", next(o["total"] for o in opts["options"]
-                                            if o["resolution"] == "1080p"),
-              "| test frame", cal["test_frame"], "| preview 1080p",
-              next(o["total"] for o in cal["options"] if o["resolution"] == "1080p"))
+        await _video_checks(call, setup=False)
 
         # Sets/props through MCP: ownership, replacement, scaling, validation and isolation.
         presets = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk")

@@ -56,6 +56,19 @@ class JobQueue:
         return job
 
     def public(self, job):
+        if job.tool == "script_to_film" and job.arguments.get("build", True) and job.status == "running":
+            # Read engine-owned progress without waiting on its in-flight RPC/build.
+            try:
+                from engine.film_plan import parse_film
+                import re
+                plan = parse_film(job.arguments["script"], name=job.arguments.get("name"))
+                slug = re.sub(r'[^\w.-]+', '_', plan['name'].strip())[:100]
+                path = self.workspace.resolve(f"projects/{slug}/film.json")
+                if path.stat().st_mtime >= job.started:
+                    manifest = json.loads(path.read_text())
+                    job.progress = {"scenes": [{k:s.get(k) for k in ("name", "index", "status")} for s in manifest["scenes"]]}
+            except (ValueError, KeyError, OSError):
+                pass
         waiting = [j.id for j in self.jobs.values() if j.status == "queued" and j.tool not in INDEPENDENT]
         now = job.finished or time.time()
         return redact({"id": job.id, "tool": job.tool, "status": job.status,
@@ -132,8 +145,8 @@ class JobQueue:
                 job.result = await self.invoke(job.tool, job.arguments)
                 data = job.result["data"]
                 background = data.get("job_id") if isinstance(data, dict) else None
-                if background and (job.tool == "render_video" or job.tool in AI_GENERATORS):
-                    job.status = "rendering" if job.tool == "render_video" else "processing"
+                if background and (job.tool in {"render_video", "render_film"} or job.tool in AI_GENERATORS):
+                    job.status = "rendering" if job.tool in {"render_video", "render_film"} else "processing"
                     task = asyncio.create_task(self.monitor(job, background))
                     self.monitors.add(task)
                     task.add_done_callback(self.monitors.discard)
@@ -141,7 +154,7 @@ class JobQueue:
                     job.status, job.finished = "completed", time.time()
                 if job.tool == "cancel_render":
                     for other in self.jobs.values():
-                        if (other.tool == "render_video" and other.status == "rendering"
+                        if (other.tool in {"render_video", "render_film"} and other.status == "rendering"
                                 and other.result["data"].get("job_id") == job.arguments.get("job_id")):
                             other.status, other.finished = "cancelled", time.time()
             except Exception as exc:
@@ -151,7 +164,7 @@ class JobQueue:
                 self.queue.task_done()
 
     async def monitor(self, job, background_id):
-        status_tool = "render_status" if job.tool == "render_video" else "ai_job_status"
+        status_tool = "render_status" if job.tool in {"render_video", "render_film"} else "ai_job_status"
         while True:
             await asyncio.sleep(1.5)
             if job.status in TERMINAL:

@@ -121,7 +121,7 @@ function drawJobs() {
             .slice(0, 30)
             .map(
               (j) =>
-                `<article class="job-item" data-id="${j.id}"><div class="row between"><strong>${esc(j.tool)}</strong><span class="chip ${j.status === "completed" ? "green" : j.status === "failed" ? "warm" : ""}">${labels[j.status]}</span></div><small>${seconds(j.elapsed_s)} ${j.queue_position ? `· Antrean #${j.queue_position}` : ""}${j.progress?.progress ? " · " + esc(j.progress.progress) + " frame" : ""}</small>${j.error ? `<div class="job-error">${errorHTML(j.error)}</div>` : ""}${j.result ? json(j.result.data) : ""}</article>`,
+                `<article class="job-item" data-id="${j.id}"><div class="row between"><strong>${esc(j.tool)}</strong><span class="chip ${j.status === "completed" ? "green" : j.status === "failed" ? "warm" : ""}">${labels[j.status]}</span></div><small>${seconds(j.elapsed_s)} ${j.queue_position ? `· Antrean #${j.queue_position}` : ""}${j.progress?.progress ? " · " + esc(j.progress.progress) + (j.progress.kind === "film" ? " tahap" : " frame") : ""}</small>${j.error ? `<div class="job-error">${errorHTML(j.error)}</div>` : ""}${j.result ? json(j.result.data) : ""}</article>`,
             )
             .join("")
         : '<div class="empty"><strong>Belum ada pekerjaan</strong><p>Jalankan rencana atau buat karakter untuk memulai.</p></div>'
@@ -143,6 +143,8 @@ document.addEventListener("job-finished", (event) => {
       "list_shots",
       "mpfb_assets",
       "render_options",
+      "film_render_options",
+      "film_info",
       "director_status",
       "list_voices",
     ].includes(job.tool)
@@ -158,7 +160,7 @@ document.addEventListener("job-finished", (event) => {
   );
   if (
     (!location.hash || location.hash === "#naskah") &&
-    ["script_to_scene", "render_frames", "render_preview"].includes(job.tool) &&
+    ["script_to_scene", "script_to_film", "render_frames", "render_preview"].includes(job.tool) &&
     job.status === "completed"
   ) {
     script.refreshResult($("#script-result"));

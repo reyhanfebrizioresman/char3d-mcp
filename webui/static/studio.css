@@ -1731,3 +1731,14 @@ textarea#director-idea { min-height: 112px; font-size: 15px; padding: 16px 18px;
 .scene-look-body .look-swatch { height: 48px; }
 .scene-look-body .look-actions { margin-top: 14px; justify-content: space-between; }
 @media (max-width: 600px) { .scene-look-body .look-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .look-name { font-size: 12px; } }
+
+/* Film storyboard: the existing panel, token and button system. */
+.film-storyboard { list-style:none; margin:0; padding:20px; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:16px; }
+.film-scene-card { min-width:0; border:1px solid var(--line); border-radius:12px; padding:18px; }
+.film-scene-card h3 { margin:14px 0; overflow-wrap:anywhere; }
+.film-scene-card dl { display:grid; grid-template-columns:95px minmax(0,1fr); gap:9px; font-size:12px; margin-bottom:20px; }
+.film-scene-card dt { opacity:.65; } .film-scene-card dd { margin:0; overflow-wrap:anywhere; }
+.film-build-progress { list-style:none; padding:16px 20px; margin:0; }
+.film-build-progress li { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; padding:9px 0; font-size:12px; }
+.film-switcher:empty { display:none; } .film-switcher { margin-bottom:20px; }
+.film-switcher .row { flex-wrap:wrap; } .film-switcher select { max-width:100%; }

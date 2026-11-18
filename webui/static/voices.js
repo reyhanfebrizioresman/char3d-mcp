@@ -2,7 +2,7 @@ import { run, state } from "./api.js";
 import { $, $$, esc, icon, select, field, button, confirm, action, errorHTML } from "./ui.js";
 
 export function needsSpeechConsent(tool, args) {
-  if (!["text_to_speech", "script_to_scene", "dialog"].includes(tool)) return false;
+  if (!["text_to_speech", "script_to_scene", "script_to_film", "dialog"].includes(tool)) return false;
   if (tool !== "text_to_speech" && (args.voice === false || args.build === false || (tool === "dialog" && !args.voice))) return false;
   const choices = [args.tts_engine || args.engine || "piper"];
   if (typeof args.voice === "string") choices.push(args.voice.split(":")[0]);
@@ -79,7 +79,8 @@ export function mountVoices(root, getScriptArgs) {
       card.querySelectorAll("input,select,button").forEach(el => el.disabled = mode.value === "none");
       $(`#listen-${i}`, root).onclick = () => action($(`#listen-${i}`, root), async () => {
         const selected = picker.value || current.voices?.[char.id]?.voice;
-        const args = { text: current.plan.beats.find(b => b.say === char.id && b.text)?.text?.slice(0, 180) || "Halo, apa kabar?", voice: selected, engine: mode.value, language: lang === "auto" ? "id" : lang, pitch: Number(pitch.value), rate: Number(rate.value) };
+        const beats = current.plan.beats || current.plan.scenes?.flatMap(s => s.plan.beats) || [];
+        const args = { text: beats.find(b => b.say === char.id && b.text)?.text?.slice(0, 180) || "Halo, apa kabar?", voice: selected, engine: mode.value, language: lang === "auto" ? "id" : lang, pitch: Number(pitch.value), rate: Number(rate.value) };
         const online = needsSpeechConsent("text_to_speech", args);
         if (online && !await authorizeSpeech("text_to_speech", args)) return;
         const preview = $("#voice-preview", root);
@@ -107,7 +108,9 @@ export function mountVoices(root, getScriptArgs) {
         catalog.voices = [...catalog.voices.filter(v => !v.id.startsWith("edge:")), ...updated.data.voices];
       }
       if (current) {
-        const r = await run("script_to_scene", { ...getScriptArgs(), ...parameters(), build: false });
+        const args = { ...getScriptArgs(), ...parameters(), build: false };
+        const { scriptTool } = await import("./film.js");
+        const r = await run(scriptTool(args.script), args);
         if (!disposed && request === revision) updatePlan(r.data);
       } else draw();
     } catch (e) { if (!disposed && request === revision) $("#voice-preview", root).innerHTML = errorHTML(e); }

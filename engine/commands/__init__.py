@@ -23,3 +23,4 @@ from . import sfx  # noqa: E402,F401
 from . import weather  # noqa: E402,F401
 
 from . import cinematic  # noqa: E402,F401
+from . import film  # noqa: E402,F401

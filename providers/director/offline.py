@@ -341,4 +341,12 @@ Local speech over quiet room/nature ambience and procedural Foley. Suggest spars
 ## Build scope and manual adjustments
 Script builds cast, installed seeded outfits, set, look, weather, speech and supported actions. Custom shots, palette, music and extra dressing need manual work. Timing is approximate. Select a local English Piper model in Voices; the draft names the installed Indonesian default. Review Eevee frames before a final movie.
 '''
+        from .film import arrange
+        arranged = arrange(script, opts)
+        if arranged != script:
+            script = arranged
+            from engine.film_plan import parse_film
+            film = parse_film(script, seed=opts['seed'])
+            brief += '\n## Adegan film\n' + '\n'.join(f"- {s['index']}. {s['name']}: {s['environment']}, {(s['look'] or {}).get('preset', 'none')}; transisi {s['transition_in']['kind']}." for s in film['scenes'])
+            warnings.append('Draf film memakai beberapa proyek adegan; bangun dengan script_to_film. Detail kamera tetap manual.')
         return dict(brief=brief.strip(), script=script, characters=metadata, warnings=warnings)

@@ -54,6 +54,13 @@ def response(payload=None, stop='end_turn', usage=None):
 
 
 class OfflineTests(unittest.TestCase):
+    def test_optional_multi_scene_film(self):
+        from engine.film_plan import parse_film
+        result = direct('Dua sahabat di kafe pagi lalu taman sore dan street malam', generator='offline', duration_s=60)
+        self.assertEqual(len(result['plan']['scenes']), 3)
+        self.assertEqual(result['plan'], parse_film(result['script']))
+        self.assertEqual(result['build_options']['tool'], 'script_to_film')
+
     def test_varied_ideas_all_looks_and_weather(self):
         for i, idea in enumerate(IDEAS):
             with self.subTest(idea=idea):

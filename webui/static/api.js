@@ -8,6 +8,7 @@ export const state = {
   latestScript: null,
   latestDirector: null,
   build: null,
+  film: null,
   previews: [],
   characterViews: [],
   character: null,
@@ -99,7 +100,8 @@ function remember(job) {
   if (remembered.has(job.id)) return;
   remembered.add(job.id);
   const value = job.result.data;
-  if (["new_scene", "open_project"].includes(job.tool)) {
+  if (["new_scene", "open_project", "open_film_scene"].includes(job.tool)) {
+    state.film = null;
     state.build = null;
     state.plan = null;
     state.latestScript = null;
@@ -113,8 +115,9 @@ function remember(job) {
   if (job.tool === "list_shots") state.shots = value;
   if (job.tool === "direct_scene") state.latestDirector = value;
   if (job.tool === "mpfb_assets") state.assets = value;
-  if (job.tool === "script_to_scene") {
-    const built = !!Object.keys(value.characters || {}).length;
+  if (["script_to_scene", "script_to_film"].includes(job.tool)) {
+    const built = value.kind === "film" ? value.built : !!Object.keys(value.characters || {}).length;
+    if (value.kind === "film" && built) state.film = value.film;
     state.latestScript = { data: value, built };
     if (built) state.build = value;
     else state.plan = value;

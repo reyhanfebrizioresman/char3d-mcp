@@ -27,7 +27,7 @@ class FakeMCP:
         self.peak = max(self.peak, self.active)
         self.calls.append(name)
         await asyncio.sleep(.01)
-        if name == "render_video":
+        if name in {"render_video", "render_film"}:
             result = {"job_id": "video-1", "status": "running"}
         elif name == "render_status":
             result = {"job_id": "video-1", "status": "done" if self.done else "running"}
@@ -78,6 +78,22 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.queue.join()
         self.assertEqual(video.status, "cancelled")
         self.assertIsNotNone(video.finished)
+
+    async def test_film_background_progress_and_cancel(self):
+        film = self.queue.submit("render_film", {"name": "Test"})
+        await self.queue.queue.join()
+        self.assertEqual(film.status, "rendering")
+        self.queue.submit("cancel_render", {"job_id": "video-1"})
+        await self.queue.queue.join()
+        self.assertEqual(film.status, "cancelled")
+
+    async def test_film_build_progress_reads_manifest_without_engine_lock(self):
+        job = self.queue.submit("script_to_film", {"script": "JUDUL: Test\nADEGAN: One\nA: Hello."})
+        job.status, job.started = "running", 0
+        path = Path(self.temp.name) / "projects/Test/film.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"scenes": [{"name": "One", "index": 1, "status": "building"}]}))
+        self.assertEqual(self.queue.public(job)["progress"]["scenes"][0]["status"], "building")
 
     async def test_director_runs_outside_engine_lane_both_directions(self):
         blocked, started = asyncio.Event(), asyncio.Event()

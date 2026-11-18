@@ -77,6 +77,7 @@ def main():
         assert "script_to_scene" in names and "run_blender_python" not in names
         assert {"list_voices", "text_to_speech", "cinematic_look"} <= names
         assert {"director_status", "direct_scene"} <= names
+        assert {"script_to_film", "film_info", "open_film_scene", "render_film", "film_render_options"} <= names
         assert "look" in http("/api/tools/script_to_scene")["inputSchema"]["properties"]
         assert http("/api/tools/create_human")["inputSchema"]["properties"]["style"]["enum"]
         print("PASS tool catalog + JSON schema; Python hidden even when enabled", flush=True)
@@ -99,6 +100,14 @@ def main():
         assert drafted["generator"] == "offline" and drafted["plan"]["environment"] == "park"
         assert "SUASANA: sunset" in drafted["script"] and drafted["brief"]
         print("PASS director_status + direct_scene offline → valid plan; both online generators require confirmation", flush=True)
+        film_script = "ANA (perempuan)\nADEGAN 1: Kafe\nLOKASI: cafe_terrace\nANA: Halo.\n[TRANSISI: dissolve 0.2 detik]\nADEGAN 2: Taman\nLOKASI: park\nANA: Sampai jumpa."
+        film_plan = tool("script_to_film", {"script": film_script, "build": False})["data"]
+        assert len(film_plan["plan"]["scenes"]) == 2 and not film_plan["built"]
+        assert film_plan == tool("script_to_film", {"script": film_script, "build": False})["data"]
+        reject("/api/run", 403, data={"tool": "script_to_film", "arguments": {
+            "script": film_script, "tts_engine": "edge"}})
+        reject("/api/run", 400, data={"tool": "render_film", "arguments": {"name": "film", "path": "/etc/film.mp4"}})
+        print("PASS film storyboard plan determinism + tool schemas + online voice consent + output confinement", flush=True)
         voices = tool("list_voices", {"language": "id"})["data"]
         assert set(voices["engines"]) == {"piper", "edge", "f5", "chatterbox"}
         assert voices["engines"]["edge"]["online"] and "install_hint" in voices["engines"]["f5"]

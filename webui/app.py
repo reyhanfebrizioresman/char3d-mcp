@@ -97,6 +97,9 @@ def create_app(port=8765):
                 continue
             # Never follow symlink directories. Check file targets before stat/URL.
             for path in directory.rglob("*"):
+                relative_parts = path.relative_to(directory).parts
+                if "film_cache" in relative_parts or any(p.startswith(".") for p in relative_parts):
+                    continue
                 if path.suffix.lower() not in GALLERY_TYPES:
                     continue
                 try:

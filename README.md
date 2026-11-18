@@ -51,6 +51,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `camera_shot`, `list_shots`, `delete_shot` | 23 gerak kamera, 8 ukuran shot, multi-shot otomatis; `avoid_occlusion="auto"` menjaga wajah, headroom, ukuran subjek dan area foreground |
 | `set_lighting`, `set_material` | 10 preset cahaya (studio, sunset, neon, horror, dll.) + lantai; `follow="auto"` mengikuti karakter bergerak; material cepat |
 | `dialog`, `stage_dialog` | Percakapan 2–4 karakter dalam satu panggilan: posisi saling berhadapan, lip sync per baris (audio/teks), saling menatap, pendengar mengangguk, gestur per pembicara, kamera two-shot lalu single per pembicara |
+| `script_to_film`, `film_info`, `open_film_scene`, `film_render_options`, `render_film` | Naskah multiadegan → proyek per adegan + manifest → satu MP4/AAC/SRT; storyboard, kontinuitas tokoh, transisi, kartu judul, cache render dan pembatalan |
 | `script_to_scene` | Naskah pendek Indonesia/Inggris atau dict → 1–4 karakter, outfit/jenggot/aksesori katalog, set, aksi jalan/duduk/berdiri/pegang prop, dialog, ekspresi, kamera, subtitle, cahaya serta gerak rambut dan kain longgar. `build=False` hanya membuat rencana tanpa mengubah adegan; hasil berisi frame, shot, warning dan waktu proses |
 | `set_environment`, `add_prop`, `clear_environment` | Set prosedural indoor + city_street, park, cafe_terrace, beach; tanah walkable, furnitur/seats, lampu praktis, variant/tema warna dan gambar lokal; bersihkan tanpa menghapus karakter/kamera |
 | `set_weather` | clear/rain/snow/fog/wind; partikel deterministik tersimpan di .blend, area kamera, tanah basah, sky/sun, wind untuk rambut/kain |
@@ -324,6 +325,70 @@ dipegang, ground dan objek tersembunyi diabaikan. Landmark dan grid bersifat
 perkiraan; objek tipis, gerakan di antara sampel, rambut sendiri dan animasi yang
 diubah sesudahnya tetap perlu diperiksa dengan render Eevee.
 Lihat [Shots](AGENTS.md#film-cameras-lighting-video).
+
+
+## Film dengan beberapa adegan
+
+`script_to_film` menyimpan tiap adegan sebagai proyek mandiri dan merangkainya menjadi
+satu film. Tokoh, rambut, outfit seeded dan casting suara tetap konsisten; perubahan
+pakaian berlaku mulai adegan yang memuat arahan tersebut. Naskah lama tetap memakai
+`script_to_scene`; naskah dengan header ADEGAN/SCENE diarahkan ke `script_to_film`.
+
+```text
+JUDUL: Pertemuan Kembali
+ANA (perempuan, 28, rambut bob, kasual)
+BUDI (laki-laki, 30, rambut pendek, kasual)
+ADEGAN 1: Kafe — pagi
+LOKASI: cafe_terrace
+SUASANA: pagi berkabut
+ANA: Halo, Budi!
+BUDI: Selamat pagi.
+[TRANSISI: dissolve 0.5 detik]
+ADEGAN 2: Taman — sore
+LOKASI: taman
+SUASANA: senja
+CUACA: berangin
+KARTU: Sore harinya...
+[Ana berganti baju formal]
+BUDI: Indah sekali.
+ANA: Mari pulang.
+[TRANSISI: dip_black 0.5 detik]
+ADEGAN 3: Jalan — malam
+LOKASI: city_street
+SUASANA: malam
+ANA: Sampai jumpa!
+BUDI: Sampai besok.
+```
+
+Periksa storyboard dengan `script_to_film(script, build=False)`, lalu bangun dengan
+`script_to_film(script, language="id")`. Proyek berada di
+`output/projects/<nama>/scene_01.blend` dan manifest `film.json`, juga tersimpan di
+setiap blend. `film_info(nama)` membaca manifest; `open_film_scene(nama, index)`
+membuka adegan (index mulai 1). Simpan penyuntingan ke path proyek yang dikembalikan.
+`scene_index=N` membangun ulang satu adegan bila sumber adegan lain tetap sama.
+
+Studio Naskah menampilkan kartu lokasi, suasana, cuaca, tokoh, durasi dan transisi,
+tombol **Bangun semua adegan**, serta **Bangun ulang** per adegan. Layar Adegan
+mempunyai pemilih adegan; tombol Simpan proyek menyimpan ke proyek adegan aktif.
+Layar Render menghitung seluruh film dan menampilkan kemajuan tiap adegan; hasil MP4
+dapat diputar dan diunduh bersama SRT melalui Galeri.
+
+Mulai dengan `render_film(nama, path="film.mp4", quality="draft")`. Setelah memeriksa
+stills Eevee, panggil `film_render_options(nama, quality="final")` dan **pilih sendiri
+resolusi** sebelum render pratinjau/final. `render_status(job_id)` dan
+`cancel_render(job_id)` berlaku untuk seluruh film. Worker berjalan bergiliran dan
+memakai kembali adegan selesai bila hash blend/pengaturan sama. Perubahan file aset
+eksternal di tempat yang sama memerlukan `resume=False`.
+
+Dissolve mengurangi durasi film sebesar overlap; dip-to-black/white mempertahankan
+cut. Kartu menambah durasi (default dua detik). Audio tiap adegan ikut memudar, dan
+subtitle global/SRT mengikuti offset kartu dan overlap. Perubahan outfit ditempatkan
+sebelum dialog/aksi adegan; tidak ada animasi berganti baju. Maksimal empat tokoh
+global dan 64 adegan, fps seragam. Semua batas motion/cuaca/kamera/TTS tetap berlaku.
+Komposisi memakai Blender VSE dan encoder bawaan, tanpa ffmpeg sistem.
+
+Uji unit: `.venv/bin/python tests/test_film.py` → `FILM UNIT OK`. Uji nyata terisolasi:
+`CHAR3D_PORT=9996 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/e2e_smoke.py --film-only`.
 
 ## Web UI — studio lokal
 

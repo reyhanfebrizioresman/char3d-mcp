@@ -25,7 +25,7 @@ PRIMITIVES = {
 def ping():
     return {
         "blender": bpy.app.version_string,
-        "file": bpy.data.filepath or None,
+        "file": bpy.context.scene.get("char3d_editor_source", bpy.data.filepath) or None,
         "allow_python": os.environ.get("CHAR3D_ALLOW_PYTHON") == "1",
     }
 
@@ -70,7 +70,7 @@ def scene_info():
     lo, hi = scene_bounds()
     return {
         "scene": sc.name,
-        "file": bpy.data.filepath or None,
+        "file": sc.get("char3d_editor_source", bpy.data.filepath) or None,
         "frame_range": [sc.frame_start, sc.frame_end],
         "fps": sc.render.fps,
         "render": {
@@ -78,6 +78,7 @@ def scene_info():
             "resolution": [sc.render.resolution_x, sc.render.resolution_y],
         },
         "cinematic_look": json.loads(sc["char3d_cinematic_look"]) if sc.get("char3d_cinematic_look") else None,
+        "film": {k: v for k, v in json.loads(sc.get("char3d_film", "{}")).items() if k != "film"} or None,
         "active_camera": sc.camera.name if sc.camera else None,
         "bounds": {"min": vec(lo), "max": vec(hi)} if lo else None,
         "objects": [_describe(o) for o in sc.objects if not is_helper(o)],

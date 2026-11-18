@@ -1,3 +1,4 @@
+import { buildProgress } from "./film.js";
 import { screenRoot } from "./ui.js";
 import { run, state, scene } from "./api.js";
 import {
@@ -23,7 +24,7 @@ export function mount(root) {
   root = screenRoot(root);
   let quality = "draft",
     resolution = null,
-    options = null;
+    options = null, filmName = state.film?.name || null;
   root.innerHTML =
     head(
       "DARI ADEGAN KE FILM",
@@ -31,9 +32,10 @@ export function mount(root) {
       "Periksa draft, pilih resolusi, lalu biarkan studio menyelesaikannya.",
       `<span class="chip">${icon("render")} H.264 · MP4</span>`,
     ) +
-    `<div class="render-layout"><section class="panel"><div class="panel-head"><h2>${icon("settings")} Pengaturan render</h2><span class="mono muted">OUTPUT</span></div><div class="panel-body"><div class="quality-tabs" role="group" aria-label="Kualitas render"><button data-quality="draft" class="active">Draft</button><button data-quality="preview">Pratinjau</button><button data-quality="final">Final</button></div><div class="form-grid">${field("Nama video", input("video-name", "film-pertama.mp4", "text", 'maxlength="100"'), "span-2")}${field("Frame awal · opsional", input("video-start", "", "number", 'min="1" step="1" placeholder="Awal adegan"'))}${field("Frame akhir · opsional", input("video-end", "", "number", 'min="1" step="1" placeholder="Akhir adegan"'))}<div class="span-2 row between">${check("video-vertical", "Vertikal · 9:16", false)}${button("options-refresh", "Hitung estimasi", "refresh", "small subtle")}</div></div></div><div class="panel-head"><h2>Pilih resolusi</h2><span class="help">Estimasi waktu mesin ini</span></div><div id="resolution-options"><div class="skeleton"></div></div><div class="render-options-footer"><p id="render-note" class="help" style="margin-bottom:17px">Pilih ukuran output sebelum mulai.</p>${button("start-render", "Render draft", "play", "primary full")}<div id="render-error" style="margin-top:12px"></div></div></section><div class="stack"><section class="panel"><div class="panel-head"><h2>${icon("render")} Ruang pemutaran</h2><span id="video-state" class="chip">SIAP SAAT ANDA SIAP</span></div><div class="render-cover" id="render-player">${icon("render")}<p>Film Anda akan diputar di sini.</p><span class="mono muted">LIGHTS. CAMERA. CREATE.</span></div><div class="panel-body" id="render-progress"><div class="row between"><strong style="font-size:12px">Belum ada render aktif</strong><span class="mono muted">00:00</span></div><div class="progress"><i></i></div><p class="help">Anda bisa berpindah layar selama render berjalan.</p></div></section><div class="render-advice">${icon("bulb")}<div><strong>Mulai dari draft yang ringan.</strong><p>Workbench memeriksa gerak dan kamera dengan cepat. Pratinjau dan final menggunakan Eevee untuk material dan pencahayaan.</p></div></div><div class="notice" style="font-size:11px">Pilih sendiri resolusi sebelum render. Estimasi akan semakin akurat setelah mesin menyelesaikan render pertama.</div><div id="render-result"></div></div></div>`;
+    `<div class="render-layout"><section class="panel"><div class="panel-head"><h2>${icon("settings")} Pengaturan render</h2><span class="mono muted">OUTPUT</span></div><div class="panel-body"><div id="film-render-scope" class="notice" style="margin-bottom:16px" hidden></div><div class="quality-tabs" role="group" aria-label="Kualitas render"><button data-quality="draft" class="active">Draft</button><button data-quality="preview">Pratinjau</button><button data-quality="final">Final</button></div><div class="form-grid">${field("Nama video", input("video-name", "film-pertama.mp4", "text", 'maxlength="100"'), "span-2")}${field("Frame awal · opsional", input("video-start", "", "number", 'min="1" step="1" placeholder="Awal adegan"'))}${field("Frame akhir · opsional", input("video-end", "", "number", 'min="1" step="1" placeholder="Akhir adegan"'))}<div class="span-2 row between">${check("video-vertical", "Vertikal · 9:16", false)}${button("options-refresh", "Hitung estimasi", "refresh", "small subtle")}</div></div></div><div class="panel-head"><h2>Pilih resolusi</h2><span class="help">Estimasi waktu mesin ini</span></div><div id="resolution-options"><div class="skeleton"></div></div><div class="render-options-footer"><p id="render-note" class="help" style="margin-bottom:17px">Pilih ukuran output sebelum mulai.</p>${button("start-render", "Render draft", "play", "primary full")}<div id="render-error" style="margin-top:12px"></div></div></section><div class="stack"><section class="panel"><div class="panel-head"><h2>${icon("render")} Ruang pemutaran</h2><span id="video-state" class="chip">SIAP SAAT ANDA SIAP</span></div><div class="render-cover" id="render-player">${icon("render")}<p>Film Anda akan diputar di sini.</p><span class="mono muted">LIGHTS. CAMERA. CREATE.</span></div><div class="panel-body" id="render-progress"><div class="row between"><strong style="font-size:12px">Belum ada render aktif</strong><span class="mono muted">00:00</span></div><div class="progress"><i></i></div><p class="help">Anda bisa berpindah layar selama render berjalan.</p></div></section><div class="render-advice">${icon("bulb")}<div><strong>Mulai dari draft yang ringan.</strong><p>Workbench memeriksa gerak dan kamera dengan cepat. Pratinjau dan final menggunakan Eevee untuk material dan pencahayaan.</p></div></div><div class="notice" style="font-size:11px">Pilih sendiri resolusi sebelum render. Estimasi akan semakin akurat setelah mesin menyelesaikan render pertama.</div><div id="render-result"></div></div></div>`;
   const target = $("#render-error", root);
   const range = () => {
+    if (filmName) return {};
     const a = $("#video-start", root).value,
       b = $("#video-end", root).value;
     const args = {};
@@ -46,7 +48,14 @@ export function mount(root) {
   const load = async () => {
     resolution = null;
     $("#start-render", root).disabled = true;
-    const result = await run("render_options", {
+    const info = await scene(true);
+    filmName = info.film?.name || null;
+    const scope = $("#film-render-scope", root);
+    scope.hidden = !filmName;
+    scope.textContent = filmName ? `Seluruh film · ${filmName}` : "";
+    for (const id of ["video-start", "video-end"]) $(`#${id}`, root).disabled = !!filmName;
+    const result = await run(filmName ? "film_render_options" : "render_options", {
+      ...(filmName ? {name:filmName} : {}),
       quality,
       vertical: $("#video-vertical", root).checked,
       ...range(),
@@ -65,7 +74,7 @@ export function mount(root) {
             row.classList.toggle("selected", !!$("input:checked", row)),
           );
           $("#start-render", root).disabled = state.jobs.some(
-            (j) => j.tool === "render_video" && active(j),
+            (j) => ["render_video", "render_film"].includes(j.tool) && active(j),
           );
         }),
     );
@@ -116,7 +125,7 @@ export function mount(root) {
         };
         await scene(true);
         target.innerHTML = "";
-        const r = await run("render_video", parameters);
+        const r = await run(filmName ? "render_film" : "render_video", { ...parameters, ...(filmName ? {name:filmName} : {}) });
         const result = $("#render-result", root);
         if (result) result.innerHTML = json(r.data);
         toast("Video selesai dirender.");
@@ -124,7 +133,7 @@ export function mount(root) {
       target,
     );
   const update = () => {
-    const job = state.jobs.find((j) => j.tool === "render_video");
+    const job = state.jobs.find((j) => ["render_video", "render_film"].includes(j.tool));
     if (!job) return;
     const p = job.progress || job.result?.data || {};
     let done = 0,
@@ -143,7 +152,7 @@ export function mount(root) {
           ? "DALAM ANTREAN"
           : "MERENDER";
     $("#render-progress", root).innerHTML =
-      `<div class="row between"><strong style="font-size:12px">${complete ? "Film siap diputar" : job.status === "queued" ? `Antrean · posisi ${job.queue_position}` : job.status === "failed" ? "Render gagal" : p.stage?.startsWith("compose") ? "Menyusun subtitle & grafis" : "Merender frame"} · ${percent}%</strong><span class="mono muted">${seconds(job.elapsed_s)}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="row between"><span class="help">${p.progress ? esc(p.progress) + " frame · " : ""}${complete ? "Tersimpan di galeri" : p.eta_s ? `Sisa sekitar ${seconds(p.eta_s)}` : "Menyiapkan estimasi…"}</span>${active(job) && p.job_id ? button("cancel-video", "Batalkan", "", "small danger") : ""}</div>${job.error ? errorHTML(job.error) : ""}`;
+      `<div class="row between"><strong style="font-size:12px">${complete ? "Film siap diputar" : job.status === "queued" ? `Antrean · posisi ${job.queue_position}` : job.status === "failed" ? "Render gagal" : p.stage?.startsWith("compose") ? "Menyusun subtitle & grafis" : "Merender frame"} · ${percent}%</strong><span class="mono muted">${seconds(job.elapsed_s)}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="row between"><span class="help">${p.progress ? esc(p.progress) + (p.kind === "film" ? " tahap · " : " frame · ") : ""}${complete ? "Tersimpan di galeri" : p.eta_s ? `Sisa sekitar ${seconds(p.eta_s)}` : "Menyiapkan estimasi…"}</span>${active(job) && p.job_id ? button("cancel-video", "Batalkan", "", "small danger") : ""}</div>${p.scenes ? buildProgress(p) : ""}${job.error ? errorHTML(job.error) : ""}`;
     if ($("#cancel-video", root))
       $("#cancel-video", root).onclick = () =>
         action(
