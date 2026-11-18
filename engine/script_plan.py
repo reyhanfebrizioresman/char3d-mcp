@@ -174,7 +174,7 @@ def _direction(text, warnings):
     return beat
 
 
-def parse_script(script, name=None, environment=None, seed=0, fps=24):
+def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None):
     """Normalize dict or bilingual text. Estimated frames never read files or mutate a scene."""
     warnings = []
     if isinstance(script, str):
@@ -184,10 +184,11 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
             line = line.strip()
             if not line:
                 continue
-            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER)\s*:\s*(.*)$", line, re.I)
+            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD)\s*:\s*(.*)$", line, re.I)
             if header:
                 key = ("title" if header[1].upper() in ("JUDUL", "TITLE") else
-                       "weather" if header[1].upper() in ("CUACA", "WEATHER") else "environment")
+                       "weather" if header[1].upper() in ("CUACA", "WEATHER") else
+                       "look" if header[1].upper() in ("SUASANA", "LOOK", "MOOD") else "environment")
                 raw[key] = header[2]
             elif line.startswith("[") and line.endswith("]"):
                 beat = _direction(line[1:-1].strip(), warnings)
@@ -360,6 +361,9 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
         if weather not in ("clear", "rain", "snow", "fog", "wind"):
             raise ValueError("weather must be clear/rain/snow/fog/wind or Indonesian aliases")
         extra["weather"] = weather
+    from .cinematic import look_spec
+    extra['look'] = look_spec(look if look is not None else raw.get('look'))
+    extra['recommended_look'] = 'golden_hour' if location in ('park', 'beach', 'cafe_terrace', 'city_street') else 'studio_film'
     return {"name": name or raw.get("title") or "ScriptScene", "title": raw.get("title"),
             "environment": location, **extra,
             "characters": characters, "beats": beats, "estimated_frames": [1, max(2, frame - 1)],

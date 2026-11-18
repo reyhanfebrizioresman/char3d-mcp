@@ -7,7 +7,6 @@ import glob
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -15,8 +14,10 @@ import time
 import bpy
 
 from .. import context
+from ..render_metrics import frame_times as _frame_times, progress_cursor
 from . import command
 from .render_style import applied_style, cost_factor, get_config as style_config
+from .cinematic import applied_look, cost_factor as look_cost_factor, get_config as look_config
 
 QUALITY = {
     # engine, resolution %, samples
@@ -146,21 +147,6 @@ def _calibration_report():
     return out
 
 
-def _frame_times(log_text):
-    """Per-frame render times (s) from a Blender log ("Time: 00:12.34" / "01:02:03.45")."""
-    out = []
-    for m in re.finditer(r"\bTime: ([\d:.]+)", log_text):
-        parts = m.group(1).split(":")
-        try:
-            sec = 0.0
-            for p in parts:
-                sec = sec * 60 + float(p)
-            out.append(sec)
-        except ValueError:
-            continue
-    return out
-
-
 def _learn_from_job(job, text):
     """After a finished render: learn this machine's speed from the median frame time."""
     times = _frame_times(text)
@@ -193,7 +179,7 @@ def _fmt_duration(sec):
 
 
 def _estimate(sc, quality, w, h, frames):
-    spf = _seconds_per_frame(quality, w, h, _scene_weight(sc)) * cost_factor(sc, QUALITY[quality][0])
+    spf = _seconds_per_frame(quality, w, h, _scene_weight(sc)) * cost_factor(sc, QUALITY[quality][0]) * look_cost_factor(sc, QUALITY[quality][0])
     total = spf * frames
     return {"seconds_per_frame": round(spf, 1), "total_s": round(total),
             "total": _fmt_duration(total)}
@@ -230,7 +216,7 @@ def _test_frame(sc, quality, frame):
             sc.eevee.taa_render_samples = 1
         elif engine == "CYCLES":
             sc.cycles.samples = 1
-        with applied_style(sc):
+        with applied_look(sc), applied_style(sc):
             bpy.ops.render.render()
         r.resolution_percentage = 100
         if engine == "BLENDER_EEVEE":
@@ -238,7 +224,7 @@ def _test_frame(sc, quality, frame):
         elif engine == "CYCLES":
             sc.cycles.samples = samples
         t0 = time.perf_counter()
-        with applied_style(sc):
+        with applied_look(sc), applied_style(sc):
             bpy.ops.render.render()
         measured = (time.perf_counter() - t0) * TEST_FRAME_BIAS
     finally:
@@ -248,7 +234,7 @@ def _test_frame(sc, quality, frame):
         if cyc:
             sc.cycles.samples, sc.cycles.device, sc.cycles.use_denoising = cyc
         sc.frame_set(saved["frame"])
-    predicted = _model_spf(engine, samples, w, h, _scene_weight(sc)) * cost_factor(sc, engine)
+    predicted = _model_spf(engine, samples, w, h, _scene_weight(sc)) * cost_factor(sc, engine) * look_cost_factor(sc, engine)
     learned = _learn(engine, measured, predicted, "test_frame",
                      {"quality": quality, "size": [w, h], "samples": samples})
     return {"engine": ENGINE_KEY[engine], "size": f"{w}x{h}", "samples": samples,
@@ -383,15 +369,14 @@ def _progress(job):
             text = f.read()
     except OSError:
         return None, ""
-    frames = [int(x) for x in re.findall(r"Fra:\s*(\d+)", text)]
-    return (max(frames) if frames else None), text
+    return progress_cursor(text), text
 
 
 def _report(job):
     _finalize(job)
     last, text = _progress(job)
     total = job["frames"][1] - job["frames"][0] + 1
-    done = 0 if last is None else max(0, last - job["frames"][0] + (1 if job["status"] == "done" else 0))
+    done = 0 if last is None else min(total, max(0, last - job["frames"][0]))
     if job["status"] == "done" or job.get("stage") == "compose":
         done = total
     elapsed = (job.get("finished") or time.time()) - job["started"]
@@ -507,7 +492,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
             handles.append({"path": t["movie"], "camera": t["camera"],
                             "frames": [t["start"] + start - 1, t["end"] + start - 1]})
     render_cmd = [bpy.app.binary_path, "-b", blend]
-    if handles or (style_config(sc) and quality != 'draft'):
+    if handles or ((style_config(sc) or look_config(sc)) and quality != 'draft'):
         os.makedirs(subs_dir, exist_ok=True)
         spec_path = os.path.join(subs_dir, "handles.json")
         with open(spec_path, "w") as f:
@@ -531,7 +516,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
                         "handle_frames": sum(h["frames"][1] - h["frames"][0] + 1 for h in handles)}}
     job["estimate"] = _estimate(sc, quality, out_w, out_h, end - start + 1 + job["graphics"]["handle_frames"])
     job["model_spf"] = _model_spf(QUALITY[quality][0], QUALITY[quality][2], out_w, out_h,
-                                  _scene_weight(sc)) * cost_factor(sc, QUALITY[quality][0])
+                                  _scene_weight(sc)) * cost_factor(sc, QUALITY[quality][0]) * look_cost_factor(sc, QUALITY[quality][0])
     JOBS[job_id] = job
     if wait:
         while job["status"] == "running":
@@ -571,6 +556,7 @@ def render_options(quality="final", frame_start=None, frame_end=None, vertical=F
     calib = _calibration_report()
     out = {"quality": quality, "frames": [start, end], "duration_s": round(frames / fps, 2),
            "render_style": style_config(sc), "style_cost_factor": cost_factor(sc, engine),
+           "cinematic_look": look_config(sc), "look_cost_factor": look_cost_factor(sc, engine),
            "handle_frames": handles,
            "scene_weight": "heavy" if _scene_weight(sc) >= 1 else "light",
            "options": options, "machine_speed": calib[ENGINE_KEY[engine]]}

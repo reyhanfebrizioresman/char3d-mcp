@@ -75,7 +75,8 @@ def main():
             raise AssertionError("UI server did not start")
         names = {tool["name"] for tool in catalog}
         assert "script_to_scene" in names and "run_blender_python" not in names
-        assert {"list_voices", "text_to_speech"} <= names
+        assert {"list_voices", "text_to_speech", "cinematic_look"} <= names
+        assert "look" in http("/api/tools/script_to_scene")["inputSchema"]["properties"]
         assert http("/api/tools/create_human")["inputSchema"]["properties"]["style"]["enum"]
         print("PASS tool catalog + JSON schema; Python hidden even when enabled", flush=True)
         reject("/api/run", 403, data={"tool": "new_scene"}, headers={"Origin": "https://evil.example"})
@@ -107,6 +108,13 @@ def main():
             print("PASS list_voices + Piper text_to_speech → cached WAV/playable gallery; online TTS consent", flush=True)
         else:
             print("PASS list_voices + online TTS consent; Piper synthesis SKIP: scripts/install_tts.sh piper", flush=True)
+        plan = tool("script_to_scene", {"script": "SUASANA: senja\nANA: Halo!", "build": False, "voice": False})["data"]
+        assert plan["plan"]["look"]["preset"] == "sunset"
+        cfg = tool("cinematic_look", {"preset": "pagi berkabut"})["data"]
+        assert cfg["preset"] == "misty_morning"
+        assert tool("scene_info")["data"]["cinematic_look"]["preset"] == "misty_morning"
+        tool("cinematic_look", {"clear": True})
+        print("PASS Suasana schema + script header + apply/clear through UI adapter", flush=True)
         tool("scene_info")
         tool("new_scene", {"frame_end": 24})
         human = tool("create_human", {"name": "WebUISmoke", "style": "stylized"})["data"]

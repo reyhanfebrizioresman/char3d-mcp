@@ -1,3 +1,4 @@
+import { lookPicker, mountLookPicker } from "./looks.js";
 import { screenRoot } from "./ui.js";
 import { run, state, scene, request } from "./api.js";
 import {
@@ -54,11 +55,33 @@ export function mount(root) {
         ],
         "512",
       ),
-    )}<button class="button primary" type="submit">${icon("eye")} Pratinjau</button></form><div id="scene-filmstrip">${state.previews.length ? filmstrip(state.previews) : ""}</div><div id="scene-error"></div></section><section class="panel"><div class="panel-head"><h2>${icon("render")} Linimasa shot</h2><span class="mono muted">list_shots</span></div><div id="shot-list"><div class="skeleton"></div></div></section></div></div>`;
+    )}<button class="button primary" type="submit">${icon("eye")} Pratinjau</button></form><div id="scene-filmstrip">${state.previews.length ? filmstrip(state.previews) : ""}</div><div id="scene-error"></div></section><section class="panel" aria-label="Suasana adegan"><div class="panel-head"><h2>${icon("light")} Suasana</h2><span class="chip">SINEMATIK</span></div><div class="scene-look-body">${lookPicker("scene-look", false, state.scene?.cinematic_look?.preset || "none")}<div class="row look-actions"><span class="help">Periksa warna, cahaya, dan fokus.</span>${button("apply-look", "Terapkan & pratinjau", "eye", "primary small")}</div></div></section><section class="panel"><div class="panel-head"><h2>${icon("render")} Linimasa shot</h2><span class="mono muted">list_shots</span></div><div id="shot-list"><div class="skeleton"></div></div></section></div></div>`;
   const target = $("#scene-error", root);
+  let lookRevision = 0;
+  const looks = mountLookPicker(root, "scene-look", () => lookRevision++);
+  $("#apply-look", root).onclick = () => action($("#apply-look", root), async () => {
+    const info = await scene(true);
+    await run("cinematic_look", { preset: looks.dataset.value });
+    const frame = Number($("#preview-frames", root).value.split(",")[0]) || 1;
+    const rigs = info.objects.filter((object) => object.type === "ARMATURE").map((object) => object.name);
+    const result = await run("render_frames", { frames: [frame], camera: info.active_camera ? "scene" : "auto",
+      ...(info.active_camera || !rigs.length ? {} : { objects: rigs }), size: 512, engine_name: "eevee" });
+    state.previews = result.images;
+    refreshPreviews(root);
+    $("#preview-engine", root).value = "eevee";
+    await scene(true);
+    toast("Suasana diterapkan.");
+  }, target);
   const refresh = async () => {
+    const revision = lookRevision;
     const info = await scene(true);
     showObjects(root, info);
+    const currentLook = info.cinematic_look?.preset || "none";
+    if (revision === lookRevision) {
+      looks.dataset.value = currentLook;
+      const radio = looks.querySelector(`input[value="${currentLook}"]`);
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event("change", { bubbles: true })); }
+    }
     const shots = await run("list_shots");
     state.shots = shots.data;
     showShots(root, shots.data);

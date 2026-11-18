@@ -20,6 +20,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
 | `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; Rigify hanya tulang deform; `max_influences=4` membatasi bobot untuk game tanpa mengubah adegan (hasil: `vertices_limited`) |
 | `save_project`, `open_project` | File .blend |
+| `cinematic_look` | Suasana sinematik prosedural: langit/matahari, haze, berkas cahaya, bloom, grade dan fokus otomatis pada kepala; bisa dibersihkan dengan `clear=True` |
 | `render_style` | Preset anime/toon, clay, film, noir, vintage; non-destruktif, tersimpan di .blend; `none` mengembalikan tampilan asli |
 | `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI; `engine_name="eevee"` untuk tekstur |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
@@ -67,6 +68,29 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).
+
+## Suasana sinematik
+
+Tambahkan `SUASANA: senja` (atau `LOOK:` / `MOOD:`) pada naskah, atau panggil
+`script_to_scene(naskah, look="golden_hour")`. Tanpa pilihan suasana, hasil dan biaya
+render tetap seperti sebelumnya; rencana hanya memberi saran. Picker **Suasana** di
+Naskah memilih tampilan saat membangun, sedangkan di Adegan tombol **Terapkan &
+pratinjau** langsung membuat pratinjau Eevee.
+
+`cinematic_look("golden_hour")` bekerja pada adegan yang sudah ada. Pilihan lain:
+`sunset`, `misty_morning`, `blue_hour`, `night`, `overcast_soft`, `dreamy`, `epic`,
+`studio_film`, `none`; alias Indonesia termasuk `senja`, `pagi berkabut`, `malam`,
+`mimpi`, dan `epik`. Terapkan setelah set, cahaya, kamera dan cuaca. `intensity=0..1`
+mengatur kekuatan, `sun={"elevation":8,"azimuth":220}` mengatur posisi matahari,
+`particles="petals"` menambahkan partikel, dan `dof="off"` mematikan DOF otomatis.
+
+Langit, haze dan cahaya dibuat lokal tanpa unduhan. Kamera karakter lama maupun
+baru mengikuti kepala dengan DOF sesuai ukuran shot. Efek hanya diterapkan saat
+render berwarna; workbench tetap cepat. `clear=True` mengembalikan data asli karena
+world, lampu, kamera dan compositor pengguna tidak pernah diubah permanen. Konfigurasi
+tersimpan dalam `.blend` dan ikut snapshot video. Grade `render_style` mengambil
+prioritas atas grade suasana; bloom/vignette digabung satu kali. Fog cuaca menggantikan
+haze agar tidak menumpuk. Lihat [panduan dan biaya CPU](AGENTS.md#cinematic-look).
 
 ## Suara dialog otomatis
 

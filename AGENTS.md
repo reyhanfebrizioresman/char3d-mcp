@@ -33,7 +33,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Scene: `engine_status`, `scene_info`, `new_scene`, `add_primitive`,
   `transform_object`, `delete_objects`
 - Files: `import_model`, `export_asset`, `save_project`, `open_project`
-- Look: `render_style`, `render_preview`, `render_views` (`engine_name="eevee"` for textures)
+- Look: `cinematic_look`, `render_style`, `render_preview`, `render_views` (`engine_name="eevee"` for textures)
 - Realistic humans (MPFB): `mpfb_assets` (categories + installed packs),
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
@@ -48,7 +48,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
   `retarget_animation`, `lock_feet`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
-  `list_lighting_presets`, `set_lighting`, `set_material`, `add_subtitles`,
+  `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
@@ -439,11 +439,18 @@ listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
 ## Script → scene
 `script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
 subtitles=True, language="auto", seed=0, build=True, sound=True, voice=True,
-tts_engine="piper", voices=None)` composes the existing tools into
+tts_engine="piper", voices=None, look=None)` composes the existing tools into
 a complete scene for 1–4 characters. `build=False` returns a deterministic normalized
 `plan` (characters, beats with `estimated_frames`, warnings) without changing the scene,
 reading audio or transcribing it. Frame estimates use the current scene fps; walking
 and audio estimates are approximate. `seed` selects default outfits and procedural motion.
+
+`look="golden_hour"` or a `SUASANA:` / `LOOK:` / `MOOD:` header applies atmosphere
+**after** lighting, cameras and weather. `look` accepts a preset string or the
+`cinematic_look` options dict. Explicit arguments override headers; `"none"` opts out.
+`build=False` reports the resolved `plan.look` without any effects. No look/header
+keeps the existing rendering behavior and cost; `plan.recommended_look` only suggests
+`golden_hour` outdoors or `studio_film` indoors.
 
 The text format accepts Indonesian and English:
 ```text
@@ -876,6 +883,11 @@ Use character subjects for character exposure; adding large static props changes
 union center/scale and can put lights behind scenery that casts shadows on the cast.
 `set_material(objects, color, roughness, metallic, emission_strength)` for quick looks.
 
+When a cinematic look is active, existing and future character shots get live head/eye
+focus at render time (including dialog/script coverage). `depth_of_field=None` follows
+the look; explicit `False` opts a shot out and explicit `True` keeps its own `f_stop`.
+Without a look, None has the same behavior as the former False default.
+
 **Shots** — `camera_shot(subject, shot, move, start_frame, end_frame, angle, elevation,
 intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
 - shot sizes: extreme_wide, wide, full, medium_full, medium, medium_close, close_up,
@@ -995,6 +1007,125 @@ MPFB character (~10× preview, ≈ 4.5 h for a 15 s clip). Always do a draft fir
 - Vertical video: `vertical=True` (e.g. 1080p → 1080×1920). Output is H.264 MP4, 24 fps
   unless `set_timeline(fps=...)`.
 
+## Cinematic look
+
+`cinematic_look(preset="golden_hour", intensity=1, haze=None, god_rays=None,
+bloom=None, dof="auto", particles=None, grade=None, sun=None, clear=False)` stores
+`scene["char3d_cinematic_look"]` JSON. It never permanently edits world, lights,
+materials, camera DOF, compositor or render settings. Lit previews/views/frames and
+preview/final/Cycles movies copy the required datablocks and apply effects only
+inside a `finally`-protected render context. Clear/`none` removes the JSON; strength
+zero and workbench bypass the entire look. Save/open and separate-process video
+snapshots retain the JSON and rebuild procedural effects without downloads.
+These are char3d render settings; opening the blend in an unrelated Blender session
+does not automatically install the rendering context.
+
+| preset | direction |
+|---|---|
+| golden_hour | low warm sun, long shadows, warm aerial haze, teal-orange separation |
+| sunset | very low orange sun, pink sky, warm rim and gentle glow |
+| misty_morning | cool pastel light, denser haze concentrated near the ground |
+| blue_hour | blue twilight, warm practicals and soft bloom |
+| night | cool moon key, dim blue airglow, warm practicals and light fog |
+| overcast_soft | diffuse daylight, restrained saturation and subtle haze |
+| dreamy | pastel, lifted blacks, stronger bloom and sparse floating dust |
+| epic | directional sunlight, stronger shafts, contrast and vignette |
+| studio_film | subtle indoor haze, practical glow, film grade and mild grain |
+| none | original scene appearance |
+
+Aliases include `jam emas` / `sore keemasan`, `senja` / `matahari terbenam`,
+`pagi berkabut`, `jam biru`, `malam`, `mendung lembut`, `mimpi`, `epik`, `film studio`.
+The UI supplies representative color swatches, not prerendered thumbnails.
+
+Order: body/dialog performance → set/environment → `set_lighting` → cameras →
+`set_weather` → `cinematic_look` → inspect Eevee → save/render. Later lighting,
+weather, set and camera edits remain valid because overrides are rebuilt per render.
+Indoor sets retain their world and never acquire an outdoor sun. Office window
+lights can project through existing mullions; stage spots produce their own beams.
+Other indoor rooms use subtle key/practical volume contribution. Outdoors uses the
+Sky Texture's physical scattering model, matched to the directional sun. At night
+the solar sky is below the horizon; a separate blue hemisphere supplies airglow
+and the directional key represents moonlight above the horizon.
+
+- `intensity` is 0..1. `haze` is scattering density in inverse meters, 0..0.1;
+  `False` disables it and `True` retains the preset density. `god_rays` and `bloom`
+  accept 0..1 or booleans. `sun={"elevation":8,"azimuth":220}` overrides degrees
+  (azimuth 0 = -Y, 90 = +X). Existing face key/fill are balanced against the sun.
+- Haze uses a bounded scattering volume, with reduced density within about 1.2 m
+  of the live head (including walking/seated poses); stage uses a smaller 0.45 m
+  clear zone so practical beams remain visible around the performers. Eevee uses
+  8 px tiles, 32 depth steps and a 25 m indoor /
+  65 m outdoor range; epic enables volume self shadows with 8 shadow samples.
+  Shadow-casting sun/spots/window lights create actual volume shafts, not image
+  overlays. Volume shadow quality and visibility depend on existing occluders.
+- Weather rain/snow/wind retain their saved motion, wet-ground state and sky
+  dimming. Weather `fog` owns the scattering volume and replaces look haze to avoid
+  double fog. Clearing the look never clears weather or changes its saved settings.
+- `dof="auto"` tracks the live anatomical eye plane through a head-bone constraint
+  on singles. Two-shots sample the current speaker and use a short smooth rack;
+  cuts choose the incoming speaker's focus. F-stops range from 2.8 for close-ups
+  through 4 for medium to 11/16 for wides. Explicit shot `depth_of_field=True`
+  retains its f-stop; explicit False opts out. `dof="off"` disables only automatic
+  focus. Existing/user-authored camera DOF is preserved. No look leaves the old
+  shot behavior unchanged.
+- `particles="dust"|"pollen"|"petals"|"embers"` or
+  `{"kind":"petals","count":100,"seed":17}` adds cheap geometry-node instances
+  in camera coverage. Count is 0..500. Positions and Scene Time motion are seeded
+  and work in background renders without handlers or simulation caches. Only
+  dreamy enables particles by default; other looks have none.
+- `grade` reuses render-style exposure, contrast, saturation, temperature, tint
+  and teal-orange primitives. It also accepts `lifted_blacks` (0..0.2), `vignette`
+  (0..1), `grain` (0..0.03), `chromatic_aberration` (0..0.02). Bloom uses compositor
+  Glare/Fog Glow (Eevee Next has no built-in bloom). Mild lens dispersion is opt-in.
+  Film grain appears by default only in studio_film (or an active render style).
+- Stacking is one compositor pass: look grade supplies the base; active
+  `render_style.grade` keys take precedence, including that style's defaults. Noir also suppresses inherited color casts
+  unless its own grade explicitly requests them.
+  Exposure/contrast/saturation are not multiplied twice. Bloom, vignette, lifted
+  blacks and grain use the larger requested amount, once. Style material/outline
+  overrides and letterboxing still work. User compositor graphs are copied and
+  extended upstream; originals stay intact;
+  titles/subtitles remain downstream, with their original colors.
+
+`render_options` returns `cinematic_look` and `look_cost_factor`. The product of
+style/look cost factors affects estimates and the calibration denominator, so
+learning a styled movie cannot count either effect twice. Draft uses 1.0.
+Blender 5.2 timestamped `Video append frame` logs and legacy `Fra`/`Time` logs
+both supply progress and per-frame speed learning; the first cold frame is excluded.
+
+Measured CPU Eevee, 960×540, 16 samples, two clothed MPFB humans, same close-up camera.
+
+| look | studio s/frame | vs none | park s/frame | vs none | estimate factor |
+|---|---:|---:|---:|---:|---:|
+| none | 35.9 | 1.00× | 38.9 | 1.00× | 1.00× |
+| golden_hour | 40.7 | 1.13× | 46.9 | 1.21× | 1.35× |
+| sunset | 46.0 | 1.28× | 43.2 | 1.11× | 1.35× |
+| misty_morning | 42.0 | 1.17× | 48.9 | 1.26× | 1.40× |
+| blue_hour | 51.4 | 1.43× | 36.5 | 0.94× | 1.50× |
+| night | 45.6 | 1.27× | 60.5 | 1.55× | 1.65× |
+| overcast_soft | 40.1 | 1.12× | 47.5 | 1.22× | 1.30× |
+| dreamy | 40.9 | 1.14× | 47.7 | 1.23× | 1.45× |
+| epic | 41.3 | 1.15× | 48.5 | 1.25× | 1.50× |
+| studio_film | 36.5 | 1.02× | 33.5 | 0.86× | 1.30× |
+
+Factors retain conservative preset floors and a margin over the larger measured ratio.
+They do not assume that a look will be faster when one measured scene happened to be cheaper.
+Cold starts were 59–99 seconds in these batches and are listed separately in the raw samples.
+Full-resolution samples include allocation/PNG cost and vary with shared CPU load.
+Raw timings: `output/cinematic_benchmark.json`; all-preset sheet: `output/cinematic_sheets/all_presets.png`.
+
+Reproduce the saved two-person MPFB scenes, contact sheets, measurements and clips:
+`CHAR3D_PORT=9988 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python
+ tests/cinematic_visuals.py --sets --bench --movies`. Tests use installed CC0 assets
+and 8 render threads, with no downloads. Each timing includes temporary setup,
+restoration and PNG output. A 320 px warm-up precedes two timed 960×540 frames;
+the warm-up is excluded, but any size-specific allocation is included. Shared CPU load,
+set complexity, resolution and camera placement affect relative cost. This is
+atmosphere/art direction for existing sets, not richer foliage, clouds or water.
+Wide shots retain deep focus; exaggerated close-ups, unsuitable hair, very dense
+user fog or custom camera rigs can still need manual art direction. The look does
+not export to glTF; export scene geometry separately if needed.
+
 ## Render styles
 `render_style(style="none", strength=1.0, outline=None, grade=None, letterbox=None)`
 stores JSON in `scene["char3d_render_style"]`; it survives save/open and background
@@ -1028,8 +1159,8 @@ cycles videos apply temporary overrides, restored in `finally` even on render fa
 `grade` overrides exposure (-8..8 stops), contrast/saturation (0..3, neutral 1),
 temperature/tint (-1..1, neutral 0). `strength` is 0..1. Styles replace the previous
 config; omitted options use the new preset's defaults. Grade affects the picture,
-while subtitles/titles retain their original colors and layout. User compositor groups
-are preserved upstream; style configuration does not export to glTF.
+while subtitles/titles retain their original colors and layout. User compositor graphs
+are copied and extended without editing the originals; style configuration does not export to glTF.
 
 `render_options` reports `render_style` and `style_cost_factor`; the same factor
 is included in estimates and removed from machine-speed learning to avoid counting
@@ -1097,6 +1228,15 @@ another look adds 0.20 to its factor. Draft always uses 1.00×.
 → `animate(rig, "jump", start_frame=a.next_start_frame)` → `render_frames` check
 → `save_project`.
 
+**Cinematic dialog with automatic focus**
+`script_to_scene("LOKASI: park\nSUASANA: jam emas\nANA (perempuan, 28): Indah sekali!\nBUDI (pria, 30): Mari bersama.")`
+→ `render_frames([12, 32, 55], camera="scene", engine_name="eevee", size=512)`
+→ inspect faces and a wide → `save_project("golden_dialog.blend")`
+→ `render_options("preview")` → choose resolution → `render_video(..., resolution="540p")`.
+For an existing conversation: finish lighting/cameras/weather, then call
+`cinematic_look("studio_film")` indoors or `cinematic_look("golden_hour")` outdoors.
+`cinematic_look(clear=True)` returns to the source scene without undoing its animation.
+
 **Short cinematic clip (Higgsfield-style)**
 `create_human` → `auto_rig_humanoid(rig_type="rigify")` → `set_material`
 → `w = animate(rig, "walk", cycles=3)` → `animate(rig, "wave", start_frame=w.next_start_frame)`
@@ -1104,7 +1244,8 @@ another look adds 0.20 to its factor. Draft always uses 1.00×.
 → `camera_shot(subject=[mesh], shot="wide", move="drone_reveal", start_frame=1, end_frame=40)`
 → `camera_shot(..., shot="full", move="tracking_side", start_frame=41, end_frame=96)`
 → `camera_shot(..., shot="medium", move="crash_zoom", start_frame=97, end_frame=134)`
-→ `render_frames(camera="scene")` check → `render_video(quality="draft", wait=True)`
+→ `cinematic_look("golden_hour")` (after optional `set_weather`)
+→ `render_frames(camera="scene", engine_name="eevee")` check → `render_video(quality="draft", wait=True)`
 → `render_options("final")` → user picks a resolution
 → `render_video("final.mp4", quality="final", resolution="1080p")` → poll `render_status`.
 

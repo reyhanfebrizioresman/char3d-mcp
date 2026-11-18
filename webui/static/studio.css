@@ -1629,3 +1629,24 @@ dialog.media-modal {
     padding: 0 18px 18px;
   }
 }
+
+/* Procedural mood swatches, shared by screenplay and scene controls. */
+.look-picker { min-width: 0; }
+.settings-body .look-field { grid-column: 1 / -1; }
+.settings-body .look-field .look-grid { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+.look-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.look-choice { position: relative; cursor: pointer; padding: 5px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--input); min-width: 0; }
+.look-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+.look-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.look-choice input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.look-swatch { display: block; height: 36px; border-radius: 4px; overflow: hidden; position: relative; background: linear-gradient(155deg, var(--look-colors)); }
+.look-swatch::before { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, #ffefc12b 46%, transparent 56%); }
+.look-swatch i { position: absolute; left: 19%; bottom: -13px; width: 27px; height: 33px; border-radius: 40% 40% 0 0; background: #132029aa; }
+.look-swatch i::before { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #132029aa; left: 7px; top: -13px; }
+.look-name { display: block; font-size: 11px; font-weight: 600; padding: 4px 2px 0; line-height: 1.5; }
+.look-description { margin-top: 10px; min-height: 18px; }
+.scene-look-body { padding: 18px; }
+.scene-look-body .look-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.scene-look-body .look-swatch { height: 48px; }
+.scene-look-body .look-actions { margin-top: 14px; justify-content: space-between; }
+@media (max-width: 600px) { .scene-look-body .look-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .look-name { font-size: 12px; } }
