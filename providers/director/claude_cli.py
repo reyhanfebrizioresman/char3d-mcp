@@ -46,8 +46,12 @@ class Backend:
         binary = discover()
         if not binary:
             raise DirectorError('Claude Code tidak ditemukan. Atur CHAR3D_CLAUDE_BIN; draf offline digunakan.')
-        argv = [binary, '-p', '--output-format', 'json', '--json-schema', json.dumps(SCHEMA),
-                '--model', model(), '--effort', effort(), '--system-prompt', SYSTEM,
+        output_schema, system_prompt = SCHEMA, SYSTEM
+        if opts.get('task') == 'world':
+            from .world import contract
+            output_schema, system_prompt = contract()
+        argv = [binary, '-p', '--output-format', 'json', '--json-schema', json.dumps(output_schema),
+                '--model', model(), '--effort', effort(), '--system-prompt', system_prompt,
                 '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                 '--no-session-persistence', '--permission-mode', 'dontAsk',
                 '--safe-mode', '--setting-sources', '', '--disable-slash-commands',

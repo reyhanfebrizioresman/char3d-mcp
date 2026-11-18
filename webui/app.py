@@ -71,7 +71,7 @@ def create_app(port=8765):
             if not isinstance(arguments, dict):
                 raise ValueError("arguments harus berupa objek JSON")
             if (name in AI_GENERATORS or online_request(name, arguments) or
-                    name == "direct_scene" and director_online(arguments)) and body.get("confirm_external") is not True:
+                    name in {"direct_scene", "direct_world"} and director_online(arguments)) and body.get("confirm_external") is not True:
                 raise HTTPException(403, "Konfirmasi diperlukan: prompt/gambar/audio dikirim ke layanan AI pihak ketiga")
             workspace.validate_arguments(name, arguments)
             job = jobs.submit(name, arguments)

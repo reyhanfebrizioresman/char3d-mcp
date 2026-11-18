@@ -10,7 +10,7 @@ from .security import redact
 TERMINAL = {"completed", "failed", "cancelled"}
 AI_GENERATORS = {"ai_text_to_3d", "ai_image_to_3d", "ai_image_to_video",
                  "ai_text_to_video", "ai_text_to_speech"}
-INDEPENDENT = {"direct_scene", "director_status"}
+INDEPENDENT = {"direct_scene", "direct_world", "director_status", "world_schema"}
 
 
 @dataclass
@@ -40,7 +40,7 @@ class JobQueue:
     def submit(self, tool, arguments):
         if self.queue.qsize() >= 50:
             raise ValueError("Antrean penuh. Tunggu pekerjaan selesai.")
-        if tool in INDEPENDENT and sum(j.tool == "direct_scene" and j.status not in TERMINAL for j in self.jobs.values()) >= 2:
+        if tool in {"direct_scene", "direct_world"} and sum(j.tool in {"direct_scene", "direct_world"} and j.status not in TERMINAL for j in self.jobs.values()) >= 2:
             raise ValueError("Dua draf sutradara masih berjalan. Tunggu salah satunya selesai.")
         job = Job(tool=tool, arguments=arguments)
         self.jobs[job.id] = job

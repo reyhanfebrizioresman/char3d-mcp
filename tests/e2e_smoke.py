@@ -3739,6 +3739,11 @@ async def _motion_checks(call):
     await scene_checks(call, text_of)
 
 
+async def _world_checks(call):
+    from world_checks import _world_checks as run
+    await run(call, text_of)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -3750,7 +3755,7 @@ async def main():
         assert "auto_expression" in tools
 
         async def call(tool, **args):
-            if any(flag in sys.argv for flag in ("--cinematic-only", "--render-style-only", "--outdoor-only")):
+            if any(flag in sys.argv for flag in ("--cinematic-only", "--render-style-only", "--outdoor-only", "--world-only", "--script-only")):
                 print("CHECK", tool, flush=True)
             res = await s.call_tool(tool, args)
             if res.isError:
@@ -3760,7 +3765,9 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
-        for flag, section in (("--cinematic-only", _cinematic_checks),
+        for flag, section in (("--world-only", _world_checks),
+                              ("--script-only", _script_scene_checks),
+                              ("--cinematic-only", _cinematic_checks),
                               ("--render-style-only", _render_style_checks),
                               ("--outdoor-only", _outdoor_checks)):
             if flag in sys.argv:

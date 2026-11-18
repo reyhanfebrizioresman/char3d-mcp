@@ -1,0 +1,341 @@
+{
+  "version": 1,
+  "name": "Floating Islands",
+  "seed": 17,
+  "duration_s": 4,
+  "elements": [
+    {
+      "id": "distant_ridges",
+      "generator": "mountains_backdrop",
+      "params": {
+        "area": [
+          170,
+          60
+        ],
+        "layers": 3,
+        "height": 12
+      },
+      "transform": {
+        "location": [
+          0,
+          70,
+          -9
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "id": "near_island",
+      "generator": "floating_island",
+      "params": {
+        "radius": 5,
+        "depth": 8
+      },
+      "transform": {
+        "location": [
+          -8,
+          13,
+          8
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "id": "far_island",
+      "generator": "floating_island",
+      "params": {
+        "radius": 6,
+        "depth": 10
+      },
+      "transform": {
+        "location": [
+          10,
+          27,
+          13
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "id": "tiny_island",
+      "generator": "floating_island",
+      "params": {
+        "radius": 2.8,
+        "depth": 5
+      },
+      "transform": {
+        "location": [
+          -5,
+          36,
+          18
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "id": "stage_island",
+      "generator": "floating_island",
+      "params": {
+        "radius": 5,
+        "depth": 9,
+        "vegetation": false,
+        "waterfall": false
+      },
+      "transform": {
+        "location": [
+          0,
+          0,
+          -0.1
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "id": "cloud_sea",
+      "generator": "clouds",
+      "params": {
+        "cover": 0.65,
+        "height": 8,
+        "style": "wisps"
+      },
+      "transform": {
+        "location": [
+          0,
+          -5,
+          -5
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "id": "bird",
+      "generator": "bird_like",
+      "params": {
+        "wingspan": 5,
+        "glowing": false
+      },
+      "transform": {
+        "location": [
+          0,
+          16,
+          15
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          -70
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "animation": [
+        {
+          "kind": "drift",
+          "amplitude": 0.3
+        }
+      ]
+    },
+    {
+      "id": "low_cloud_bed",
+      "generator": "clouds",
+      "params": {
+        "cover": 0.9,
+        "height": 5,
+        "style": "cumulus"
+      },
+      "transform": {
+        "location": [
+          0,
+          -60,
+          -18
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "stage": {
+    "location": [
+      0,
+      0,
+      0
+    ],
+    "area": [
+      7,
+      6
+    ],
+    "surface": "wood",
+    "color": [
+      0.22,
+      0.12,
+      0.06
+    ],
+    "standing": [
+      [
+        -0.85,
+        0,
+        0
+      ],
+      [
+        0.85,
+        0,
+        0
+      ]
+    ],
+    "floor": true
+  },
+  "camera_hints": {
+    "hero": {
+      "location": [
+        24,
+        -34,
+        17
+      ],
+      "target": [
+        0,
+        13,
+        6
+      ],
+      "lens": 34
+    }
+  },
+  "lights": [
+    {
+      "kind": "area",
+      "location": [
+        0,
+        -4,
+        5
+      ],
+      "target": [
+        0,
+        0,
+        1
+      ],
+      "energy": 400,
+      "color": [
+        1,
+        0.7826380691654992,
+        0.5645352621694943
+      ],
+      "size": 5
+    },
+    {
+      "kind": "area",
+      "location": [
+        3,
+        4,
+        23
+      ],
+      "target": [
+        0,
+        16,
+        10
+      ],
+      "energy": 2200,
+      "color": [
+        1,
+        0.78,
+        0.54
+      ],
+      "size": 10
+    },
+    {
+      "kind": "area",
+      "location": [
+        -12,
+        18,
+        18
+      ],
+      "target": [
+        0,
+        16,
+        10
+      ],
+      "energy": 1200,
+      "color": [
+        0.48,
+        0.72,
+        1
+      ],
+      "size": 8
+    }
+  ],
+  "sky": {
+    "preset": "sunset"
+  },
+  "look": {
+    "preset": "golden_hour",
+    "haze": 0.003,
+    "bloom": 0.25
+  },
+  "weather": {
+    "kind": "clear",
+    "seed": 17
+  }
+}

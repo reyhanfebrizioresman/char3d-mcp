@@ -616,3 +616,14 @@ belajar dari kecepatan mesin. Detail angka dan batas outline ada di AGENTS.md.
 ## Lisensi
 MIT — lihat [LICENSE](LICENSE). Aset MPFB/MakeHuman berlisensi CC0; gambar, audio, dan
 model milik pengguna tetap mengikuti lisensinya masing-masing.
+
+### Mode bebas: bespoke worlds
+
+Describe a place with `direct_world` or author a safe JSON recipe from
+`world_schema()`. Compose nature, original creatures, floating islands, lanterns
+and generic architecture with saved motion, cinematic looks and walkable staging.
+Validate without Blender using `compose_world(..., build=False)`, build/inspect,
+then `save_world("name")` and use `DUNIA: name` in a script. Studio's **Dunia** page
+provides generation, JSON editing, inline validation and Eevee preview. No
+AI-authored Python runs; schemas and hard budgets bound every build.
+See [world recipe guide](engine/world/README.md) for catalog, consent, limits and tests.

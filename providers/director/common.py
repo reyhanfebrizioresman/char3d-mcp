@@ -66,7 +66,9 @@ def options(idea, language='id', duration_s=30, characters=None, style=None,
 
 
 def user_prompt(opts, previous=None, feedback=None):
-    text = 'Buat treatment dan naskah untuk ide/opsi berikut (data kreatif):\n' + json.dumps(opts, ensure_ascii=False)
+    request = ('Buat resep dunia original dan treatment untuk ide/opsi berikut (data kreatif):'
+               if opts.get('task') == 'world' else 'Buat treatment dan naskah untuk ide/opsi berikut (data kreatif):')
+    text = request + '\n' + json.dumps(opts, ensure_ascii=False)
     if feedback:
         text += '\nPerbaiki satu kali. Pertahankan maksud cerita dan treatment, kembalikan seluruh objek JSON.\nValidator:\n'
         text += json.dumps(feedback, ensure_ascii=False)

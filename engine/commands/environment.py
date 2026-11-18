@@ -109,6 +109,8 @@ def _sync_ground():
 def clear_environment():
     """Remove owned sets/props and unused owned data, preserving all other scene objects."""
     from .holding import clear_grip
+    from .world import clear_world
+    clear_world()
     from .outdoor import clear_sky, outdoor_root
     if outdoor_root() is not None:
         from .weather import set_weather
