@@ -231,6 +231,8 @@ def set_weather(kind="clear", intensity=.5, wind=None, seed=0):
         refresh_weather()
     from .outdoor import update_sky
     sky = update_sky()
+    from ..nature.blender import sync_wind
+    sync_wind(wind if kind != 'clear' and intensity > 0 else (0, 0, 0))
     return {"kind": kind, "intensity": intensity, "wind": list(wind) if kind != "clear" else [0, 0, 0],
             "seed": seed, "objects": objects, "particle_count": count, "removed": removed, "sky": sky,
             "coverage": "shot camera frusta, near 24 m; refreshed on render/save",

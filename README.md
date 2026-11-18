@@ -92,6 +92,25 @@ tersimpan dalam `.blend` dan ikut snapshot video. Grade `render_style` mengambil
 prioritas atas grade suasana; bloom/vignette digabung satu kali. Fog cuaca menggantikan
 haze agar tidak menumpuk. Lihat [panduan dan biaya CPU](AGENTS.md#cinematic-look).
 
+## Kit alam prosedural
+
+Park dan beach kini memakai vegetasi berdaun, rumput/bunga, air beriak dan latar
+berlapis. Preset baru: `blossom_garden`, `pine_forest`, `lakeside`, `riverside`,
+`rice_terraces`, `mountain_village`. Naskah menerima `LOKASI: hutan pinus`, `danau`,
+`sungai`, `sawah bertingkat`, `desa pegunungan` atau `kebun bunga`.
+`set_environment(..., density=1)` mengatur kepadatan (.2–2).
+
+`nature_catalog`, `add_nature` dan `clear_nature` menyediakan 29 generator asli
+tanpa unduhan: delapan jenis pohon, semak, padang rumput/bunga, sawah, bukit,
+pegunungan, batu, jalan, air, awan, kelopak/daun, burung dan kupu-kupu.
+Tersedia juga pagar, lampu, jembatan kayu, gazebo, rumah desa, gubuk sawah, pakis,
+batang tumbang sebagai tempat duduk, dan kunang-kunang.
+Set mempunyai komposisi khusus: dermaga danau, sungai berkelok dengan jembatan,
+sawah berkontur dengan pematang naik, taman berkolam, dan hutan pinus berpakis.
+Library murni, parameter dan batasnya: [engine/nature/README.md](engine/nature/README.md).
+Gerak tersimpan dalam `.blend`; angin mengikuti cuaca. Periksa Eevee dengan
+`golden_hour` atau `misty_morning`; `render_options` melaporkan faktor biaya nature.
+
 ## Suara dialog otomatis
 
 ```bash

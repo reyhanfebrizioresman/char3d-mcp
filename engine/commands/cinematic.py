@@ -559,6 +559,10 @@ def applied_look(sc, camera=None):
                 if not outdoors and obj.name.endswith('_0'):
                     light.volume_factor = .35*cfg['rays']
             elif obj.get('c3d_role') == 'environment':
+                if obj.get('c3d_nature_night_fill'):
+                    light.energy=original.energy*(1-k)+(obj['c3d_nature_night_fill']*k if dark else 0)
+                    light.volume_factor=0
+                    continue
                 practical = any(w in obj.name for w in ('lamp', 'stage_spot', 'window_daylight'))
                 if practical:
                     light.volume_factor = 1 + cfg['rays']*4
