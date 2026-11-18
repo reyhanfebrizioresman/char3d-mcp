@@ -9,12 +9,50 @@ import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from engine.nature import GENERATORS, tree, grass_field, flowers, lake, river, birds_flock
-from engine.nature.presets import PRESETS, ALIASES, resolve_alias, cost_factor
+from engine.nature.presets import PRESETS, ALIASES, COMPOSITIONS, resolve_alias, cost_factor
 from engine.nature.core import lod_weight
 from engine.script_plan import parse_script
 
 
 class NatureTests(unittest.TestCase):
+    def test_compositions_and_botanical_silhouettes(self):
+        self.assertEqual(len({v['landmark'] for v in COMPOSITIONS.values()}),8)
+        self.assertGreater(len({v['wide_angle'] for v in COMPOSITIONS.values()}),4)
+        pine=tree('pine',height=6,detail=.6).parts[1]
+        deep=sum(max(pine.vertices[k][2] for k in f)-min(pine.vertices[k][2] for k in f)>.21 for f in pine.faces)
+        self.assertGreater(deep/len(pine.faces),.20,'pine needs volumetric drooping crowns')
+        banana=tree('banana',height=4).parts[1]
+        self.assertLessEqual(len(banana.faces),200,'banana uses few continuous broad blades')
+        self.assertTrue(all(len(f)==4 for f in banana.faces))
+        fern=GENERATORS['ferns'](count=2)
+        self.assertFalse(fern.parts[0].solid);self.assertFalse(fern.parts[0].occludes)
+        log=GENERATORS['fallen_log']().parts[0]
+        self.assertTrue(log.solid);self.assertEqual(len(log.seat['centers']),2)
+        self.assertEqual(log.seat['kind'],'log')
+        ground=GENERATORS['falling_petals'](ground=True).parts[0]
+        self.assertFalse(ground.motion)
+        self.assertTrue(all(.005<z<.04 for x,y,z in ground.vertices))
+
+    def test_contoured_paddies_and_walkable_river_banks(self):
+        a=GENERATORS['rice_paddies'](corridor=3.6)
+        dikes=a.metadata['dikes']
+        self.assertGreater(max(p[1] for p in dikes[0])-min(p[1] for p in dikes[0]),2)
+        self.assertGreater(dikes[-1][0][2]-dikes[0][0][2],2)
+        water=next(p for p in a.parts if p.name=='paddy_water')
+        self.assertTrue(all(abs(sum(water.vertices[k][0] for k in f)/len(f))>=1.8 for f in water.faces))
+        planted=GENERATORS['rice_paddies'](8,(56,42),6.4,2.8,14,corridor=3.6,
+                                          exclude=[(4.8,11.6,3.2),(-4.5,8.1,1.7)])
+        floor=planted.metadata['dikes'][1][0][2]+.32
+        self.assertFalse(any(abs(x-4.8)<1.4 and abs(y-11.6)<1.2 and z>floor
+                             for part in planted.parts if part.name.startswith('rice_')
+                             for x,y,z in part.vertices),'crops must clear the raised hut floor')
+        stream=river(points=[[-4,-10,-.12],[-1,0,-.12],[5,10,-.12]],banks=True)
+        self.assertEqual(sum(p.walkable for p in stream.parts),2)
+        for p in stream.parts[1:]:
+            f=p.faces[0];vs=[p.vertices[i] for i in f]
+            area=sum(x[0]*y[1]-y[0]*x[1] for x,y in zip(vs,vs[1:]+vs[:1]))
+            self.assertGreater(area,0,'bank top must face up for ground queries')
+        with self.assertRaises(ValueError):river(points=[[0,0,0],[1,-1,0]],banks=True)
     def test_all_generators_are_pure_and_have_valid_topology(self):
         state=random.getstate()
         for name,fn in GENERATORS.items():
@@ -62,6 +100,11 @@ class NatureTests(unittest.TestCase):
                  ('birds_flock',dict(count=10000)),('clouds',dict(style='volume')),
                  ('path',dict(points=[[0,0,0],[0,0,0]])),('path',dict(material='lava')),
                  ('falling_petals',dict(kind='stones'))]
+        invalid.extend([('falling_petals',dict(ground=1)),('ferns',dict(count=-1)),
+                        ('path',dict(crown=1)),
+                        ('fallen_log',dict(radius=0)),('field_hut',dict(height=1)),
+                        ('rice_paddies',dict(corridor=100)),('rice_paddies',dict(exclude=[(0,0,-1)])),
+                        ('rice_paddies',dict(exclude='hut'))])
         for name,params in invalid:
             with self.subTest(name=name,params=params):
                 with self.assertRaises(ValueError): GENERATORS[name](**params)
@@ -107,4 +150,4 @@ class NatureTests(unittest.TestCase):
 if __name__=='__main__':
     result=unittest.main(exit=False)
     if not result.result.wasSuccessful(): raise SystemExit(1)
-    print('NATURE UNIT OK: 26 generators, topology, deterministic seeds, budgets, aliases, LOD')
+    print('NATURE UNIT OK: 29 generators, topology, deterministic seeds, budgets, aliases, LOD')

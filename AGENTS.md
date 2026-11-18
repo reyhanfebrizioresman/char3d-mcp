@@ -1003,10 +1003,11 @@ accept taman bunga, rice field and kampung.
 Pure library: [`engine/nature/README.md`](engine/nature/README.md).
 `from engine.nature import tree, grass_field, flowers, rice_paddies, ...` returns
 Blender-free `Asset`/`Mesh` recipes, deterministic with local `seed`, without IO or
-global RNG changes. Twenty-six generators cover eight tree kinds, bush/hedge/reeds,
+global RNG changes. Twenty-nine generators cover eight tree kinds, bush/hedge/reeds,
 meadows, terraced rice, hills/ridges/rocks/cliffs/paths, lake/river/sea/waterfall,
 clouds, petals/leaves, birds, butterflies and fireflies; fences, lanterns, bridges,
-gazebos and village houses. Tree seasons include dry/wet. Units are meters, Z up.
+gazebos, village houses, open field huts, ferns and fallen-log seats. Tree seasons
+include dry/wet. Units are meters, Z up.
 
 `nature_catalog()` lists signatures and limits.
 `add_nature("tree", location=[-4,6,0], seed=17,
@@ -1023,6 +1024,13 @@ thin ground cover does not.
 Camera probes consider actual tree foliage and bushes; grass/flowers/life/sky/water
 are ignored. Hills and terrace banks are walkable, but rises >.25 m still block routes.
 Large terraces need explicit stairs for access. Low flattened stones can be seats.
+Layouts have distinct landmarks: L pier/open lake, S river/bridge, contoured sawah
+with a tapered causeway/gubuk, pond/gazebo blossom walk and fern/log conifer glade.
+Park portraits use a lower green middle storey. `COMPOSITIONS` provides suggested
+wide framing; cameras remain user controlled. Water presets enable screen-space
+reflections and restore prior ray settings on clear. Ferns, fallen logs and field
+huts are also reusable generators; `falling_petals(ground=True)` makes static litter.
+`rice_paddies(exclude=[(x,y,r), ...])` clears crop roots beneath props.
 
 Wind sway, wingbeats, cyclic bird flight, drifting petals and animated water normals
 are saved drivers/nodes and evaluate on arbitrary frames without simulation caches.
@@ -1034,18 +1042,22 @@ layered palettes and cooperate with cinematic haze. Ground fallback permits walk
 across water: keep routes on banks or add walkable bridge geometry.
 
 `render_options` includes `nature_cost_factor`, multiplied with style/look once and
-removed once during calibration. Draft is 1; default Eevee floors are 1.15..1.50,
+removed once during calibration. Draft is 1; default Eevee floors are 1.15..1.70,
 scaled by density. These are estimates; measured evidence is in
 `output/nature_baseline.json`, `nature_benchmark.json`, `nature_visuals.json` and
 `nature_clips.json`. Sheets: `output/nature_sheets/`; saved scenes: `output/projects/nature_*.blend`.
-Measured i5-4460 CPU Eevee, two MPFB actors, 960×540/16 samples, overcast/no look:
-old park 30.02 s/frame; eight new/upgraded sets 24.46–43.48 s/frame (0.81–1.45×).
-These are two-sample means after a warm-up, at density 1 with no camera thinning;
-shared CPU load varies. Per-preset table and raw conditions are in the library README.
-Reproduce on port **9997** with `tests/nature_visuals.py` (see library README).
-Use `--only park --looks none`, then `--reuse` for other looks; `--bench` measures
-960×540/16 samples after a warm-up. `--clips` renders 3-second drafts in the engine,
-without a second Blender. Tests: `tests/test_nature.py`, `tests/nature_e2e.py`.
+Measured review revision: i5-4460 CPU Eevee, two MPFB actors, density 1,
+960×540/16 samples, overcast/no look, no camera thinning: legacy park bookend
+30.00 s/frame; revised sets 23.42–48.40 s/frame (0.78–1.61×). Rice is at the
+approximate 1.6× boundary; the other means are ≤1.29×. The initial reference was
+39.40 s/frame and the historical reference 30.02; shared CPU load varies.
+The library README gives raw conditions and per-preset means. Rice's estimate
+floor is now 1.70; other floors are unchanged.
+Review evidence: `output/nature_review/{benchmark,reference,reference_end,visuals}.json`,
+sheets in `output/nature_review/sheets/`, native scenes in
+`output/projects/nature_review/`. Reproduce on port **9997** with
+`tests/nature_review.py --reference --sheets --bench`; original fixtures and
+clips remain intact. Tests: `tests/test_nature.py`, `tests/nature_e2e.py`.
 
 **Lighting** — `set_lighting(preset, subject, follow="auto")`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane indoors by default and

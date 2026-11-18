@@ -34,13 +34,21 @@ def _material(builder, spec):
         noise.inputs['Detail'].default_value = 2
         coord=nodes.new('ShaderNodeTexCoord')
         links.new(coord.outputs['Object'],noise.inputs['Vector'])
+        if spec.name=='river_water':
+            flow=nodes.new('ShaderNodeVectorMath');flow.operation='ADD';flow.name='River flow'
+            links.new(coord.outputs['Object'],flow.inputs[0])
+            _driver(flow.inputs[1],'default_value','-frame*base/fps*.55',index=1)
+            stretch=nodes.new('ShaderNodeVectorMath');stretch.operation='MULTIPLY'
+            stretch.inputs[1].default_value=(1.8,.26,1.)
+            links.new(flow.outputs[0],stretch.inputs[0]);links.new(stretch.outputs[0],noise.inputs['Vector'])
         _driver(noise.inputs['W'], 'default_value', 'frame*base/fps*.12')
         fine = nodes.new('ShaderNodeTexNoise');fine.inputs['Scale'].default_value=37
         links.new(coord.outputs['Object'],fine.inputs['Vector'])
-        coarse = nodes.new('ShaderNodeBump');coarse.inputs['Strength'].default_value=.24
-        coarse.inputs['Distance'].default_value=.055
-        bump = nodes.new('ShaderNodeBump');bump.inputs['Strength'].default_value=.14
-        bump.inputs['Distance'].default_value=.008
+        calm=spec.name in ('water','paddy_water')
+        coarse = nodes.new('ShaderNodeBump');coarse.inputs['Strength'].default_value=.16 if calm else .24
+        coarse.inputs['Distance'].default_value=.018 if calm else .055
+        bump = nodes.new('ShaderNodeBump');bump.inputs['Strength'].default_value=.10 if calm else .14
+        bump.inputs['Distance'].default_value=.003 if calm else .008
         links.new(noise.outputs['Fac'],coarse.inputs['Height'])
         links.new(coarse.outputs['Normal'],bump.inputs['Normal'])
         links.new(fine.outputs['Fac'],bump.inputs['Height'])
@@ -333,7 +341,7 @@ def realize(builder,asset,location=(0,0,0),rotation=0.,scale=1.):
             obj['c3d_seat_centers']=json.dumps(part.seat['centers'])
             obj['c3d_seat_surface_height']=part.seat['centers'][0][2]
             obj['c3d_seat_front']=part.seat['front'];obj['c3d_seat_floor']=part.seat['floor']
-            obj['c3d_seat_kind']='stone'
+            obj['c3d_seat_kind']=part.seat.get('kind','stone')
             if builder.root.get('c3d_nature_root'): builder.root['c3d_seat_anchor']=obj.name
         if part.motion: _motion(obj,part.motion)
         # Motion lives in local coordinates and object transforms place the asset.

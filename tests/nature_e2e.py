@@ -24,10 +24,12 @@ def _nature_checks(call):
     c.call=traced
     c.call('scene_info');c.call('new_scene',frame_end=72);setup(c)
     catalog=c.call('nature_catalog')
-    assert len(catalog['generators'])==26,catalog
+    assert len(catalog['generators'])==29,catalog
     for kind,params in [('tree',dict(kind='blossom',height=3)),
                         ('grass_field',dict(area=[3,3],density=8)),
                         ('lake',dict(shape=[4,3])),('birds_flock',dict(count=2)),
+                        ('river',dict(points=[[-5,-8,-.12],[0,0,-.12],[4,8,-.12]],banks=True)),
+                        ('ferns',dict(count=2)),
                         ('falling_petals',dict(count=10))]:
         r=c.call('add_nature',kind=kind,location=[6,5,0],seed=19,params=params)
         assert r['vertices']>0 and r['parts'],r
@@ -65,6 +67,15 @@ for frame in (7,29):
 result={k:frames[0][k]!=frames[1][k] for k in frames[0]}
 ''')
     assert all(changes.values()),changes
+    flow_probe='''sc=bpy.context.scene
+mat=next(m for m in bpy.data.materials if m.node_tree and m.node_tree.nodes.get('River flow'))
+result=[]
+for frame in (1,29):
+    sc.frame_set(frame)
+    result.append(list(mat.node_tree.nodes['River flow'].inputs[1].default_value))
+'''
+    flow_before=py(c,flow_probe)
+    assert flow_before[0]!=flow_before[1],('river normals must flow',flow_before)
     diameter=py(c,'''sc=bpy.context.scene
 maximum=0.
 for frame in (1,48,120,240,480):
@@ -87,6 +98,7 @@ result=maximum
     path=c.call('save_project',path='nature_state.blend')['path']
     c.call('new_scene');c.call('open_project',path=path)
     assert py(c,sample)==before,'saved analytic motion changed'
+    assert py(c,flow_probe)==flow_before,'saved river texture clock changed'
     c.call('render_preview',engine='workbench',camera='scene',width=320,height=180,
            filename='nature_state_after.png',frame=12)
     c.call('clear_nature')
@@ -107,12 +119,31 @@ for o in sorted(bpy.context.scene.objects,key=lambda o:o.name):
 result=hashlib.sha256(json.dumps(items).encode()).hexdigest()
 '''
     for preset in ('forest','mountain_lake','village','blossom_garden','riverside','rice_terraces','park','beach'):
+        original_ray=py(c,"result=bpy.context.scene.eevee.use_raytracing")
+        original_method=py(c,"result=bpy.context.scene.eevee.ray_tracing_method")
         env=c.call('set_environment',preset=preset,variant=7,density=.2)
+        assert py(c,"result=bpy.context.scene.eevee.use_raytracing")==(
+            original_ray or preset in ('mountain_lake','blossom_garden','riverside','rice_terraces'))
         assert len(env['objects'])==len(set(env['objects']))
         assert py(c,"result=any(o.get('char3d_walkable') for o in bpy.context.scene.objects)")
+        ground=py(c,'''from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+dg=bpy.context.evaluated_depsgraph_get();heights=[]
+for o in bpy.context.scene.objects:
+    if o.type!='MESH' or not o.get('char3d_walkable'): continue
+    e=o.evaluated_get(dg);m=e.to_mesh()
+    tree=BVHTree.FromPolygons([e.matrix_world@v.co for v in m.vertices],[list(p.vertices) for p in m.polygons])
+    p,n,index,distance=tree.ray_cast(Vector((0,0,2)),Vector((0,0,-1)))
+    if p is not None and n.z>.5: heights.append(p.z)
+    e.to_mesh_clear()
+result=max(heights) if heights else None
+''')
+        assert ground is not None and abs(ground)<.02,('acting floor moved',preset,ground)
         assert py(c,"from mathutils import Vector\nfrom engine.commands.outdoor import outdoor_root\nresult=all(abs((o.matrix_world@Vector((0,0,o['c3d_seat_floor']))).z-outdoor_root().matrix_world.translation.z)<.002 for o in bpy.context.scene.objects if o.get('c3d_seat_kind')=='stone')"),preset
         first=py(c,digest)
         cleared=c.call('clear_environment')
+        assert py(c,"result=bpy.context.scene.eevee.use_raytracing")==original_ray,'reflection setting leaked'
+        assert py(c,"result=bpy.context.scene.eevee.ray_tracing_method")==original_method,'reflection method leaked'
         assert set(cleared['removed'])==set(env['objects']),(preset,cleared,env)
         assert not c.call('scene_info')['objects'],preset
         assert c.call('clear_environment')['count']==0
@@ -180,6 +211,12 @@ result=maximum
            start_frame=30,end_frame=48,angle=60)
     c.call('render_preview',engine='workbench',camera='scene',frame=30,width=512,height=288,
            filename='nature_rock_seat.png')
+    log=c.call('add_nature',kind='fallen_log',location=[-3,-2,0],rotation_z=25,seed=9)
+    c.call('clear_animation',armature='Walker_rig')
+    logseat=c.call('sit_on',character='Walker_rig',seat=log['root'],seat_index=1,start_frame=1)
+    assert abs(logseat['contact_error_m'])<.03 and abs(logseat['floor'])<.002,logseat
+    c.call('camera_shot',subject=['Walker_rig'],shot='full',name='LogSeat',start_frame=30,end_frame=48,angle=60)
+    c.call('render_preview',engine='workbench',camera='scene',frame=30,width=512,height=288,filename='nature_log_seat.png')
     c.call('save_project',path='nature_integration.blend')
     sampletree=c.call('add_nature',kind='tree',location=[8,0,0],camera_aware=False,
                       params=dict(kind='blossom',height=4),seed=19)
@@ -187,7 +224,7 @@ result=maximum
     assert exported['bytes']>1000,exported
     (ROOT/'output/nature_integration.json').write_text(json.dumps(dict(
         route=route,secondary=secondary,seat=seated,rockseat=rockseat,rock_leg_penetration=leg_penetration,
-        camera=shot,options=options,export=exported),indent=2))
+        logseat=logseat,camera=shot,options=options,export=exported),indent=2))
     print('NATURE INTEGRATION OK: obstacle detour, thin grass, seat, camera, hair wind, costs, GLB',flush=True)
 
     c.call('new_scene',frame_end=96)
@@ -215,6 +252,32 @@ result=maximum
     c.call('save_project',path='nature_props.blend')
     (ROOT/'output/nature_bridge.json').write_text(json.dumps(walk,indent=2))
     print('NATURE PROPS OK: bridge walking, 6 reusable dressing/life generators, practical lights',flush=True)
+    _nature_hut_checks(c)
+
+
+def _nature_hut_checks(c):
+    """Walk from the acting plane to the raised gubuk, then inspect the log seat."""
+
+    c.call('new_scene',frame_end=360)
+    c.call('create_human',name='FieldWalker',height=1.75)
+    c.call('auto_rig_humanoid',mesh='FieldWalker')
+    c.call('set_environment',preset='rice_terraces',variant=14,density=.2,subject=[])
+    approach=c.call('walk_path',armature='FieldWalker_rig',
+                    points=[[.3,5],[.4,7.6],[2.7,7.6],[4.4,7.3]],start_frame=1)
+    assert approach['terrain']['objects'] and approach['foot_lock']['max_penetration_m']<.015,approach
+    hutseat=py(c,"result=next(o.name for o in bpy.context.scene.objects if o.get('c3d_nature_landmark')=='hut_seat' and 'c3d_seat_centers' in o)")
+    seated=c.call('sit_on',character='FieldWalker_rig',seat=hutseat,seat_index=0)
+    assert abs(seated['contact_error_m'])<.03 and seated['floor']>1,seated
+    final_frame=seated['frames'][-1]
+    c.call('set_timeline',frame_end=final_frame+1)
+    c.call('set_lighting',preset='overcast',subject=['FieldWalker_rig'])
+    c.call('camera_shot',subject=['FieldWalker_rig'],shot='full',angle=30,elevation=10,
+           start_frame=final_frame,end_frame=final_frame+1,name='HutSeat')
+    c.call('render_preview',engine='workbench',camera='scene',frame=final_frame,width=512,height=288,
+           filename='nature_review/hut_seat.png')
+    c.call('save_project',path='nature_hut_access.blend')
+    (ROOT/'output/nature_hut_access.json').write_text(json.dumps(dict(route=approach,seat=seated),indent=2))
+    print('NATURE HUT OK: raised-path approach, crop clearance, log seat and grounded feet',flush=True)
 
 
 if __name__=='__main__':

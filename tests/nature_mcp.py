@@ -26,15 +26,21 @@ async def main():
             assert not result.isError,(name,result)
             return json.loads(next(b.text for b in result.content if b.type=='text'))
         await call('scene_info');await call('new_scene')
-        catalog=await call('nature_catalog');assert len(catalog['generators'])==26
+        catalog=await call('nature_catalog');assert len(catalog['generators'])==29
         a=await call('add_nature',kind='tree',params={'kind':'maple','height':3},seed=91)
         assert a['vertices']>1000 and a['root'] in a['objects'],a
-        result=await session.call_tool('render_preview',dict(objects=[a['root']],engine_name='workbench',width=256,height=256))
+        result=await session.call_tool('render_preview',dict(objects=a['parts'],engine_name='workbench',width=256,height=256))
         assert not result.isError,result
         await call('clear_nature')
         assert not (await call('scene_info'))['objects']
+        before=(await call('run_blender_python',code="e=bpy.context.scene.eevee\ne.use_raytracing=True\noptions=e.bl_rna.properties['ray_tracing_method'].enum_items\ne.ray_tracing_method=next((v.identifier for v in options if v.identifier!='SCREEN'),'SCREEN')\nresult=dict(enabled=e.use_raytracing,method=e.ray_tracing_method)"))['result']
+        await call('set_environment',preset='lakeside',density=.2,subject=[])
+        assert (await call('run_blender_python',code="e=bpy.context.scene.eevee\nresult=e.use_raytracing and e.ray_tracing_method=='SCREEN'"))['result']
+        await call('clear_environment')
+        after=(await call('run_blender_python',code="e=bpy.context.scene.eevee\nresult=dict(enabled=e.use_raytracing,method=e.ray_tracing_method)"))['result']
+        assert after==before,(before,after)
         await session.call_tool('engine_shutdown',{})
-        print('NATURE MCP OK: schemas, catalog, add, render, clear',flush=True)
+        print('NATURE MCP OK: schemas, catalog, add, render, clear, user reflection settings',flush=True)
 
 
 if __name__=='__main__': asyncio.run(main())

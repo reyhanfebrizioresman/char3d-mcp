@@ -59,7 +59,34 @@ def tree(kind='broadleaf', height=5., seed=0, season='summer', detail=1.):
                         a = random.uniform(0,math.tau)
                         p = (x+.13*h*math.cos(a),y+.13*h*math.sin(a),z)
                         leaf.leaf(p,h*.12,h*.009,a,random.uniform(-.4,.4),k%4)
-    elif kind in ('palm','banana'):
+    elif kind == 'banana':
+        wood.materials=[Material('banana_stem',(.24,.32,.10))]
+        crown=(h*.025,0,h*.78)
+        for j in range(8):
+            u=j/8;v=(j+1)/8
+            wood.tube((h*.025*u*u,0,h*.78*u),(h*.025*v*v,0,h*.78*v),
+                      h*(.043-.018*u),h*(.043-.018*v),sides=9)
+        # Seven continuous broad laminae, each folded around a curved midrib.
+        # Notched margins suggest tears without turning the blade into leaflets.
+        for j in range(7):
+            a=j*2.39996+random.uniform(-.15,.15)
+            length=h*random.uniform(.47,.64);width=h*random.uniform(.065,.09)
+            rows=[]
+            for k in range(13):
+                u=k/12
+                lift=(.25*u-.08*u*u) if j==0 else (.80*u-.92*u*u)
+                p=add(crown,(length*u*math.cos(a),length*u*math.sin(a),h*lift))
+                breadth=max(.006*h,width*math.sin(math.pi*u)**.7)
+                notch=.62 if k in (4,8) and j%3 else 1.
+                left=add(p,(-math.sin(a)*breadth*notch,math.cos(a)*breadth*notch,-h*.018))
+                right=add(p,(math.sin(a)*breadth, -math.cos(a)*breadth,-h*.018))
+                rows.append((left,p,right))
+                if k:
+                    prev=rows[k-1]
+                    leaf.face((prev[0],prev[1],p,left),1+j%3)
+                    leaf.face((prev[1],prev[2],right,p),j%3)
+                    wood.tube(prev[1],p,h*.0035*(1-u)+.001,sides=4)
+    elif kind == 'palm':
         points = [(h*.06*(j/9)**2,0,h*j/9) for j in range(10)]
         for j,(a,b) in enumerate(zip(points,points[1:])):
             wood.tube(a,b,h*(.028-.013*j/9),sides=10)
@@ -76,19 +103,49 @@ def tree(kind='broadleaf', height=5., seed=0, season='summer', detail=1.):
                 for side in (-1,1):
                     leaf.leaf(p,length*.22*(math.sin(math.pi*u)**.5+.12),
                               length*(.035 if kind == 'palm' else .09),a+side*1.05,-.25,k%4)
+        coconuts=Material('coconut',(.24,.19,.06))
+        wood.materials.append(coconuts)
+        for j in range(3):
+            a=j*2.4
+            wood.blob(add(points[-1],(math.cos(a)*h*.045,math.sin(a)*h*.045,-h*.045)),
+                      (h*.026,h*.026,h*.035),random,mat=1,rings=3,sides=7)
     elif kind == 'pine':
         wood.tube((0,0,0),(0,0,h),h*.035,h*.003,sides=9)
-        for j in range(9):
-            z = h*(.22+j*.079)
-            radius = h*.32*(1-j/10)
-            for k in range(7):
-                a = k*math.tau/7+j*1.1
-                tip = (math.cos(a)*radius,math.sin(a)*radius,z-h*.05)
-                wood.tube((0,0,z+.05*h),tip,h*.007*(1-j/11),.002,sides=5)
-                for n in range(round(19*detail)):
-                    u = random.random()
-                    p = (tip[0]*u,tip[1]*u,z + random.uniform(-.055,.055)*h)
-                    leaf.leaf(p,h*.17*(1-j/12),h*.025,a+random.uniform(-1,1),.08,n%4)
+        if season in ('summer','spring','wet','winter'):
+            leaf.materials=[Material(f'leaf_pine{i}',c) for i,c in enumerate(
+                ((.025,.085,.043),(.045,.13,.05),(.06,.18,.07),(.095,.23,.09)))]
+        leaf.smooth=True
+        sectors=max(8,round(16*detail));tiers=8
+        for j in range(tiers):
+            z=h*(.20+j*.099);radius=h*.27*(1-j/8.8)
+            phase=random.random()*math.tau
+            start=len(leaf.vertices)
+            # Overlapping conical crowns, with scalloped, drooping skirts.
+            # These are volumes of needles rather than horizontal leaf planks.
+            for r,dz in ((.015,.22),(.48,.12),(1.,0),(.87,-.045)):
+                for k in range(sectors):
+                    a=k*math.tau/sectors+phase
+                    irregular=1+.12*math.sin(a*3+phase)+random.uniform(-.07,.07)
+                    leaf.vertices.append((math.cos(a)*radius*r*irregular,
+                        math.sin(a)*radius*r*irregular,z+h*(dz*(1-j*.065)+
+                            r*r*(.018*math.sin(a*5+phase)+random.uniform(-.012,.012)))))
+            for ring in range(3):
+                for k in range(sectors):
+                    a=start+ring*sectors+k;b=start+ring*sectors+(k+1)%sectors
+                    leaf.faces.append((a,a+sectors,b+sectors,b))
+                    leaf.indices.append(2 if ring==0 else 1 if ring==1 else 0)
+            # Irregular hanging bough tips break the cone silhouettes at close range.
+            for k in range(max(3,round(7*detail))):
+                a=k*math.tau/max(3,round(7*detail))+phase
+                tip=(math.cos(a)*radius*.9,math.sin(a)*radius*.9,z-h*.025)
+                wood.tube((0,0,z+h*.10),tip,h*.005,.001,sides=5)
+                leaf.tube(add(tip,(-math.cos(a)*h*.025,-math.sin(a)*h*.025,h*.035)),
+                          add(tip,(math.cos(a)*h*.035,math.sin(a)*h*.035,-h*.04)),
+                          h*.018*(1-j*.07),h*.003,sides=7,mat=1+j%2)
+                for q in range(max(2,round(5*detail))):
+                    p=add(tip,(random.uniform(-.025,.025)*h,random.uniform(-.025,.025)*h,
+                               random.uniform(-.025,.025)*h))
+                    leaf.leaf(p,h*.045*(1-j*.07),h*.0035,a+random.uniform(-.7,.7),-.75,q%4)
     else:
         wood.tube((0,0,0),(h*.02,0,h*.52),h*.045,h*.018,sides=10)
         terminals = []
@@ -232,40 +289,86 @@ def reeds(area=(8,2), density=5., height=1.2, seed=0, season='summer'):
     return out
 
 
-def rice_paddies(terraces=5, area=(30,28), height=3., density=4., seed=0, season='summer'):
-    """Curved flooded beds and earthen banks. Banks are tagged walkable.
+def rice_paddies(terraces=5, area=(30,28), height=3., density=4., seed=0, season='summer',corridor=0.,exclude=()):
+    """Contoured flooded hillside benches, closed risers and walkable earthen dikes.
 
-    Terraces are scenery: rises > .25m block walking. Use add_terrain stairs for
-    access between large levels; the acting area remains outside the paddies.
+    corridor leaves a central X gap for a separate raised path. metadata.dikes
+    gives sampled local XYZ planting/placement contours. exclude contains local
+    XY circles (x,y,r) that clear crop roots. Rises >.25m block routes.
     """
-    n = integer(terraces,'terraces',1,16)
-    w,l = area_size(area)
-    h = number(height,'height',0,20)
-    density = number(density,'density',0,40)
-    rng(seed)
-    _season(season)
-    out = Asset('rice_paddies',metadata=dict(seed=seed,terraces=n))
-    bank = Mesh('terrace_banks',materials=[Material('earth',(.20,.16,.065),surface='grass')],walkable=True)
-    water = Mesh('paddy_water',materials=[Material('paddy_water',(.10,.22,.14),.2,surface='water')],occludes=False)
-    rice_parts=[]
+    n=integer(terraces,'terraces',1,16);w,l=area_size(area)
+    h=number(height,'height',0,20);density=number(density,'density',0,40)
+    corridor=number(corridor,'corridor',0,w*.65);rng(seed);_season(season)
+    if not isinstance(exclude,(list,tuple)): raise ValueError('exclude must contain XY radius triples')
+    holes=[]
+    for hole in exclude:
+        if not isinstance(hole,(list,tuple)) or len(hole)!=3:
+            raise ValueError('exclude must contain XY radius triples')
+        holes.append((number(hole[0],'exclude.x',-1000,1000),number(hole[1],'exclude.y',-1000,1000),
+                      number(hole[2],'exclude.radius',0,400)))
+    out=Asset('rice_paddies',metadata=dict(seed=seed,terraces=n,dikes=[],corridor=corridor,exclude=holes))
+    bank=Mesh('terrace_banks',materials=[Material('earth',(.18,.255,.055),surface='grass'),
+        Material('terrace_soil',(.22,.14,.065),surface='earth')],walkable=True)
+    water=Mesh('paddy_water',materials=[Material('paddy_water',(.045,.16,.12),.08,.22,surface='water')],occludes=False)
+    rice_parts=[];cell=l/n;lip=min(.40,cell*.16);amplitude=min(w*.08,cell*.60)
+    def edge(x,j): return j*cell+amplitude*math.sin(x/w*math.tau*1.2+j*.35)+amplitude*.18*math.cos(x/w*9)
+    xs=sorted(set([-w/2+i*w/64 for i in range(65)]+([-corridor/2,corridor/2] if corridor else [])))
     for j in range(n):
-        z = j*h/max(1,n-1)
-        rice = Mesh(f'rice_{j}',materials=[Material('rice',(.27,.40,.045)),Material('rice_gold',(.48,.49,.095))],
-            occludes=False,motion=dict(kind='sway',height=.5,base=z-.02,amplitude=.08,seed=seed+j))
-        rice_parts.append(rice)
+        z=j*h/max(1,n-1);previous=(j-1)*h/max(1,n-1) if j else -.12
+        out.metadata['dikes'].append([(x,edge(x,j)+lip*.5,z) for x in xs])
+        rice=Mesh(f'rice_{j}',materials=[Material('rice',(.20,.36,.035)),Material('rice_gold',(.39,.47,.07))],
+            occludes=False,motion=dict(kind='sway',height=.5,base=z-.04,amplitude=.08,seed=seed+j))
         if season in ('autumn','dry','winter'):
             rice.materials=[Material('rice_straw',(.50,.38,.12)),Material('rice_dry_tips',(.61,.49,.19))]
-        def edge(x): return j*l/n + .65*math.sin(x/w*math.tau+j*.48)
-        for i in range(64):
-            a,b = -w/2+i*w/64,-w/2+(i+1)*w/64
-            ya,yb = edge(a),edge(b)
-            bank.face(((a,ya,z),(b,yb,z),(b,yb+.32,z),(a,ya+.32,z)))
-            bank.face(((a,ya,-.1),(b,yb,-.1),(b,yb,z),(a,ya,z)))
-            water.face(((a,ya+.36,z-.025),(b,yb+.36,z-.025),(b,yb+l/n-.05,z-.025),(a,ya+l/n-.05,z-.025)))
-        for x,y,u,v in scatter((w,l/n),density,(seed+j)%2147483648,limit=9000//n):
-            y += j*l/n+l/(n*2)+.65*math.sin(x/w*math.tau+j*.48)
+        rice_parts.append(rice)
+        for a,b in zip(xs,xs[1:]):
+            if corridor and abs((a+b)/2)<corridor/2: continue
+            ya,yb=edge(a,j),edge(b,j);fa,fb=edge(a,j+1),edge(b,j+1)
+            bank.face(((a,ya,z),(b,yb,z),(b,yb+lip,z),(a,ya+lip,z)))
+            slope=min(.65,cell*.15)
+            mid_z=previous+(z-previous)*.56
+            ma,mb=ya-slope*.44,yb-slope*.44
+            bank.face(((a,ya-slope,previous-.04),(b,yb-slope,previous-.04),(b,mb,mid_z),(a,ma,mid_z)),1)
+            bank.face(((a,ma,mid_z),(b,mb,mid_z),(b,yb,z),(a,ya,z)))
+            water.face(((a,ya+lip+.03,z-.035),(b,yb+lip+.03,z-.035),
+                        (b,fb-cell*.035,z-.035),(a,fa-cell*.035,z-.035)))
+        for x in (-w/2,w/2,*((-corridor/2,corridor/2) if corridor else ())):
+            a,b=edge(x,j),edge(x,j+1)
+            direction=-1 if x<0 else 1
+            inner=x-direction*min(.25,w*.02)
+            cap=((x,a,z),(x,b,z),(inner,b,z),(inner,a,z))
+            bank.face(tuple(reversed(cap)) if direction<0 else cap)
+            bank.face(((x,a,-.12),(x,b,-.12),(x,b,z),(x,a,z)),1)
+        for x,y,u,v in scatter((w,cell),density,(seed+j)%2147483648,limit=9000//n):
+            if corridor and abs(x)<corridor/2+.12: continue
+            fraction=y/cell+.5
+            y=edge(x,j)+lip+.06+fraction*(edge(x,j+1)-edge(x,j)-lip-.10)
+            if any((x-a)**2+(y-b)**2<r*r for a,b,r in holes): continue
             for k in range(3):
-                a = u*math.tau+k*2.4
-                rice.leaf((x,y,z-.02),.45+v*.2,.015,a,1.1,k%2)
+                a=u*math.tau+k*2.4
+                rice.leaf((x,y,z-.05),.45+v*.2,.015,a,1.1,k%2)
     out.parts.extend((bank,water,*rice_parts))
     return out
+
+
+def ferns(area=(8,8),count=24,height=.75,seed=0,season='summer'):
+    """Feathered arching fronds in centered XY; thin, nonblocking undergrowth."""
+    size=area_size(area);n=integer(count,'count',0,300);h=number(height,'height',.15,2.)
+    random=rng(seed);_season(season)
+    c=(.055,.19,.065) if season in ('summer','wet','spring') else (.24,.24,.07)
+    m=Mesh('fern_fronds',materials=[Material('leaf_fern',c),Material('leaf_fern_tips',tuple(v*1.4 for v in c))],
+           occludes=False,motion=dict(kind='sway',height=h,amplitude=h*.07,seed=seed))
+    for i in range(n):
+        x=random.uniform(-size[0]/2,size[0]/2);y=random.uniform(-size[1]/2,size[1]/2)
+        scale=random.uniform(.65,1.1)
+        for j in range(7):
+            a=j*2.39996+random.uniform(-.2,.2)
+            prev=(x,y,0)
+            for k in range(1,9):
+                u=k/9;r=h*scale*u*.9;z=h*scale*(.1+.72*math.sin(u*math.pi*.85))
+                p=(x+math.cos(a)*r,y+math.sin(a)*r,z)
+                m.tube(prev,p,.003*scale,sides=3);prev=p
+                for side in (-1,1):
+                    m.leaf(p,h*scale*.24*(1-u*.7),h*.027,
+                           a+side*1.08,.12-u*.35,(j+k)%2)
+    return Asset('ferns',[m],dict(seed=seed,count=n,season=season))

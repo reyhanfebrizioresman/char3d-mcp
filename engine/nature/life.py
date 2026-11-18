@@ -3,19 +3,21 @@ import math
 from .core import Asset, Material, Mesh, area_size, integer, number, points3, rng
 
 
-def falling_petals(area=(12,12),count=80,height=5.,seed=0,kind='petals'):
-    """Looping petals or autumn leaves in centered XY, with saved whole-leaf pivots."""
+def falling_petals(area=(12,12),count=80,height=5.,seed=0,kind='petals',ground=False):
+    """Looping petals/leaves; ground=True creates a static carpet at local Z=.014."""
     w,l=area_size(area);n=integer(count,'count',0,500);h=number(height,'height',.5,30)
     if kind not in ('petals','leaves'): raise ValueError('kind must be petals or leaves')
+    if not isinstance(ground,bool): raise ValueError('ground must be boolean')
     random=rng(seed)
     mesh=Mesh(kind,materials=[Material(kind,(.88,.42,.48) if kind=='petals' else (.55,.23,.045))],
-        occludes=False,motion=dict(kind='fall',height=h,seed=seed,amplitude=.22))
+        occludes=False,motion={} if ground else dict(kind='fall',height=h,seed=seed,amplitude=.22))
     for i in range(n):
-        p=(random.uniform(-w/2,w/2),random.uniform(-l/2,l/2),random.uniform(.1,h))
+        p=(random.uniform(-w/2,w/2),random.uniform(-l/2,l/2),.014 if ground else random.uniform(.1,h))
         start=len(mesh.vertices)
-        mesh.leaf(p,.045 if kind=='petals' else .10,.018,random.random()*math.tau,random.uniform(-1,1))
+        mesh.leaf(p,.045 if kind=='petals' else .10,.018,random.random()*math.tau,
+                  random.uniform(-.04,.10) if ground else random.uniform(-1,1))
         mesh.pivots.extend([p]*(len(mesh.vertices)-start))
-    return Asset('falling_'+kind,[mesh],dict(seed=seed,count=n))
+    return Asset(('ground_' if ground else 'falling_')+kind,[mesh],dict(seed=seed,count=n))
 
 
 def birds_flock(count=9,path=((-12,18,10),(12,25,13)),seed=0):

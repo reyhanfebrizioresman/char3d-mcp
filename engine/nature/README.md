@@ -31,18 +31,21 @@ extend above it. Read recipe vertices or `scene_info` dimensions for exact bound
 | `tree` | kind: broadleaf/pine/palm/blossom/maple/banana/bamboo/dead; height .3..40; season spring/summer/autumn/dry/wet/winter; detail .25..1 |
 | `bush`, `hedge` | height, color/detail (bush), length (hedge) |
 | `grass_field`, `flowers` | area [width,length], density in clumps or flowers/m², height, color/palette, circular XY exclusions |
-| `reeds`, `rice_paddies` | area, density, height; 1..16 curved terraces |
+| `reeds`, `rice_paddies` | area, density, height; 1..16 curved terraces, optional corridor/crop exclusions, sampled dike contours in metadata |
 | `hills` | area, height, roughness 0..1; fixed 48×48 height field |
 | `mountains_backdrop` | 1..6 layers, area, height; full sloping ridges with distance palettes |
 | `rocks`, `cliff` | count/area/height; cliff width/height |
-| `path` | XYZ points, width, gravel/earth/stone/wood |
-| `lake`, `river`, `sea`, `waterfall` | ellipse-like irregular shape; river XYZ points/width; sea area/wave height; waterfall height/width |
+| `path` | XYZ points, width, gravel/earth/stone/wood; feathered crown, nonwalkable decorative aggregate |
+| `lake`, `river`, `sea`, `waterfall` | ellipse-like irregular shape; river XYZ points/width and optional banks; sea area/wave height; waterfall height/width |
 | `clouds` | cover 0..1, height, wisps/cumulus; opaque smooth lobes, no volume cost |
-| `falling_petals` | area, count 0..500, height, kind petals/leaves |
+| `falling_petals` | area, count 0..500, height, kind petals/leaves; ground=True creates a static carpet |
 | `birds_flock`, `butterflies` | count 0..60 / 0..80; cyclic closed XYZ flight path / area and height |
 | `fireflies` | area, count 0..500, height, night flag; emissive saved flight |
 | `fence`, `lantern` | length/height; lantern includes a warm practical light |
 | `wooden_bridge`, `gazebo` | length/width/arch height; walkable deck/floor and separate solid rails/posts |
+| `ferns` | centered area, count 0..300, height, season; rooted feathered fronds |
+| `fallen_log` | length/radius; two level seat positions, local front -Y |
+| `field_hut` | width/depth/height; original open gubuk, raised walkable floor and steps |
 | `village_house` | width, depth, height; original timber/plaster gable, warm practical windows |
 
 All accept seed 0..2147483647. Field area components are .1..400 m. Density is
@@ -50,6 +53,13 @@ capped at 18,000 grass clumps / 3,000 flowers / 9,000 rice clumps; reeds cap the
 Zero counts/density return empty geometry. `nature_catalog()` exposes exact
 Python signatures and defaults. Invalid inputs fail before the adapter creates
 objects. `add_nature` rejects assets above 1.2 million vertices.
+
+`rice_paddies(corridor=3.6)` leaves a central gap; the caller supplies the path.
+Its `metadata['dikes']` contains one sampled XYZ contour per level for planting
+and prop placement. Local XY circles in `exclude=[(x,y,r), ...]` clear crop roots;
+include blade reach when clearing a hut floor. `river(banks=True, bank_height=.12)` requires strictly
+increasing Y points and extends each bank to local X=-150 or +150 m. For other
+river directions, generate the water ribbon and supply bank geometry separately.
 
 ## Engine adapter and tools
 
@@ -79,7 +89,11 @@ add_nature("tree", location=[-4, 6, 0], seed=17,
 `set_environment` adds `density=.2..2` (default 1) for nature sets. Presets:
 park, beach, blossom_garden, pine_forest, lakeside, riverside, rice_terraces,
 mountain_village (`forest`, `mountain_lake`, `village` are accepted set/tool aliases).
-They use an open acting corridor, near detail, midground groves and distant ridges.
+Each uses an open acting area and its own layout: an L pier/open lake, winding river
+and bridge, contoured paddies and a narrow raised causeway/gubuk, a pond/gazebo
+blossom walk, a curved park avenue with a low green middle storey, and a fern/log
+conifer glade. Preset composition metadata is saved on the root; COMPOSITIONS
+contains recommended wide angles/elevations without overriding user cameras.
 Detail is selected once while building; it never switches
 with a camera, distance or time. Leaf size compensates for lower distant counts.
 When cameras exist, builds snapshot the union of their near frusta over the
@@ -103,8 +117,9 @@ and normal separate-process videos need no handlers. GLB contains geometry and
 morph targets; procedural drivers/nodes themselves are Blender-specific, so
 bake/snapshot motion for consumers that require it.
 
-Opaque water does not simulate refraction, fluids or reflections of unseen
-geometry. Clouds are stylized geometry, not a weather simulation. No dynamic
+Water presets enable native Eevee screen-space reflections and restore the prior
+ray-tracing settings when cleared. River normals scroll downstream in local Y.
+Opaque water does not simulate refraction, fluids or reflections of unseen geometry. Clouds are stylized geometry, not a weather simulation. No dynamic
 collision or leaf/cloth interaction. Ground fallback still permits routes across
 unmarked water; keep routes on banks or add a walkable bridge. Arbitrary layouts,
 large camera orbits, oversized flora and close face coverage need inspection.
@@ -113,35 +128,54 @@ arbitrary terrain mesh. Place roots or sample the height field explicitly.
 Generated fallen petals wrap beyond the ground/top, not with camera LOD.
 
 Nature cost factors multiply style/look factors once and are removed once during
-machine-speed learning. Draft uses 1. Default Eevee estimate floors are 1.15..1.50,
-including the measured park/blossom overhead; density scales the overhead. `render_options`
+machine-speed learning. Draft uses 1. Default Eevee estimate floors are 1.15..1.70,
+including the measured park/blossom/rice overhead; density scales the overhead. `render_options`
 reports `nature_cost_factor`. Conditions, measured seconds/frame and paths are
 recorded by `tests/nature_visuals.py` under gitignored `output/nature_*.json`.
 
 
-Measured on an Intel i5-4460 (CPU/software Eevee), Blender 5.2.4 LTS,
-two MPFB actors, fixed eight Blender/software-GL threads, overcast, look `none`,
-960×540, 16 samples. A 320px warm-up is excluded; values average two timed
-960px frames including RPC/render preparation. Legacy park: **30.02 s/frame**.
-Shared CPU load and shader allocation can vary; raw samples remain in JSON.
+Measured review revision on an Intel i5-4460 (CPU/software Eevee), Blender
+5.2.4 LTS, two MPFB actors, eight Blender/software-GL threads, overcast, look
+`none`, medium frame 32, 960×540, 16 samples. A 320px warm-up is excluded;
+each value averages two timed 960px frames including RPC/setup/PNG output.
+Legacy park bookend: **30.00 s/frame**; initial reference **39.40 s/frame**.
+Preserved 481cde5 park retimed: **48.53 s/frame**; historical legacy park:
+30.02 s/frame. Shared CPU load
+and size-specific shader/allocation work cause substantial variance.
 
-| Preset | Seconds/frame | / legacy park |
-|---|---:|---:|
-| park | 43.48 | 1.45× |
-| beach | 24.46 | 0.81× |
-| blossom_garden | 42.13 | 1.40× |
-| pine_forest | 35.43 | 1.18× |
-| lakeside | 32.34 | 1.08× |
-| riverside | 36.01 | 1.20× |
-| rice_terraces | 30.37 | 1.01× |
-| mountain_village | 36.14 | 1.20× |
+| Preset | Previous kit s/frame* | Revised s/frame | / legacy park bookend |
+|---|---:|---:|---:|
+| park | 43.48 | 38.56 | 1.29× |
+| beach | 24.46 | 23.42 | 0.78× |
+| blossom_garden | 42.13 | 38.75 | 1.29× |
+| pine_forest | 35.43 | 31.18 | 1.04× |
+| lakeside | 32.34 | 28.85 | 0.96× |
+| riverside | 36.01 | 31.19 | 1.04× |
+| rice_terraces | 30.37 | 48.40 | 1.61× |
+| mountain_village | 36.14 | 38.57 | 1.29× |
 
-These default-density fixtures were built before shot cameras, so this is the
-full acting-area population, without later camera-based thinning. All eight
-averages are below 1.6× the old park in this run. Look costs are additional.
+*Previous-kit values are the preserved historical batch, not a paired speedup
+measurement. The legacy park bookend measured **30.00 s/frame** (30.17/29.83 s),
+matching the historical 30.02 s reference. The initial batch reference was
+39.40 s/frame (50.73/28.08 s). Revised means are 0.78–1.61× the bookend:
+rice is at the approximate 1.6× budget boundary; the other means are ≤1.29×.
+Rice's latest samples were 50.80/45.99 s. Shared CPU load and allocation vary;
+these two-frame means do not guarantee a hard ceiling. Look costs are additional.
+Rice's default estimate floor is now 1.70, with margin over the 1.61× measurement;
+other floors are unchanged and no look/style factor is counted twice.
+
+These density-1 fixtures were built before shot cameras, without camera thinning.
+Review samples: `output/nature_review/benchmark.json`, `reference.json` and
+`visuals.json`; the bookend is `reference_end.json`. Original measurements remain in `output/nature_benchmark.json`.
 
 Reproduce with `CHAR3D_PORT=9997 CHAR3D_WORKSPACE=$PWD/output .venv/bin/python
 tests/nature_visuals.py --sets --only park --looks none`, then `--reuse` for other
 looks. Use `--bench` for warm-up + two 960×540/16-sample stills, and `--clips` for
 3 s, 512×288/12 fps drafts rendered in the same engine (no second Blender).
 Pure tests: `tests/test_nature.py`; integration: `tests/nature_e2e.py`.
+
+Review evidence: `tests/nature_review.py --reference --sheets --bench` reuses the
+preserved script_to_scene cast, rebuilds the scenery without camera thinning,
+and writes fresh sheets/CPU samples under `output/nature_review/`. It leaves the
+original sheets and baseline fixtures intact. Per-preset source signatures reject
+stale fixtures with `--reuse`; render-cost coefficients do not invalidate geometry.

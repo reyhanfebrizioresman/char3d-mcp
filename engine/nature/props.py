@@ -125,3 +125,40 @@ def fireflies(area=(8,8),count=60,height=1.3,night=True,seed=0):
         p=(random.uniform(-w/2,w/2),random.uniform(-l/2,l/2),random.uniform(.15,h))
         m.blob(p,(.009,.009,.009),random,rings=2,sides=5)
     return Asset('fireflies',[m] if m.faces else [],dict(seed=seed,night=night))
+
+
+def fallen_log(length=2.6,radius=.25,seed=0):
+    """Solid fallen timber along X, with a level cut top and two usable seats."""
+    l=number(length,'length',.7,12);r=number(radius,'radius',.12,.65);random=rng(seed)
+    m=Mesh('fallen_log',materials=[Material('bark',(.16,.075,.032)),
+        Material('log_endgrain',(.43,.29,.13))],solid=True)
+    m.tube((-l/2,0,r),(l/2,0,r),r,sides=12)
+    m.indices[-2:]=[1,1]
+    top=r*1.75
+    m.vertices=[(x,y,min(z,top)) for x,y,z in m.vertices]
+    m.seat=dict(centers=[[-l*.22,0,top],[l*.22,0,top]],front=[0,-1,0],floor=0,kind='log')
+    return Asset('fallen_log',[m],dict(seed=seed))
+
+
+def field_hut(width=2.8,depth=2.4,height=3.,seed=0):
+    """Original open gubuk with raised timber floor, steps and a gabled thatch roof."""
+    w=number(width,'width',1.5,8);d=number(depth,'depth',1.5,8);h=number(height,'height',2,6);rng(seed)
+    wood=Material('hut_timber',(.22,.12,.045),surface='wood')
+    floor=Mesh('hut_floor',materials=[wood],walkable=True)
+    _box(floor,(0,0,.25),(w,d,.10))
+    for i in range(2): _box(floor,(0,-d/2-.25-i*.3,.05*(2-i)),(w*.5,.30,.10*(2-i)))
+    parts=[floor]
+    for x in (-w*.43,w*.43):
+        for y in (-d*.43,d*.43):
+            post=Mesh('hut_post',materials=[wood],solid=True)
+            _box(post,(x,y,(h-.65)/2),(.12,.12,h-.65));parts.append(post)
+    roof=Mesh('hut_thatch',materials=[Material('thatch',(.36,.25,.105),surface='earth')],solid=True)
+    for sign in (-1,1):
+        face=((0,-d*.66,h),(sign*w*.66,-d*.66,h-.8),
+              (sign*w*.66,d*.66,h-.8),(0,d*.66,h))
+        roof.face(face if sign>0 else tuple(reversed(face)))
+        for j in range(16):
+            y=(j/15-.5)*d*1.32
+            roof.tube((0,y,h+.012),(sign*w*.66,y,h-.79),.012,sides=4)
+    parts.append(roof)
+    return Asset('field_hut',parts,dict(seed=seed))

@@ -25,6 +25,10 @@ def clear_sky():
     if root is not None and "c3d_outdoor_shadow_pool" in root:
         sc.eevee.shadow_pool_size = root["c3d_outdoor_shadow_pool"]
         sc.eevee.shadow_resolution_scale = root["c3d_outdoor_shadow_resolution"]
+    if root is not None and 'c3d_outdoor_raytracing' in root:
+        sc.eevee.use_raytracing=root['c3d_outdoor_raytracing']
+        if 'c3d_outdoor_ray_method' in root:
+            sc.eevee.ray_tracing_method=root['c3d_outdoor_ray_method']
     if "c3d_outdoor_previous_world" in sc:
         owned = sc.world
         sc.world = (sc.get("c3d_outdoor_previous_world_id") or
@@ -48,6 +52,12 @@ def configure_sky(preset="noon", strength=1, rotate=0, background=None):
     # Bound the software renderer's shadow atlas for large outdoor backdrops.
     sc.eevee.shadow_pool_size = "128"
     sc.eevee.shadow_resolution_scale = .5
+    if root.get('c3d_nature_reflections'):
+        if 'c3d_outdoor_raytracing' not in root:
+            root['c3d_outdoor_raytracing']=sc.eevee.use_raytracing
+            root['c3d_outdoor_ray_method']=sc.eevee.ray_tracing_method
+        sc.eevee.use_raytracing=True
+        sc.eevee.ray_tracing_method='SCREEN'
     if "c3d_outdoor_previous_world" not in sc:
         sc["c3d_outdoor_previous_world"] = sc.world.name if sc.world else ""
         if sc.world:

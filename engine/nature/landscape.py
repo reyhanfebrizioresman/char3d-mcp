@@ -110,11 +110,15 @@ def cliff(height=8., width=12., seed=0):
     return Asset('cliff',[mesh],dict(seed=seed))
 
 
-def path(points=((0,-8,0),(0,8,0)), width=2., material='gravel', seed=0):
-    """Walkable ribbon along local XYZ points, with original aggregate detail."""
+def path(points=((0,-8,0),(0,8,0)), width=2., material='gravel', seed=0,crown=True):
+    """Walkable ribbon with flush feathered edges and separate aggregate detail.
+
+    crown=False gives a flat ribbon 6mm above the points (used by water ribbons).
+    """
     ps=points3(points)
     w=number(width,'width',.1,20)
     if material not in ('gravel','earth','stone','wood'): raise ValueError('unknown path material')
+    if not isinstance(crown,bool): raise ValueError('crown must be boolean')
     random=rng(seed)
     palette={'gravel':(.42,.37,.27),'earth':(.24,.15,.07),'stone':(.36,.37,.32),'wood':(.28,.14,.06)}
     mesh=Mesh('path',materials=[Material(material,palette[material],surface=material)],walkable=True)
@@ -127,16 +131,26 @@ def path(points=((0,-8,0),(0,8,0)), width=2., material='gravel', seed=0):
         # Bounded miter joins: no gaps or overlapping strips at corners.
         left.append((p[0]-dy/length*w/2,p[1]+dx/length*w/2,p[2]+.006))
         right.append((p[0]+dy/length*w/2,p[1]-dx/length*w/2,p[2]+.006))
-        if i: mesh.face((left[i-1],right[i-1],right[i],left[i]))
+        if i:
+            if crown:
+                def rails(k):
+                    p=ps[k];a,b=left[k],right[k];lift=min(.006,w*.004)
+                    return ((a[0],a[1],p[2]+.0002),((a[0]+p[0])/2,(a[1]+p[1])/2,p[2]+lift),
+                            ((b[0]+p[0])/2,(b[1]+p[1])/2,p[2]+lift),(b[0],b[1],p[2]+.0002))
+                a,b=rails(i-1),rails(i)
+                for k in range(3): mesh.face((a[k],a[k+1],b[k+1],b[k]))
+            else: mesh.face((left[i-1],right[i-1],right[i],left[i]))
     # Scattered aggregate is sub-centimeter relief, joined to one mesh.
+    aggregate=Mesh('path_aggregate',materials=mesh.materials,occludes=False)
     for a,b in zip(ps,ps[1:]):
         dx,dy=b[0]-a[0],b[1]-a[1];length=math.hypot(dx,dy)
         for _ in range(min(1000,round(length*w*12))):
             t=random.random();side=random.uniform(-.45,.45)*w
             x=a[0]+dx*t-dy/length*side;y=a[1]+dy*t+dx/length*side
             z=a[2]+(b[2]-a[2])*t+.009;r=random.uniform(.008,.022)
-            mesh.face(((x-r,y-r,z),(x+r,y-r,z),(x,y+r,z+.004)))
-    return Asset('path',[mesh],dict(seed=seed))
+            aggregate.face(((x-r,y-r,z),(x+r,y-r,z),(x,y+r,z+.004)))
+    # Tiny relief is visual dressing, not a separate tread for whole-sole IK.
+    return Asset('path',[mesh,aggregate],dict(seed=seed,faces_per_segment=3 if crown else 1))
 
 
 def lake(shape=(14,9), seed=0):
@@ -155,18 +169,41 @@ def lake(shape=(14,9), seed=0):
     return Asset('lake',[mesh],dict(seed=seed,shape=(w,l)))
 
 
-def river(points=((-10,10,-.03),(0,5,-.03),(10,7,-.03)),width=3.,seed=0):
-    """Opaque animated water ribbon along XYZ points; no underlying bank geometry."""
+def river(points=((-10,10,-.03),(0,5,-.03),(10,7,-.03)),width=3.,seed=0,
+          banks=False,bank_height=.12):
+    """Flowing water ribbon; optional walkable banks for paths monotonic along Y.
+
+    bank_height is measured above each input point, not the wave crest. Banks
+    extend 150m sideways; supply monotonic Y points to keep their polygons simple.
+    """
     ps=points3(points)
-    out=path(ps,width,'stone',seed)
+    if not isinstance(banks,bool): raise ValueError('banks must be boolean')
+    bank_height=number(bank_height,'bank_height',.01,3)
+    if banks and any(b[1]<=a[1] for a,b in zip(ps,ps[1:])):
+        raise ValueError('river banks require increasing Y points')
+    out=path(ps,width,'stone',seed,crown=False)
     out.kind='river'
+    out.parts=out.parts[:1]
     m=out.parts[0]
     # Keep the ribbon only, without path aggregate, and use continuous surface.
     m.faces=m.faces[:len(ps)-1];m.indices=[0]*len(m.faces)
     m.vertices=m.vertices[:4*(len(ps)-1)]
-    m.materials=[Material('river_water',(.03,.22,.24),.16,.2,surface='water')]
+    m.materials=[Material('river_water',(.035,.15,.17),.12,.25,surface='water')]
     m.name='river';m.walkable=False;m.occludes=False;m.smooth=True
     m.motion=dict(kind='water',amplitude=.018,seed=seed)
+    if banks:
+        left=[m.vertices[0]]+[m.vertices[4*i+3] for i in range(len(ps)-1)]
+        right=[m.vertices[1]]+[m.vertices[4*i+2] for i in range(len(ps)-1)]
+        for side,edge in ((-1,left),(1,right)):
+            top=[(x,y,z-.006+bank_height) for x,y,z in edge]
+            outer=side*150
+            contour=[(outer,top[0][1],top[0][2]),*top,(outer,top[-1][1],top[-1][2])]
+            if side>0: contour.reverse()
+            bank=Mesh('river_bank',materials=[Material('riverbank_grass',(.13,.205,.065),surface='grass')],walkable=True)
+            bank.face(contour)
+            for a,b in zip(top,top[1:]):
+                bank.face((a,b,(b[0],b[1],b[2]-.18),(a[0],a[1],a[2]-.18)))
+            out.parts.append(bank)
     return out
 
 
