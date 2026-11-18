@@ -54,8 +54,8 @@ export function mount(root) {
       `<span class="chip">${icon("script")} Naskah → Adegan</span>`,
     ) +
     `
- <div class="step-line"><span class="step active"><b>01</b> Tulis cerita <span class="step-arrow">→</span></span><span class="step"><b>02</b> Periksa rencana <span class="step-arrow">→</span></span><span class="step"><b>03</b> Hidupkan adegan</span></div>
- <div class="script-layout"><div><section class="panel"><div class="editor-bar"><div class="editor-tab">${icon("script")} naskah.char3d <span class="dot"></span></div>${button("example", "Pakai contoh", "", "small subtle")}</div><div class="script-editor"><div class="line-numbers" aria-hidden="true">01<br>02<br>03<br>04<br>05<br>06<br>07<br>08<br>09<br>10</div><textarea id="script-text" class="screenplay" aria-label="Editor naskah" spellcheck="false" wrap="off"></textarea></div><div class="editor-footer"><span>BAHASA NASKAH · INDONESIA / ENGLISH</span><span id="script-count"></span></div><div class="editor-actions"><span class="help">Periksa rencana sebelum<br>membangun adegan Anda.</span><div class="row">${button("plan", "Lihat rencana", "eye", "subtle")}${button("build", "Bangun adegan", "spark", "primary")}</div></div></section>
+ <div class="step-line" id="script-steps"><span class="step active" data-step="1"><b>01</b> Tulis cerita <span class="step-arrow">→</span></span><span class="step" data-step="2"><b>02</b> Periksa rencana <span class="step-arrow">→</span></span><span class="step" data-step="3"><b>03</b> Hidupkan adegan</span></div>
+ <div class="script-layout"><div><section class="panel"><div class="editor-bar"><div class="editor-tab">${icon("script")} naskah.char3d <span class="dot"></span></div>${button("example", "Pakai contoh", "", "small subtle")}</div><div class="script-editor"><div class="line-numbers" aria-hidden="true">01<br>02<br>03<br>04<br>05<br>06<br>07<br>08<br>09<br>10</div><textarea id="script-text" class="screenplay" aria-label="Editor naskah" spellcheck="false" wrap="soft"></textarea></div><div class="editor-footer"><span>BAHASA NASKAH · INDONESIA / ENGLISH</span><span id="script-count"></span></div><div class="editor-actions"><span class="help">Periksa rencana sebelum<br>membangun adegan Anda.</span><div class="row">${button("plan", "Lihat rencana", "eye", "subtle")}${button("build", "Bangun adegan", "spark", "primary")}</div></div></section>
  <div class="script-hint">${icon("bulb")}<div><h3>Sutradara ada di tangan Anda.</h3><p>Tulis <code>[Budi duduk di kursi]</code> untuk aksi, atau <code>[Ana melambai]</code> untuk gestur. Deklarasikan karakter dengan <code>NAMA (deskripsi): dialog</code>.</p><details><summary>Panduan format naskah</summary><p><code>JUDUL:</code> memberi nama adegan. <code>LOKASI: park</code> memilih set. <code>CUACA: hujan</code> menambah cuaca. Satu dialog per baris; maksimal 4 karakter. Teks menggerakkan mulut tanpa menghasilkan suara ucapan. Untuk suara asli, gunakan format dict dengan audio melalui tool lanjutan.</p></details></div></div></div>
  <aside class="panel script-settings"><div class="panel-head"><h2>${icon("settings")} Pengaturan adegan</h2><span class="mono muted">SCENE</span></div><div class="settings-body"><div class="form-grid">
  ${field(
@@ -111,20 +111,54 @@ export function mount(root) {
   const editor = $("#script-text", root);
   const numbers = $(".line-numbers", root);
   editor.value = localStorage.getItem("char3d-script") || example;
+  // Soft-wrapped editor: a hidden mirror measures each logical line so its
+  // number stays aligned with the first visual row of that line.
+  const mirror = document.createElement("div");
+  mirror.className = "screenplay-mirror";
+  mirror.setAttribute("aria-hidden", "true");
+  editor.parentElement.appendChild(mirror);
+  const syncScroll = () => {
+    if (numbers.firstElementChild)
+      numbers.firstElementChild.style.transform = `translateY(${-editor.scrollTop}px)`;
+  };
+  const renumber = () => {
+    const cs = getComputedStyle(editor);
+    Object.assign(mirror.style, {
+      font: cs.font,
+      letterSpacing: cs.letterSpacing,
+      tabSize: cs.tabSize,
+      paddingLeft: cs.paddingLeft,
+      paddingRight: cs.paddingRight,
+      width: editor.clientWidth + "px",
+    });
+    const rows = editor.value.split("\n");
+    mirror.replaceChildren(
+      ...rows.map((text) => {
+        const row = document.createElement("div");
+        row.textContent = text || " ";
+        return row;
+      }),
+    );
+    const lineHeight = parseFloat(cs.lineHeight) || 26;
+    const heights = [...mirror.children].map((row) => row.offsetHeight || lineHeight);
+    numbers.innerHTML = `<div>${Array.from(
+      { length: Math.max(10, rows.length) },
+      (_, i) =>
+        `<span style="display:block;height:${heights[i] ?? lineHeight}px">${String(i + 1).padStart(2, "0")}</span>`,
+    ).join("")}</div>`;
+    syncScroll();
+  };
   const update = () => {
     $("#script-count", root).textContent =
       `${editor.value.length} karakter · tersimpan di browser`;
     localStorage.setItem("char3d-script", editor.value);
-    numbers.innerHTML = `<div>${Array.from({ length: Math.max(10, editor.value.split("\n").length) }, (_, i) => String(i + 1).padStart(2, "0")).join("<br>")}</div>`;
+    renumber();
   };
-  editor.addEventListener(
-    "scroll",
-    () =>
-      (numbers.firstElementChild.style.transform = `translateY(${-editor.scrollTop}px)`),
-  );
-  const resize = new ResizeObserver(
-    () => (numbers.style.height = editor.clientHeight + "px"),
-  );
+  editor.addEventListener("scroll", syncScroll);
+  const resize = new ResizeObserver(() => {
+    numbers.style.height = editor.clientHeight + "px";
+    renumber();
+  });
   resize.observe(editor);
   editor.addEventListener("input", update);
   update();
@@ -133,6 +167,7 @@ export function mount(root) {
     update();
   };
   const target = $("#script-result", root);
+  setStep(root, state.latestScript ? (state.latestScript.built ? 3 : 2) : 1);
   if (state.latestScript)
     showResult(target, state.latestScript.data, state.latestScript.built);
   else
@@ -166,6 +201,12 @@ export function mount(root) {
       '<strong id="build-status">Menyiapkan ' +
       (build ? "adegan" : "rencana") +
       '…</strong></div><p class="help" style="margin:10px 0 15px">Anda tetap dapat menjelajahi studio. Hasil akan muncul saat selesai.</p><div class="skeleton"></div></div>';
+    const section = target.closest(".result-section");
+    if (section && section.getBoundingClientRect().top > innerHeight - 160)
+      section.scrollIntoView({
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
     const result = await run("script_to_scene", parameters, {
       onUpdate: (job) => {
         const el = $("#build-status", target);
@@ -184,6 +225,7 @@ export function mount(root) {
       state.shots = null;
     } else state.plan = result.data;
     showResult(target, result.data, build);
+    setStep(root, build ? 3 : 2);
     if (build) {
       toast("Adegan siap. Menyiapkan pratinjau…");
       try {
@@ -210,6 +252,15 @@ export function mount(root) {
     $(`#${id}`, root).onclick = () =>
       action($(`#${id}`, root), () => perform(build), target);
   return () => resize.disconnect();
+}
+function setStep(root, current) {
+  for (const step of root.querySelectorAll("#script-steps .step")) {
+    const n = Number(step.dataset.step);
+    step.classList.toggle("active", n === current);
+    step.classList.toggle("done", n < current);
+    if (n === current) step.setAttribute("aria-current", "step");
+    else step.removeAttribute("aria-current");
+  }
 }
 export function refreshResult(target) {
   if (target && state.latestScript)

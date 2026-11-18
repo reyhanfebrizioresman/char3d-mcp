@@ -272,6 +272,14 @@ main {
   border-color: var(--accent);
   color: var(--accent);
 }
+.step.done {
+  color: var(--muted);
+}
+.step.done b {
+  background: var(--green-soft);
+  border-color: var(--green);
+  color: var(--green);
+}
 .step-arrow {
   color: var(--line);
   margin-left: 15px;
@@ -327,6 +335,20 @@ textarea.screenplay {
   resize: vertical;
   tab-size: 2;
   color: var(--text);
+}
+textarea.screenplay,
+.screenplay-mirror {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.screenplay-mirror {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  visibility: hidden;
+  pointer-events: none;
+  box-sizing: border-box;
 }
 textarea.screenplay:focus-visible {
   outline-offset: -2px;
