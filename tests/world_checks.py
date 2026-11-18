@@ -8,7 +8,7 @@ async def _world_checks(call,text_of):
     async def py(code):return (await data('run_blender_python',code=code))['result']
     await call('scene_info');await call('new_scene',frame_end=96)
     await py("bpy.context.scene.render.threads_mode='FIXED'\nbpy.context.scene.render.threads=8\nresult=True")
-    catalog=await data('world_schema');assert len(catalog['generators'])==38
+    catalog=await data('world_schema');assert len(catalog['generators'])==41
     await call('add_primitive',kind='cube',name='UserKeep',location=[60,60,0])
     before=await py("result=sorted(o.name for o in bpy.context.scene.objects)")
     dry=await data('direct_world',idea='whale',generator='offline',seed=21)
