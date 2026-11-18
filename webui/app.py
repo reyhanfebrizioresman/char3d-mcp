@@ -15,6 +15,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from mcp_server.server import engine, mcp
+from providers.tts import online_request
 
 from .jobs import AI_GENERATORS, JobQueue
 from .security import LocalOnlyMiddleware, Workspace, redact
@@ -67,7 +68,7 @@ def create_app(port=8765):
                 raise HTTPException(404, "Tool tidak tersedia")
             if not isinstance(arguments, dict):
                 raise ValueError("arguments harus berupa objek JSON")
-            if name in AI_GENERATORS and body.get("confirm_external") is not True:
+            if (name in AI_GENERATORS or online_request(name, arguments)) and body.get("confirm_external") is not True:
                 raise HTTPException(403, "Konfirmasi diperlukan: prompt/gambar/audio dikirim ke layanan AI pihak ketiga")
             workspace.validate_arguments(name, arguments)
             job = jobs.submit(name, arguments)
@@ -87,7 +88,7 @@ def create_app(port=8765):
 
     async def gallery(request):
         entries = []
-        for folder in ("renders", "exports", "projects"):
+        for folder in ("renders", "exports", "projects", "imports/audio/tts"):
             directory = workspace.root / folder
             if not directory.exists():
                 continue

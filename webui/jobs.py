@@ -80,6 +80,8 @@ class JobQueue:
         def scan(value):
             if isinstance(value, str):
                 url = self.workspace.url(value)
+                if not url and value.startswith("audio/tts/"):
+                    url = self.workspace.url(self.workspace.resolve(value, "imports"))
                 if url and url not in files:
                     files.append(url)
                     if value.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):

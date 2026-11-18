@@ -330,6 +330,7 @@ def list_audio():
     return {"strips": [{"name": s.name, "channel": s.channel,
                         "frames": [int(s.frame_final_start), int(s.frame_final_end) - 1],
                         "kind": s.get("char3d_audio_kind", "voice"),
+                        "speaker": s.get("char3d_speaker"),
                         "volume": round(s.volume, 2), "path": s.sound.filepath if s.sound else None}
                        for s in _sound_strips(sc)]}
 

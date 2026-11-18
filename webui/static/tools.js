@@ -1,3 +1,4 @@
+import { needsSpeechConsent, authorizeSpeech } from "./voices.js";
 import { screenRoot } from "./ui.js";
 import { run, state, scene, upload } from "./api.js";
 import {
@@ -69,6 +70,8 @@ const groups = {
     "remove_audio",
     "transcribe_audio",
     "lip_sync_audio",
+    "list_voices",
+    "text_to_speech",
     "talk_motion",
     "talk_gestures",
   ],
@@ -225,6 +228,10 @@ export function mount(root) {
               "Pilih resolusi terlebih dahulu melalui render_options atau layar Render.",
             );
           let confirmed = false;
+          if (needsSpeechConsent(tool.name, args)) {
+            confirmed = await authorizeSpeech(tool.name, args);
+            if (!confirmed) return;
+          }
           if (generators.has(tool.name)) {
             confirmed = await confirm(
               "Kirim ke layanan AI eksternal?",

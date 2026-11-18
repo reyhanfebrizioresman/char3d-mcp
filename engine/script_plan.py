@@ -68,7 +68,18 @@ def _target(text):
 
 
 def _descriptors(text, char, warnings):
+    # Preserve case in engine voice IDs (Edge names are case-sensitive), before
+    # age/catalog parsing can mistake digits/underscores inside a voice for assets.
+    voice = re.search(r"\b(?:suara|voice)\s*:\s*([^\s,()]+)", text, re.I)
+    if voice:
+        char["voice"] = voice[1]
+        text = text[:voice.start()] + " " + text[voice.end():]
     rest = text.lower()
+    for pattern, pitch in ((r"suara\s+berat|deep\s+voice", -3),
+                            (r"suara\s+tinggi|high\s+voice", 3)):
+        if re.search(pattern, rest):
+            char["pitch"] = pitch
+            rest = re.sub(pattern, " ", rest)
     genders = {"perempuan": 0, "wanita": 0, "female": 0, "laki-laki": 1, "pria": 1, "male": 1}
     for word, gender in genders.items():
         if re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", rest):
@@ -238,7 +249,12 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24):
         for field, known in (("hair", HAIR), ("beard", ())):
             if isinstance(char.get(field), str) and char[field] and char[field] not in known:
                 warnings.append(f"{ident}: unverified {field} asset {char[field]!r}; checked at build time")
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories"}:
+        if "voice" in char and (not isinstance(char["voice"], str) or not char["voice"].strip()):
+            raise ValueError("voice must be a nonempty engine:name string")
+        for key, default, low, high in (("pitch", 0, -12, 12), ("rate", 1, .5, 2)):
+            if key in char:
+                char[key] = _number(char.get(key, default), key, low, high)
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "rate"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):

@@ -18,7 +18,7 @@ def _appearance(char, catalog, seed, warnings):
     from ..script_plan import CLOTHES
 
     ident = char["id"]
-    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories")}
+    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories", "voice", "pitch", "rate")}
     args["seed"] = seed
     assets = catalog["assets"]
     metadata = catalog.get("clothing_metadata", {})

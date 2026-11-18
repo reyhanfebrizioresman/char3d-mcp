@@ -26,7 +26,7 @@ export function mount(root) {
       "Pratinjau, putar, dan unduh hasil dari workspace lokal.",
       button("gallery-refresh", "Segarkan", "refresh", "small subtle"),
     ) +
-    `<div class="toolbar"><label class="search">${icon("search")}${input("gallery-search", "", "search", 'placeholder="Cari hasil kreasi…" aria-label="Cari hasil kreasi"')}</label><div class="filter-tabs" aria-label="Filter galeri"><button data-filter="all" class="active">Semua</button><button data-filter="image">Gambar</button><button data-filter="video">Video</button><button data-filter="model">3D</button><button data-filter="project">Proyek</button></div></div><div class="section-label"><span id="gallery-count">Memuat hasil…</span><span class="mono">WORKSPACE / OUTPUT</span></div><div id="gallery-content"><div class="skeleton" style="height:260px"></div></div>`;
+    `<div class="toolbar"><label class="search">${icon("search")}${input("gallery-search", "", "search", 'placeholder="Cari hasil kreasi…" aria-label="Cari hasil kreasi"')}</label><div class="filter-tabs" aria-label="Filter galeri"><button data-filter="all" class="active">Semua</button><button data-filter="image">Gambar</button><button data-filter="video">Video</button><button data-filter="audio">Suara</button><button data-filter="model">3D</button><button data-filter="project">Proyek</button></div></div><div class="section-label"><span id="gallery-count">Memuat hasil…</span><span class="mono">WORKSPACE / OUTPUT</span></div><div id="gallery-content"><div class="skeleton" style="height:260px"></div></div>`;
   const content = $("#gallery-content", root);
   const type = (file) =>
     [".png", ".jpg", ".jpeg", ".webp"].includes(file.extension)
@@ -35,7 +35,9 @@ export function mount(root) {
         ? "video"
         : [".glb", ".gltf"].includes(file.extension)
           ? "model"
-          : "project";
+          : file.extension === ".wav"
+            ? "audio"
+            : "project";
   const draw = () => {
     const query = $("#gallery-search", root).value.toLowerCase();
     const list = state.gallery.filter(
@@ -48,7 +50,7 @@ export function mount(root) {
       ? `<div class="gallery-grid">${list
           .map((file) => {
             const t = type(file);
-            return `<article class="asset-card"><button class="asset-thumb" data-file="${esc(file.path)}" aria-label="Buka ${esc(file.name)}">${t === "image" ? `<img loading="lazy" src="${esc(file.url)}" alt="${esc(file.name)}">` : t === "video" ? `<video preload="metadata" muted src="${esc(file.url)}#t=0.1" aria-label="Cuplikan ${esc(file.name)}"></video>` : icon(t === "model" ? "scene" : file.extension === ".blend" ? "folder" : "script")}<span class="asset-type">${esc(file.extension.slice(1).toUpperCase())}</span></button><div class="asset-body"><h3 title="${esc(file.name)}">${esc(file.name)}</h3><div class="asset-meta"><span>${new Date(file.modified * 1000).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}</span><span>${bytes(file.size)}</span></div><div class="asset-actions"><span>${esc(file.folder)}/</span><a href="${esc(file.url)}?download=1" download>${icon("download")} Unduh</a></div></div></article>`;
+            return `<article class="asset-card"><button class="asset-thumb" data-file="${esc(file.path)}" aria-label="Buka ${esc(file.name)}">${t === "image" ? `<img loading="lazy" src="${esc(file.url)}" alt="${esc(file.name)}">` : t === "video" ? `<video preload="metadata" muted src="${esc(file.url)}#t=0.1" aria-label="Cuplikan ${esc(file.name)}"></video>` : icon(t === "model" ? "scene" : t === "audio" ? "audio" : file.extension === ".blend" ? "folder" : "script")}<span class="asset-type">${esc(file.extension.slice(1).toUpperCase())}</span></button><div class="asset-body"><h3 title="${esc(file.name)}">${esc(file.name)}</h3><div class="asset-meta"><span>${new Date(file.modified * 1000).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}</span><span>${bytes(file.size)}</span></div><div class="asset-actions"><span>${esc(file.folder)}/</span><a href="${esc(file.url)}?download=1" download>${icon("download")} Unduh</a></div></div></article>`;
           })
           .join("")}</div>`
       : empty(
@@ -101,6 +103,10 @@ export function mount(root) {
 }
 async function open(file, type) {
   const t = type(file);
+  if (t === "audio") {
+    modal(file.name, `<div class="modal-body"><audio controls autoplay src="${esc(file.url)}" aria-label="${esc(file.name)}" style="width:100%"></audio><p class="help">Suara dialog · WAV</p></div>`);
+    return;
+  }
   if (t === "image") return lightbox(file.url, file.name);
   if (t === "video") {
     const srt = state.gallery.find(

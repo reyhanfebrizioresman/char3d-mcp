@@ -34,6 +34,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `set_hand_pose` | Pose jari: rileks, terbuka, kepal, menunjuk, jempol, peace, tiga, empat, OK, dll. (rig MPFB, Mixamo, Rigify) |
 | `add_audio`, `duck_music`, `list_audio`, `remove_audio` | Suara `kind="voice"/"music"/"sfx"`; musik `loop=True` sampai akhir adegan + `fade_in`/`fade_out` (detik); `duck_music(amount_db=-12)` menurunkan musik saat dialog; video otomatis bersuara AAC |
 | `auto_sfx` | Foley prosedural tersinkron: langkah dari kontak kaki, duduk/berdiri, rustle kain opsional, ambience sesuai set; WAV 48 kHz/16-bit dengan seed dan cache hash, tanpa sampel unduhan |
+| `list_voices`, `text_to_speech` | Pilih mesin/suara: Piper offline, Edge online, F5 opsional, Chatterbox online; WAV 48 kHz dengan cache, pitch dan tempo |
 | `ai_text_to_speech` | Teks → suara (gratis, Chatterbox di Hugging Face, 23 bahasa) |
 | `estimate_landmarks` | Posisi sendi yang akan dipakai rig (tersimpan atau hasil tebakan dari bentuk mesh) |
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
@@ -66,6 +67,39 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `run_blender_python` | Hanya aktif jika `CHAR3D_ALLOW_PYTHON=1` |
 
 Konvensi pose dan resep alur kerja untuk AI ada di [AGENTS.md](AGENTS.md).
+
+## Suara dialog otomatis
+
+```bash
+scripts/install_tts.sh               # Piper + Edge; unduhan Piper ~63 MB + paket
+```
+
+`script_to_scene(naskah, language="id", tts_engine="piper")` sekarang membuat
+suara dialog otomatis secara **offline**. Gender, usia dan seed memilih variasi
+suara per karakter; pilih sendiri lewat bagian **Suara** di UI atau deskripsi
+`ANA (perempuan, 28, suara: edge:id-ID-GadisNeural): Halo!`. Dict karakter menerima
+`voice`, `pitch` (semiton), dan `rate` (pengali tempo). `build=False` menampilkan
+casting tanpa menghasilkan suara atau menghubungi jaringan. `voice=False` mematikan
+suara sintetis; `sound` mengatur Foley secara terpisah. `dialog(..., voice=True)`
+mengaktifkan fitur yang sama; default `dialog` tetap tanpa TTS.
+
+`list_voices(language="id")` menampilkan status dan perintah instalasi;
+`text_to_speech("Halo!", engine="piper")` menghasilkan WAV siap untuk
+`lip_sync_audio(..., timing="text", text="Halo!")`. Model disimpan di
+`~/.local/share/char3d/tts/` (`CHAR3D_TTS_DIR`), cache di `output/imports/audio/tts/`.
+Tool tidak mengunduh model otomatis; saat TTS belum tersedia, adegan tetap dibangun
+dengan gerak mulut dan peringatan.
+
+Piper Indonesia hanya memiliki satu speaker, sehingga perbedaan karakter adalah
+variasi pitch/tempo. Runtime Piper berlisensi GPL-3.0; repo model berlabel MIT tetapi
+tautan dataset pada model card belum jelas, jadi perlakukan model Indonesia sebagai
+**penggunaan pribadi**. Edge memakai API Microsoft tidak resmi yang dapat berubah;
+**teks dikirim ke Microsoft hanya bila Edge dipilih** (Ardi/Gadis). Chatterbox juga
+online, berkuota, dan belum mendukung Indonesia. UI meminta persetujuan sebelum
+mengirim teks. F5 tersedia sebagai backend opsional tanpa instalasi default;
+`scripts/install_tts.sh f5 --yes` menerima unduhan besar dan batas lisensi bobot dasar
+**nonkomersial**. Referensi kloning wajib milik sendiri atau berizin. Detail konfigurasi
+dan batasan ada di [Voices (TTS)](AGENTS.md#voices-tts).
 
 `interact(a, b, "handshake")` menyambung setelah animasi kedua rig. Pilih
 `hug`, `high_five`, `fist_bump`, `handover`, atau `pat_shoulder`; `start_frame`

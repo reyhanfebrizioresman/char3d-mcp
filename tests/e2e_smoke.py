@@ -19,6 +19,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
 # Test-only introspection: inspect the actual Blender animation curves, including
 # sibling face meshes, to prove speech and blinks survive expression generation.
@@ -3363,6 +3364,115 @@ result = dict(objects=sum(bool(o.get('c3d_weather')) for o in bpy.data.objects),
     print(f"outdoors: 4 sets | seat contact <= {max(contacts):.5f} m | {walk['detours']} detours | particles {counts} | sky/cleanup/scripts/draft OK")
 
 
+async def _tts_checks(call):
+    """Offline Piper only; safe to include in the normal suite without models."""
+    catalog = json.loads(text_of(await call("list_voices", language="id"))[-1])
+    if not catalog["engines"]["piper"]["installed"] or not any(
+            v["id"] == "piper:id_ID-news_tts-medium" and v["installed"] for v in catalog["voices"]):
+        print("TTS E2E SKIP: Piper/Indonesian voice missing; run scripts/install_tts.sh piper", flush=True)
+        return
+    await _tts_scene_check(call, "piper")
+
+
+async def _tts_scene_check(call, backend):
+    """Real speech -> text timing -> speaker strips/captions -> rendered AAC alignment.
+
+    Edge is run only with explicit --tts-edge, never by the ordinary smoke suite.
+    """
+    import wave
+    import av
+    import numpy as np
+    from pathlib import Path
+    from providers.tts.audio import read
+
+    async def data(tool, **args):
+        return json.loads(text_of(await call(tool, **args))[-1])
+
+    await call("scene_info")
+    await call("new_scene", frame_end=24)
+    script = ("JUDUL: Suara di Studio\n"
+              "ANA (perempuan, 28, rambut bob): Halo, Budi! Apa kabar?\n"
+              "BUDI (laki-laki, 45, rambut pendek): Baik, Ana. Terima kasih!")
+    plan = await data("script_to_scene", script=script, build=False, tts_engine=backend, language="id")
+    assert len(plan["voices"]) == 2 and not plan["generated_files"]
+    built = await data("script_to_scene", script=script, tts_engine=backend, language="id", sound=False)
+    assert len(built["generated_files"]) == 2, built
+    assert len(built["lines"]) == 2 and built["timings"]["tts"] >= 0
+    assert all(c["realistic"] for c in built["characters"].values()), "MPFB needed for real facial checks"
+    if backend == "edge":
+        assert any("Microsoft" in p for p in built["privacy"])
+    audio_strips = (await data("list_audio"))["strips"]
+    assert len(audio_strips) == 2 and all(s["kind"] == "voice" and s["speaker"] for s in audio_strips)
+    checked = (await data("run_blender_python", code=f'''
+from engine.commands.semantic import load_words
+from engine.commands.face import _face_meshes, VISEMES
+from engine.commands.talk import _fcurves
+sc = bpy.context.scene
+chars = {built['characters']!r}
+lines = {built['lines']!r}
+files = {built['generated_files']!r}
+words, peaks = {{}}, {{}}
+for line, file in zip(lines, files):
+    name = file['character']
+    char = chars[name]
+    base = bpy.data.objects[char['mesh']]
+    words[name] = load_words(base)
+    end = line['start'] + file['duration_s'] * sc.render.fps
+    assert words[name] and all(line['start'] <= w[1] <= w[2] <= end + 1 for w in words[name]), words
+    peaks[name] = []
+    for mesh in _face_meshes(base):
+        sk = mesh.data.shape_keys
+        if not sk or not sk.animation_data or not sk.animation_data.action:
+            continue
+        paths = {{f'key_blocks["{{n}}"].value' for n in VISEMES}}
+        for fc in _fcurves(sk.animation_data.action):
+            if fc.data_path in paths:
+                for kp in fc.keyframe_points:
+                    if kp.co.y > .05:
+                        assert line['start'] <= kp.co.x <= end + 1, (name, tuple(kp.co), end)
+                        peaks[name].append(float(kp.co.x))
+    assert peaks[name], name
+assert sc.get('char3d_subtitles'), 'no subtitles'
+result = {{'words': words, 'peak_counts': {{n: len(p) for n,p in peaks.items()}}}}
+'''))["result"]
+    # Inspect the actual cameras before rendering the draft.
+    stills = await call("render_frames", frames=[ln["start"] + 8 for ln in built["lines"]],
+                        camera="scene", engine_name="workbench", size=256)
+    await call("save_project", path=f"tts_{backend}.blend")
+    movie = await data("render_video", path=f"tts_{backend}.mp4", quality="draft", width=384, height=216,
+                       frame_start=1, frame_end=built["frames"][1], wait=True)
+    assert movie["status"] == "done", movie
+    with av.open(movie["path"]) as clip:
+        assert clip.streams.audio and clip.streams.audio[0].codec_context.name == "aac"
+        assert clip.streams.video[0].frames == built["frames"][1]
+    rendered, sr = read(movie["path"])
+    workspace = Path(os.environ.get("CHAR3D_WORKSPACE", Path(ROOT) / "output"))
+    alignment = []
+    for line, file in zip(built["lines"], built["generated_files"]):
+        path = workspace / "imports" / file["path"]
+        with wave.open(str(path)) as wav:
+            assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (48000, 1, 2)
+        original, _ = read(path)
+        expected = round((line["start"] - 1) / 24 * sr)
+        lo = max(0, expected - round(.15 * sr))
+        segment = rendered[lo:expected + len(original) + round(.15 * sr)]
+        nfft = 1 << (len(segment) + len(original) - 2).bit_length()
+        conv = np.fft.irfft(np.fft.rfft(segment, nfft) * np.fft.rfft(original[::-1], nfft), nfft)
+        scores = conv[len(original) - 1:len(segment)]
+        offset = int(np.argmax(scores))
+        found = segment[offset:offset + len(original)]
+        correlation = float(np.dot(found, original) / np.sqrt(np.dot(found, found) * np.dot(original, original)))
+        delta = (lo + offset - expected) / sr
+        assert abs(delta) < 1 / 24 and correlation > .75, (delta, correlation)
+        assert np.sqrt(np.mean(found ** 2)) > .025
+        alignment.append({"character": file["character"], "offset_s": delta, "correlation": correlation})
+    report = {"build": built, "timeline_audio": audio_strips, "checked": checked,
+              "movie": movie, "alignment": alignment,
+              "stills": [json.loads(t) for t in text_of(stills)]}
+    (workspace / f"tts_{backend}_checks.json").write_text(json.dumps(report, indent=2))
+    print(f"TTS {backend.upper()} E2E OK: 2 speaker strips | words/subtitles/lip peaks OK | AAC aligned | {movie['path']}", flush=True)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -3382,6 +3492,13 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
+        await _tts_checks(call)
+        if "--tts-only" in sys.argv:
+            if "--tts-edge" in sys.argv:
+                await _tts_scene_check(call, "edge")
+            await call("engine_shutdown")
+            print("TTS E2E OK", flush=True)
+            return
         assert "auto_sfx" in tools
         await _auto_sfx_checks(call)
         assert "set_weather" in tools

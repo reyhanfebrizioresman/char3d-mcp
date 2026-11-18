@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP, Image
 
 from providers import speech
 from providers.jobs import JobManager
+from providers.tts import TTS
 
 from .blender_client import ROOT, BlenderClient
 
@@ -38,6 +39,7 @@ Read resource char3d://guide for the full workflow guide.
 mcp = FastMCP("char3d", instructions=INSTRUCTIONS)
 engine = BlenderClient()
 ai = JobManager(engine)
+tts = TTS(engine.workspace)
 
 View = Literal["front", "back", "left", "right", "top", "three_quarter", "three_quarter_left"]
 Engine = Literal["workbench", "eevee", "cycles"]
@@ -982,6 +984,32 @@ def _workspace_path(path: str, sub: str = "imports") -> str:
 
 
 @mcp.tool()
+async def list_voices(language: str | None = None, engine: str | None = None) -> dict:
+    """TTS engines, install commands, licenses, privacy and available voices/genders.
+    Default catalog is offline; engine='edge' explicitly refreshes Microsoft's voice
+    list (static fallback on network error). No models are downloaded. Piper is local;
+    Edge and Chatterbox are online/explicit only. F5 needs a registered reference clip
+    and transcript: use only your own voice or one you have permission to use."""
+    return await anyio.to_thread.run_sync(lambda: tts.catalog(language, engine))
+
+
+@mcp.tool()
+async def text_to_speech(text: str, voice: str | None = None, engine: str = "piper",
+                         language: str = "id", rate: float = 1.0, pitch: float = 0.0,
+                         gender: float | None = None, output: str | None = None) -> dict:
+    """Generate cached 48 kHz mono PCM WAV; path is relative to imports/, ready for
+    lip_sync_audio/add_audio. voice='piper:id_ID-news_tts-medium',
+    'edge:id-ID-GadisNeural', 'f5:<registered-name>' or 'chatterbox:ms'.
+    rate is 0.5..2, pitch -12..12 semitones. No automatic model downloads.
+    Default Piper is offline. Explicit Edge sends text to Microsoft (unofficial API);
+    Chatterbox sends text to a quota-limited HF Space (no Indonesian). No fallback to
+    online engines. F5 references require the user's own voice or permission to use it.
+    Returns path, duration_s, engine, voice, cached and privacy for online engines."""
+    return await anyio.to_thread.run_sync(lambda: tts.synthesize(
+        text, voice, engine, language, rate, pitch, gender, output))
+
+
+@mcp.tool()
 async def add_audio(path: str, start_frame: int = 1, volume: float = 1.0,
                     kind: Literal["voice", "music", "sfx"] = "voice", loop: bool = False,
                     fade_in: float = 0.0, fade_out: float = 0.0) -> dict:
@@ -1147,7 +1175,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           environment: str | None = None, lighting: str = "studio",
                           camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
                           subtitles: bool = True, language: str = "auto", seed: int = 0,
-                          build: bool = True, sound: bool = True) -> dict:
+                          build: bool = True, sound: bool = True, voice: bool = True,
+                          tts_engine: str = "piper", voices: dict | None = None) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     Text: JUDUL/TITLE: ..., LOKASI/LOCATION: podcast_studio, then
@@ -1162,7 +1191,13 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     known procedural prop when needed. Contact keys survive later speaking gestures.
     build=False returns a deterministic normalized plan and estimated frames with NO
     scene changes or audio transcription. Builds use existing body/dialog/camera tools,
-    captions and hair/loose-cloth motion; text is mouth-only, audio is placed on the timeline.
+    captions and hair/loose-cloth motion. voice=True synthesizes text with the chosen
+    tts_engine (default offline Piper); missing TTS warns and keeps mouth motion.
+    Per-character voice/pitch/rate or voices={id: {voice, pitch, rate}} overrides casting.
+    Text descriptors: suara: edge:id-ID-GadisNeural, suara berat/tinggi.
+    Edge/Chatterbox send text online ONLY when explicitly chosen; privacy is reported.
+    build=False reports casting without synthesis/network. F5 references must be your
+    own voice or used with permission. Existing audio always takes precedence.
     sound=True adds procedural footsteps, sit/stand and ambience after animation;
     sound=False disables generation. Results include sfx strip counts and paths.
     Outfit: casual/formal/sport/summer/winter (explicit clothes overrides it).
@@ -1177,32 +1212,40 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     without facial animation. Returns plan, character rig/mesh map, frames, shots,
     duration_s, warnings and per-stage timings. Nothing is saved automatically.
     """
-    prepared = script
-    audio_started = None
-    audio_seconds = 0
-    if build and isinstance(script, dict):
-        import copy
-        import time
-        from engine.script_plan import parse_script
-        parse_script(script, name=name, environment=environment, seed=seed)
-        prepared = copy.deepcopy(script)
-        audio_started = time.perf_counter()
-        for beat in prepared.get("beats", []):
+    import time
+    from engine.script_plan import parse_script
+    started = time.perf_counter()
+    prepared = parse_script(script, name=name, environment=environment, seed=seed)
+    parse_warnings = list(prepared["warnings"])
+    casting = tts.cast(prepared["characters"], tts_engine, language, seed, voices) if voice else {}
+    report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
+    if build and voice:
+        prepared["beats"], report = await anyio.to_thread.run_sync(
+            lambda: tts.prepare(prepared["beats"], casting, language))
+    audio_started = time.perf_counter()
+    if build:
+        for beat in prepared["beats"]:
             if beat.get("audio") and "say" in beat:
                 beat["audio"] = _workspace_path(beat["audio"])
-                if speech.available():
+                # Known TTS text uses voiced-interval timing, preserving exact spelling
+                # without ASR downloads or transcription errors.
+                if not beat.pop("tts_generated", False) and speech.available():
                     asr_language = None if language == "auto" else language
                     tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(beat["audio"], asr_language))
                     beat["words"] = tr["words"]
                     beat["text"] = tr["text"] or beat.get("text", "")
-        audio_seconds = time.perf_counter() - audio_started
+    audio_seconds = time.perf_counter() - audio_started
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
                   language=language, seed=seed, build=build, sound=sound)
-    if audio_started is not None:
-        # The total exposed to callers includes preparation in the MCP process.
-        r["timings"]["total"] = round(time.perf_counter() - audio_started, 4)
-        r["timings"]["audio_prepare"] = round(audio_seconds, 4)
+    r["voices"] = casting
+    r["generated_files"] = report["generated_files"]
+    r["cache_hits"] = report["cache_hits"]
+    r["warnings"] = list(dict.fromkeys(parse_warnings + r.get("warnings", []) + report["warnings"]))
+    if report["privacy"]:
+        r["privacy"] = report["privacy"]
+    r["timings"].update(total=round(time.perf_counter() - started, 4),
+                         audio_prepare=round(audio_seconds, 4), tts=report["tts_seconds"])
     return r
 
 
@@ -1224,12 +1267,19 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
                  camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
                  shot: Literal["medium_full", "medium", "medium_close", "close_up"] = "medium",
                  gestures: Literal["calm", "presenter", "energetic"] | None = "presenter",
-                 expression: Expression | None = "smile", language: str | None = None) -> dict:
+                 expression: Expression | None = "smile", language: str | None = None,
+                 voice: bool = False, tts_engine: str = "piper",
+                 voices: dict | None = None, seed: int = 0) -> dict:
     """A conversation between 2-4 characters (realistic humans with faces work best), in one
     call. lines = [{"speaker": "Ana_rig", "audio": "audio/ana1.wav"},
                    {"speaker": "Budi_rig", "text": "Wah, ide yang bagus!"}, ...]
     — each line is lip-synced back to back (audio: local Whisper word timing, the sound goes
-    on the timeline; text: mouth motion only), gap_s apart (per line "pause_s" overrides).
+    on the timeline; text: mouth motion by default), gap_s apart (per line "pause_s" overrides).
+    voice=True synthesizes text with tts_engine (offline Piper by default). voices maps
+    speaker names to engine:name strings or {voice, pitch, rate, gender, age}.
+    Missing TTS warns and retains mouth motion; existing audio wins. Explicit Edge or
+    Chatterbox sends text to a third party and returns a privacy note. No online fallback.
+    F5 reference voices must be your own or used with permission.
     Then: characters are staged facing each other (stage=False keeps your placement),
     everyone looks at whoever talks (the talker at the person they answer), listeners nod on
     stressed words, each speaker gestures on their own words (gestures=None: off), blinks,
@@ -1239,44 +1289,32 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     head positions; singles follow actual face direction after walks/sits/turns.
     Run body clips (animate/walk) BEFORE this;
     add_subtitles afterwards for captions. Returns turns, shots, next_start_frame."""
-    if not lines:
-        raise ValueError("lines is empty")
-    speakers = []
-    for ln in lines:
-        if "speaker" not in ln or not (ln.get("audio") or ln.get("text")):
-            raise ValueError(f"each line needs speaker and audio or text: {ln}")
-        if ln["speaker"] not in speakers:
-            speakers.append(ln["speaker"])
-    cast = characters or speakers
-    if stage and len(cast) >= 2:
-        fps = (await run("stage_dialog", characters=cast, layout=layout,
-                         distance=distance))["fps"]
-    else:
-        fps = (await run("scene_info"))["fps"]
-    frame = int(start_frame)
-    turns = []
-    for ln in lines:
-        frame += int(round(float(ln.get("delay_s", 0)) * fps))
+    import time
+    started = time.perf_counter()
+    if not lines or any(not ln.get("speaker") or not (ln.get("audio") or ln.get("text")) for ln in lines):
+        raise ValueError("each line needs speaker and audio or text")
+    speakers = list(dict.fromkeys(ln["speaker"] for ln in lines))
+    casting = tts.cast([{"id": s} for s in speakers], tts_engine, language, seed, voices) if voice else {}
+    report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
+    prepared = [dict(ln) for ln in lines]
+    if voice:
+        prepared, report = await anyio.to_thread.run_sync(lambda: tts.prepare(prepared, casting, language))
+    for ln in prepared:
         if ln.get("audio"):
-            path = _workspace_path(ln["audio"])
-            words, transcript = None, None
-            if speech.available():
-                tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
-                words, transcript = tr["words"], tr["text"]
-            r = await run("lip_sync_audio", character=ln["speaker"], audio=path,
-                          start_frame=frame, words=words,
-                          text=None if words else ln.get("text"), strength=0.9, add_sound=True)
-            text = transcript or ln.get("text")
-        else:
-            r = await run("lip_sync", character=ln["speaker"], text=ln["text"], start_frame=frame)
-            text = ln["text"]
-        a, b = r["frames"]
-        turns.append({"speaker": ln["speaker"], "start": a, "end": b, "text": text})
-        frame = b + 1 + int(round(float(ln.get("pause_s", gap_s)) * fps))
-    d = await run("dialog_direct", turns=turns, characters=cast, camera=camera, shot=shot,
-                  gestures=gestures, expression=expression)
-    d["lines"] = turns
-    d["next_start_frame"] = d["frames"][1] + 1
+            ln["audio"] = _workspace_path(ln["audio"])
+            if not ln.pop("tts_generated", False) and speech.available():
+                tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(
+                    ln["audio"], None if language == "auto" else language))
+                ln["words"] = tr["words"]
+                ln["text"] = tr["text"] or ln.get("text", "")
+    d = await run("dialog", lines=prepared, characters=characters or speakers, stage=stage,
+                  layout=layout, distance=distance, start_frame=start_frame, gap_s=gap_s,
+                  camera=camera, shot=shot, gestures=gestures, expression=expression, language=language)
+    d.update(voices=casting, generated_files=report["generated_files"], cache_hits=report["cache_hits"])
+    d["warnings"] = list(dict.fromkeys(d.get("warnings", []) + report["warnings"]))
+    d["timings"] = {"tts": report["tts_seconds"], "total": round(time.perf_counter() - started, 4)}
+    if report["privacy"]:
+        d["privacy"] = report["privacy"]
     return d
 
 

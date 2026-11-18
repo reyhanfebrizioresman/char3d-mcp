@@ -75,6 +75,7 @@ def main():
             raise AssertionError("UI server did not start")
         names = {tool["name"] for tool in catalog}
         assert "script_to_scene" in names and "run_blender_python" not in names
+        assert {"list_voices", "text_to_speech"} <= names
         assert http("/api/tools/create_human")["inputSchema"]["properties"]["style"]["enum"]
         print("PASS tool catalog + JSON schema; Python hidden even when enabled", flush=True)
         reject("/api/run", 403, data={"tool": "new_scene"}, headers={"Origin": "https://evil.example"})
@@ -87,6 +88,25 @@ def main():
         reject("/api/run", 403, data={"tool": "ai_text_to_video", "confirm_external": "true"})
         reject("/api/run", 400, data={"tool": "open_project", "arguments": {"path": "/etc/passwd"}})
         print("PASS local Origin/Host; AI consent; Python invocation blocked", flush=True)
+        voices = tool("list_voices", {"language": "id"})["data"]
+        assert set(voices["engines"]) == {"piper", "edge", "f5", "chatterbox"}
+        assert voices["engines"]["edge"]["online"] and "install_hint" in voices["engines"]["f5"]
+        for name, arguments in [
+            ("text_to_speech", {"text": "Halo", "voice": "edge:id-ID-GadisNeural"}),
+            ("dialog", {"voice": True, "tts_engine": "edge", "lines": [{"speaker": "Ana", "text": "Halo"}]}),
+            ("script_to_scene", {"script": "ANA (perempuan, suara: edge:id-ID-GadisNeural): Halo!"}),
+        ]:
+            reject("/api/run", 403, data={"tool": name, "arguments": arguments})
+        if voices["engines"]["piper"]["installed"] and any(v["id"] == "piper:id_ID-news_tts-medium" and v["installed"] for v in voices["voices"]):
+            arguments = {"text": "Halo, apa kabar?", "language": "id"}
+            speech = tool("text_to_speech", arguments)["data"]
+            assert speech["engine"] == "piper" and speech["path"].startswith("audio/tts/")
+            assert http("/api/files/imports/" + speech["path"], binary=True).startswith(b"RIFF")
+            assert tool("text_to_speech", arguments)["data"]["cached"]
+            assert any(f["extension"] == ".wav" for f in http("/api/gallery")["files"])
+            print("PASS list_voices + Piper text_to_speech → cached WAV/playable gallery; online TTS consent", flush=True)
+        else:
+            print("PASS list_voices + online TTS consent; Piper synthesis SKIP: scripts/install_tts.sh piper", flush=True)
         tool("scene_info")
         tool("new_scene", {"frame_end": 24})
         human = tool("create_human", {"name": "WebUISmoke", "style": "stylized"})["data"]

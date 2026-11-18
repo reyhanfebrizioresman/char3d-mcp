@@ -38,7 +38,8 @@ Keep previews ≤ 512 px unless the user asks for more.
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `auto_sfx`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
-  `lip_sync_audio`, `talk_motion`, `talk_gestures`, `ai_text_to_speech` (free HF Space)
+  `list_voices`, `text_to_speech`, `lip_sync_audio`, `talk_motion`, `talk_gestures`,
+  `ai_text_to_speech` (legacy free HF Space)
 - Dialog: `dialog`, `stage_dialog`, `script_to_scene` (live dialog coverage, guest seating, outfits + hair/cloth motion)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
   `validate_rig`, `list_bones`, `set_pose`
@@ -242,6 +243,8 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
 - Expressions and lip sync are shape keys: they export to glTF as morph targets.
 
 ## Voice & audio lip sync
+See **Voices (TTS)** for automatic/selectable speech. `sound` controls Foley separately
+from the `voice` speech switch.
 - `auto_sfx(characters=None, kinds=None, surface="auto", volume=1.0, seed=0,
   frame_start=None, frame_end=None, clear=False)` adds original procedural Foley after
   body animation. Defaults to footsteps, sit (including stand) and ambience; add `"cloth"`
@@ -324,17 +327,84 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   `cues=[{"frame": 48, "gesture": "two"}, {"frame": 90, "gesture": "big", "hold_seconds": 0.8}]`
   (works without speech too); `semantic=False` for beats only.
 - Recipe — talking presenter: `create_realistic_human` → `animate(rig, "idle")` →
-  `lip_sync_audio(rig, "audio/line.wav")` → `set_expression(rig, "smile", 0.45, frame=1,
+  `tts = text_to_speech("Selamat datang!", engine="piper", language="id")` →
+  `lip_sync_audio(rig, tts.path, text="Selamat datang!", timing="text", language="id")` → `set_expression(rig, "smile", 0.45, frame=1,
   keyframe=True)` → `set_lighting("studio")` → `camera_shot(shot="close_up",
   move="push_in")` → `auto_blink(rig)` → `talk_motion(rig)` → `talk_gestures(rig)` →
   `add_subtitles()` (optional captions) → `render_video` (use `shot="medium"` when gestures
   should be seen).
 - `transcribe_audio` gives text + word times without animating.
 
+## Voices (TTS)
+`scripts/install_tts.sh` installs Piper + Edge packages and the Indonesian Piper voice.
+Select only one with `scripts/install_tts.sh piper` / `scripts/install_tts.sh edge`.
+Models live in `~/.local/share/char3d/tts/` (override `CHAR3D_TTS_DIR`); the installer
+verifies recorded byte sizes and SHA-256 in `scripts/tts_voices.tsv` and reuses cached
+files. Tools never download models. Missing models report the exact install command.
+
+- **piper** (default): offline CPU. Runtime piper-tts 1.8 is GPL-3.0. The
+  [news_tts model card](https://huggingface.co/rhasspy/piper-voices/blob/main/id/id_ID/news_tts/medium/MODEL_CARD)
+  belongs to an MIT-labelled repository but its dataset link is unclear; treat this
+  Indonesian voice as **personal use**, pending clarification. One Indonesian speaker
+  exists; age/gender/seed select distinct pitch/rate profiles. These are timbre variants
+  of that speaker, with modest numpy WSOLA pitch shifts, not separate trained voices
+  or full formant conversion. Large shifts can sound less natural. Rate uses Piper
+  `length_scale`; pitch shifting preserves its duration. Other Piper `.onnx` +
+  `.onnx.json` pairs can be placed under `tts/piper/`; multi-speaker IDs use `#speaker`.
+- **edge**: online, explicit only. `edge:id-ID-ArdiNeural` / `edge:id-ID-GadisNeural`
+  supply Indonesian male/female voices; `list_voices(engine="edge")` refreshes other
+  languages with a static fallback. **Text goes to Microsoft**. This is an unofficial
+  API that can change or fail; edge-tts is LGPL-3.0. No offline engine ever falls back
+  to Edge. Online results include a `privacy` note, including cache hits.
+- **f5**: optional local cloning; **not installed by default**. `scripts/install_tts.sh
+  f5 --yes` prints the size/license before installing a large CPU PyTorch environment
+  (roughly 3 GB), >=1.35 GB Indonesian checkpoint, vocabulary and vocoder. The
+  [Indonesian fine-tune](https://huggingface.co/anantoj/f5-id-v1) is Apache-2.0, while
+  [upstream base weights](https://github.com/SWivid/F5-TTS#license) are CC-BY-NC
+  (**non-commercial**). Dependencies are separate in `requirements-f5.txt`; use a
+  Python/PyTorch version supported by F5 if the current interpreter has no wheels.
+  Register `tts/f5/voices/Ana.json` with `{"voice_reference":"my_voice.wav",
+  "reference_text":"Exact reference transcript", "language":"id", "gender":"female"}`.
+  Relative references resolve beside that JSON. Use only the user's own voice or a
+  voice they have permission to use. All model/vocoder files and transcripts must
+  exist locally; inference does not auto-download a model or ASR weights.
+- **chatterbox**: explicit online wrapper of the existing free Hugging Face Space
+  (MIT, tiny GPU quota, may queue/fail, **no Indonesian**). Use `chatterbox:ms` only
+  when Malay is acceptable. Text is sent to Hugging Face/ResembleAI. The existing
+  `ai_text_to_speech` job API remains unchanged.
+
+`list_voices(language="id")` reports installed engines, licenses, privacy, install hints
+and voices. The default catalog and all casting are offline; explicitly requesting
+`engine="edge"` refreshes its list. `text_to_speech(text, voice=None, engine="piper",
+language="id", rate=1.0, pitch=0.0, gender=None, output=None)` returns `path` relative to
+`imports/`, `duration_s`, `engine`, `voice`, `cached`, and online `privacy`. `rate` is a
+0.5..2 multiplier; `pitch` is -12..12 semitones (small shifts recommended). `output`
+optionally copies the cached WAV to another `.wav` path inside `imports/`.
+All engines normalize to 48 kHz mono 16-bit PCM, target active RMS ~-18.4 dBFS with
+a -1 dBFS peak ceiling, short fades and 40 ms silence pads. Peak limiting can reduce
+RMS for high-crest audio. Cache keys cover engine/version/model, voice, exact text,
+language, rate, pitch and DSP version under `imports/audio/tts/`.
+
+`script_to_scene(..., voice=True, tts_engine="piper")` casts deterministically per
+character from gender, age and seed. Explicit `voice`/`pitch`/`rate` override the
+profile. Text: `ANA (perempuan, 28, suara: edge:id-ID-GadisNeural): Halo!` or English
+`voice: ...`; `suara berat` / `suara tinggi` set pitch -3 / +3. Dict:
+`{"id":"Ana", "gender":0, "voice":"piper:id_ID-news_tts-medium", "pitch":1, "rate":1.05}`.
+Both script and dialog also accept `voices={"Ana": {"voice":"edge:id-ID-GadisNeural",
+"pitch":1, "rate":1.05}}`; dialog keys are rig/speaker names and may include age/gender.
+`build=False` reports `voices` with engine/voice/pitch/rate/online without synthesis,
+audio reads or network. Builds report `generated_files`, `cache_hits`, `timings.tts`.
+Existing recorded audio takes priority. Missing/failed TTS warns and keeps mouth motion;
+no build fails solely for missing TTS, and no other backend is tried implicitly.
+Generated text uses voiced-interval word timing (not acoustic forced alignment), so
+captions, expressions, gestures, listeners and music ducking share the speech timeline.
+The web UI asks for consent before sending text online and can play cached WAVs.
+
 ## Dialog (2–4 characters)
 `dialog(lines, ...)` performs a whole conversation in one call. `lines =
 [{"speaker": "Ana_rig", "audio": "audio/a1.wav"}, {"speaker": "Budi_rig", "text": "..."}]`
-(audio = real voice with Whisper timing and sound on the timeline; text = mouth only;
+(audio = real voice with Whisper timing and sound on the timeline; text = mouth only
+by default, or real synthesized speech with `voice=True, tts_engine="piper"`;
 optional per line `pause_s` / `delay_s`). It:
 - stages the cast (`stage_dialog`: left→right in order, facing each other, cheated 35°
   toward the camera; `layout` angled / face_to_face / side_by_side, `distance` m;
@@ -364,7 +434,8 @@ listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
 
 ## Script → scene
 `script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
-subtitles=True, language="auto", seed=0, build=True, sound=True)` composes the existing tools into
+subtitles=True, language="auto", seed=0, build=True, sound=True, voice=True,
+tts_engine="piper", voices=None)` composes the existing tools into
 a complete scene for 1–4 characters. `build=False` returns a deterministic normalized
 `plan` (characters, beats with `estimated_frames`, warnings) without changing the scene,
 reading audio or transcribing it. Frame estimates use the current scene fps; walking
@@ -421,8 +492,10 @@ script = {"title": "Morning", "environment": "office",
 ```
 Speech can include `audio="audio/line.wav"` (relative to imports/). The MCP process
 uses local Whisper when available; otherwise supplied text follows voiced intervals,
-or audio-only mouth motion is used. Text alone produces mouth motion without a voice;
-`sound=True` can still add procedural effects and ambience.
+or audio-only mouth motion is used. Text alone synthesizes speech when the chosen TTS
+is installed (`voice=True` by default); otherwise a warning preserves mouth motion.
+Use `voice=False` for silent text animation. `sound=True` separately adds procedural
+effects and ambience. See **Voices (TTS)** for casting, per-character overrides and privacy.
 Without word times, captions are disabled with a warning; silent cast members keep
 their base expression and listener motion without requiring their own speech.
 Other dict beats: `stand`, `hold` (`prop`, `hand`), `gesture`/`pose` (`name` from the
@@ -458,7 +531,7 @@ Recipe: `new_scene()` → `script_to_scene(script, build=False)` →
 `render_frames([line.start + 5, ...], camera="scene", engine_name="eevee", size=512)` →
 inspect the frames → `save_project("morning.blend")` → `render_video(quality="draft", wait=True)`.
 Limits inherit the component tools: no obstacle/desk/arm collision avoidance, static
-seats, one held prop per hand, rule-based text pronunciation, no automatic voice generation.
+seats, one held prop per hand, rule-based text pronunciation and approximate text/audio alignment.
 Outfit/accessory selection does not solve garment/hair/seat intersections; inspect posed Eevee frames.
 Declare characters before using them; invalid references fail with a clear error.
 
