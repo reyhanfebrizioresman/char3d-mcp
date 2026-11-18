@@ -383,6 +383,11 @@ def _progress(job):
 
 
 def _report(job):
+    if job.get("kind") == "film":
+        from .film import report
+        return report(job)
+    if job["status"] == "queued":
+        return {"job_id": job["id"], "status": "queued", "path": job["path"]}
     _finalize(job)
     last, text = _progress(job)
     total = job["frames"][1] - job["frames"][0] + 1
@@ -420,13 +425,15 @@ def _report(job):
 @command("render_video")
 def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="preview",
                  width=None, height=None, fps=None, wait=False, resolution=None, vertical=False,
-                 subtitles=None):
+                 subtitles=None, _defer=False):
     """Render the scene camera / shot timeline to MP4 (H.264) in a background process.
 
     subtitles: None = burn in captions when add_subtitles is set up, False = never,
     True = required (error when not set up). An .srt file is written next to the video.
     """
     from . import subtitles as subs, graphics as gfx
+    if not _defer and any(j.get("kind") == "film" and j["status"] == "running" for j in JOBS.values()):
+        raise ValueError("A film render is active; wait for it or cancel_render before starting another render")
     if quality not in QUALITY:
         raise ValueError(f"quality must be one of {list(QUALITY)}")
     sc = bpy.context.scene
@@ -511,11 +518,8 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
         render_cmd += ["--python-exit-code", "1", "--python", script, "--", spec_path]
     else:
         render_cmd += ["-a"]
-    with open(log, "wb") as lf:
-        proc = subprocess.Popen(render_cmd, stdout=lf,
-                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     from .audio import _sound_strips
-    job = {"id": job_id, "proc": proc, "path": path, "base": base, "blend": blend, "log": log,
+    job = {"id": job_id, "proc": None, "render_cmd": render_cmd, "path": path, "base": base, "blend": blend, "log": log,
            "audio": bool(_sound_strips(sc)),
            "quality": quality, "frames": [start, end], "status": "running",
            "started": time.time(),
@@ -528,11 +532,22 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     job["model_spf"] = _model_spf(QUALITY[quality][0], QUALITY[quality][2], out_w, out_h,
                                   _scene_weight(sc)) * _effects_cost(sc, QUALITY[quality][0])
     JOBS[job_id] = job
+    if _defer:
+        job["status"] = "queued"
+        return _report(job)
+    _launch(job)
     if wait:
         while job["status"] == "running":
             job["proc"].wait()
             _finalize(job)
     return _report(job)
+
+
+def _launch(job):
+    with open(job["log"], "wb") as lf:
+        job["proc"] = subprocess.Popen(job["render_cmd"], stdout=lf,
+                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    job.update(status="running", started=time.time())
 
 
 @command("render_options")
@@ -595,7 +610,12 @@ def cancel_render(job_id):
     job = JOBS.get(job_id)
     if not job:
         raise KeyError(f"unknown job {job_id}")
-    if job["proc"].poll() is None:
+    if job.get("kind") == "film":
+        from .film import cancel
+        return cancel(job)
+    if job["status"] in ("done", "failed", "cancelled"):
+        return _report(job)
+    if job["proc"] is not None and job["proc"].poll() is None:
         job["proc"].terminate()
         job["proc"].wait(timeout=10)
     job["status"] = "failed"

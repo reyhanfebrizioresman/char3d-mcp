@@ -1,3 +1,4 @@
+import { scriptTool, storyboard, buildProgress, filmScript } from "./film.js";
 import { lookPicker, mountLookPicker, lookLabel } from "./looks.js";
 import { screenRoot } from "./ui.js";
 import { mountVoices, needsSpeechConsent, authorizeSpeech } from "./voices.js";
@@ -60,7 +61,7 @@ export function mount(root) {
  <div class="step-line" id="script-steps"><span class="step active" data-step="1"><b>01</b> Tulis cerita <span class="step-arrow">→</span></span><span class="step" data-step="2"><b>02</b> Periksa rencana <span class="step-arrow">→</span></span><span class="step" data-step="3"><b>03</b> Hidupkan adegan</span></div>
  <div class="script-layout"><div><section class="panel"><div class="editor-bar"><div class="editor-tab">${icon("script")} naskah.char3d <span class="dot"></span></div>${button("example", "Pakai contoh", "", "small subtle")}</div><div class="script-editor"><div class="line-numbers" aria-hidden="true">01<br>02<br>03<br>04<br>05<br>06<br>07<br>08<br>09<br>10</div><textarea id="script-text" class="screenplay" aria-label="Editor naskah" spellcheck="false" wrap="soft"></textarea></div><div class="editor-footer"><span>BAHASA NASKAH · INDONESIA / ENGLISH</span><span id="script-count"></span></div><div class="editor-actions"><span class="help">Periksa rencana sebelum<br>membangun adegan Anda.</span><div class="row">${button("plan", "Lihat rencana", "eye", "subtle")}${button("build", "Bangun adegan", "spark", "primary")}</div></div></section>
  <section class="panel voice-section" id="script-voices" aria-label="Suara dialog"></section>
- <div class="script-hint">${icon("bulb")}<div><h3>Sutradara ada di tangan Anda.</h3><p>Tulis <code>[Budi duduk di kursi]</code> untuk aksi, atau <code>[Ana melambai]</code> untuk gestur. Deklarasikan karakter dengan <code>NAMA (deskripsi): dialog</code>.</p><details><summary>Panduan format naskah</summary><p><code>JUDUL:</code> memberi nama adegan. <code>LOKASI: park</code> memilih set. <code>CUACA: hujan</code> menambah cuaca. <code>SUASANA: senja</code> memilih tampilan sinematik. Satu dialog per baris; maksimal 4 karakter. Suara otomatis memakai Piper offline. Pilih mesin dan suara tiap karakter di bagian Suara. Gunakan <code>suara: edge:id-ID-GadisNeural</code> atau <code>suara berat</code> di deskripsi karakter; layanan online meminta persetujuan.</p></details></div></div></div>
+ <div class="script-hint">${icon("bulb")}<div><h3>Sutradara ada di tangan Anda.</h3><p>Tulis <code>[Budi duduk di kursi]</code> untuk aksi, atau <code>[Ana melambai]</code> untuk gestur. Deklarasikan karakter dengan <code>NAMA (deskripsi): dialog</code>.</p><details><summary>Panduan format naskah</summary><p><code>ADEGAN 1: Kafe</code> memulai adegan film. Tambahkan <code>[TRANSISI: dissolve 1 detik]</code> sebelum header berikutnya, <code>KARTU: Sore harinya</code> untuk kartu judul, dan <code>[Ana berganti baju formal]</code> sebelum dialog. Deklarasikan tokoh sekali. <code>JUDUL:</code> memberi nama adegan. <code>LOKASI: park</code> memilih set. <code>CUACA: hujan</code> menambah cuaca. <code>SUASANA: senja</code> memilih tampilan sinematik. Satu dialog per baris; maksimal 4 karakter. Suara otomatis memakai Piper offline. Pilih mesin dan suara tiap karakter di bagian Suara. Gunakan <code>suara: edge:id-ID-GadisNeural</code> atau <code>suara berat</code> di deskripsi karakter; layanan online meminta persetujuan.</p></details></div></div></div>
  <aside class="panel script-settings"><div class="panel-head"><h2>${icon("settings")} Pengaturan adegan</h2><span class="mono muted">SCENE</span></div><div class="settings-body"><div class="form-grid">
  ${field(
    "Bahasa",
@@ -159,6 +160,7 @@ export function mount(root) {
       `${editor.value.length} karakter · tersimpan di browser`;
     localStorage.setItem("char3d-script", editor.value);
     renumber();
+    $("#build", root).textContent = filmScript(editor.value) ? "Bangun semua adegan" : "Bangun adegan";
   };
   editor.addEventListener("scroll", syncScroll);
   const resize = new ResizeObserver(() => {
@@ -239,10 +241,12 @@ export function mount(root) {
     localStorage.removeItem("char3d-director-previous");
     update(); resetDraft();
   });
-  const perform = async (build) => {
+  const perform = async (build, sceneIndex = null) => {
     const parameters = args(build);
-    const online = needsSpeechConsent("script_to_scene", parameters);
-    if (online && !await authorizeSpeech("script_to_scene", parameters)) return;
+    const tool = scriptTool(parameters.script);
+    if (sceneIndex) parameters.scene_index = sceneIndex;
+    const online = needsSpeechConsent(tool, parameters);
+    if (online && !await authorizeSpeech(tool, parameters)) return;
     await scene(true);
     target.innerHTML =
       '<div class="panel panel-body"><div class="row">' +
@@ -256,9 +260,14 @@ export function mount(root) {
         behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
         block: "start",
       });
-    const result = await run("script_to_scene", parameters, {
+    const result = await run(tool, parameters, {
       confirmExternal: online,
       onUpdate: (job) => {
+        if (job.progress?.scenes) {
+          let progress = target.querySelector(".film-build-progress");
+          if (progress) progress.outerHTML = buildProgress(job.progress);
+          else target.insertAdjacentHTML("beforeend", buildProgress(job.progress));
+        }
         const el = $("#build-status", target);
         if (el)
           el.textContent =
@@ -296,6 +305,7 @@ export function mount(root) {
       }
     }
   };
+  target.rebuildScene = index => perform(true, index);
   for (const [id, build] of [
     ["plan", false],
     ["build", true],
@@ -319,6 +329,7 @@ export function refreshResult(target) {
 }
 function showResult(target, data, built) {
   const plan = data.plan || data;
+  if (plan.scenes) return storyboard(target, data, built);
   const frames = data.frames || plan.estimated_frames || [1, 1];
   const fps = plan.fps || 24;
   target.innerHTML = `<div class="panel"><div class="panel-head"><h2>${icon(built ? "check" : "eye")} ${esc(plan.title || plan.name || "Rencana adegan")}</h2><span class="chip ${built ? "green" : "warm"}">${built ? "Adegan terbangun" : "Rencana siap"}</span></div><div class="stats"><div class="stat"><strong>${plan.characters?.length || 0}</strong><span>KARAKTER</span></div><div class="stat"><strong>${plan.beats?.length || 0}</strong><span>BEAT CERITA</span></div><div class="stat"><strong>${Number(data.duration_s || (frames[1] - frames[0] + 1) / fps).toFixed(1)}<small class="muted" style="font-size:11px"> dtk</small></strong><span>${built ? "DURASI" : "ESTIMASI DURASI"} · ${fps} FPS</span></div><div class="stat"><strong>${built ? data.shots?.length || 0 : "—"}</strong><span>SHOT KAMERA</span></div></div><div class="panel-body">${plan.look ? `<p class="help">Suasana: ${esc(lookLabel(plan.look.preset))}</p>` : plan.recommended_look ? `<p class="help">Saran suasana: ${esc(lookLabel(plan.recommended_look))} · pilih di pengaturan untuk mencoba.</p>` : ""}<div class="cast-grid">${(plan.characters || []).map((c) => `<div class="cast-card"><div class="avatar">${esc(c.id?.slice(0, 1) || "?")}</div><div><h3>${esc(c.id)}</h3><p>${esc(c.age || 25)} tahun · ${c.gender === 0 ? "Perempuan" : c.gender === 1 ? "Laki-laki" : "Karakter"} · ${esc(c.hair || "tanpa rambut")}</p></div></div>`).join("")}</div><div class="beats">${(

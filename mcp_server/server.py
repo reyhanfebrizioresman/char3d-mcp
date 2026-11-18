@@ -35,6 +35,10 @@ Film: set_lighting -> camera_shot (one per shot, consecutive frames) -> optional
 cinematic_look (after weather; golden_hour outdoors, studio_film indoors) -> render_frames
 camera="scene" -> (add_subtitles for captions) -> render_video(quality="draft") -> render_options (let the user pick a
 resolution, shown with estimated time) -> render_video(quality="preview"/"final", resolution=...).
+Multi-scene: script_to_film(build=False) -> script_to_film -> open_film_scene for each
+Eevee check/edit/save -> render_film(quality="draft") -> film_render_options (owner
+chooses resolution) -> render_film. film_info reads the manifest; render_status and
+cancel_render cover the whole film. script_to_scene rejects multi-scene scripts.
 Read resource char3d://guide for the full workflow guide.
 """
 
@@ -1407,6 +1411,111 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     r["timings"].update(total=round(time.perf_counter() - started, 4),
                          audio_prepare=round(audio_seconds, 4), tts=report["tts_seconds"])
     return r
+
+
+@mcp.tool()
+async def script_to_film(script: dict | str, name: str | None = None,
+                         environment: str | None = None, lighting: str = "studio",
+                         camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
+                         subtitles: bool = True, language: str = "auto", seed: int = 0,
+                         build: bool = True, sound: bool = True, voice: bool = True,
+                         tts_engine: str = "piper", voices: dict | None = None,
+                         look: str | dict | None = None, body_language: bool = True,
+                         scene_index: int | None = None) -> dict:
+    """Build a film from ADEGAN/SCENE headers or {title, characters, scenes:[...]}.
+
+    Each scene has name, environment, look, weather, lighting, card, transition_in,
+    beats and optional cast. Declarations persist across scenes. [Ana berganti baju
+    formal] / [Ana changes into formal] changes her outfit for this and later scenes.
+    Use changes before the scene's action/dialogue. TRANSISI/TRANSITION between
+    headers accepts cut, dissolve, fade_black/dip_black, fade_white plus seconds.
+    KARTU/CARD inserts a centered card (default 2 s). Dissolves overlap scenes;
+    dips preserve the cut duration. Characters retain global seeds and voice casting.
+    build=False is deterministic, has no Blender/file/audio/network side effects.
+    Builds save projects/<name>/scene_01.blend etc and film.json. scene_index is an
+    optional one-based rebuild; other changed scenes require rebuilding all.
+    This replaces the current editor scene; save existing work first. Inspect each
+    scene with open_film_scene and Eevee. Then film_render_options + render_film.
+    Voice/privacy and component limitations match script_to_scene.
+    """
+    from engine.film_plan import parse_film
+    import copy
+    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting)
+    casting = tts.cast(plan["characters"], tts_engine, language, seed, voices) if voice else {}
+    plan["voices"] = casting
+    if not build:
+        return dict(kind="film", built=False, plan=plan, voices=casting,
+                    frames=plan["estimated_frames"], duration_s=plan["duration_s"], warnings=plan["warnings"])
+    prepared = copy.deepcopy(plan)
+    reports = []
+    for scene in prepared["scenes"]:
+        if scene_index is not None and scene["index"] != scene_index:
+            continue
+        beats = scene["plan"]["beats"]
+        report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
+        if voice:
+            beats, report = await anyio.to_thread.run_sync(lambda: tts.prepare(beats, casting, language))
+        for beat in beats:
+            if beat.get("audio") and "say" in beat:
+                beat["audio"] = _workspace_path(beat["audio"])
+                if not beat.pop("tts_generated", False) and speech.available():
+                    tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(
+                        beat["audio"], None if language == "auto" else language))
+                    beat["words"] = tr["words"]
+                    beat["text"] = tr["text"] or beat.get("text", "")
+        scene["plan"]["beats"] = beats
+        reports.append(report)
+    prepared["warnings"] = list(dict.fromkeys(prepared["warnings"] + [w for r in reports for w in r["warnings"]]))
+    result = await run("script_to_film", script=script, name=plan["name"], lighting=lighting,
+        camera=camera, subtitles=subtitles, language=language, seed=seed, build=True,
+        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared)
+    result["voices"] = casting
+    result["generated_files"] = [f for r in reports for f in r["generated_files"]]
+    result["cache_hits"] = sum(r["cache_hits"] for r in reports)
+    result["warnings"] = list(dict.fromkeys(result["warnings"] + [w for r in reports for w in r["warnings"]]))
+    result["privacy"] = list(dict.fromkeys(p for r in reports for p in r["privacy"]))
+    return result
+
+
+@mcp.tool()
+async def film_info(name: str | None = None) -> dict:
+    """Read a saved film manifest. Omit name for the active film or available films."""
+    return await run("film_info", name=name)
+
+
+@mcp.tool()
+async def open_film_scene(name: str, index: int) -> dict:
+    """Open a film scene (one-based index). Save edits with save_project to its path.
+    Replaces the current editor scene, so save outstanding edits first.
+    """
+    return await run("open_film_scene", name=name, index=index)
+
+
+@mcp.tool()
+async def film_render_options(name: str | None = None, quality: Literal["draft", "preview", "final", "cycles"] = "final",
+                              vertical: bool = False, calibrate: bool = False) -> dict:
+    """Per-scene and total film estimates from render_options and learned machine speed.
+    Offer resolution choices to the owner before preview/final; preserves editor edits.
+    """
+    return await run("film_render_options", name=name, quality=quality, vertical=vertical, calibrate=calibrate)
+
+
+@mcp.tool()
+async def render_film(name: str | None = None, path: str = "film.mp4",
+                       quality: Literal["draft", "preview", "final", "cycles"] = "draft",
+                       resolution: str | None = None, width: int | None = None,
+                       height: int | None = None, vertical: bool = False,
+                       subtitles: bool = True, wait: bool = False, resume: bool = True) -> dict:
+    """Render saved scenes serially then compose one H.264/AAC MP4 with Blender VSE.
+    Choose resolution with film_render_options first for preview/final. Scene MP4s
+    include voice/music/Foley; transitions fade audio, cards have a continuous silent
+    audio bed. Global subtitles and .srt use exact scene/overlap/card offsets.
+    Unchanged .blend bytes + render settings reuse cached scene clips (resume=True).
+    Edits must be saved. Poll render_status(job_id); cancel_render stops the whole film.
+    Preserves the editor scene; only one render queue can run at a time.
+    """
+    return await run("render_film", name=name, path=path, quality=quality, resolution=resolution,
+        width=width, height=height, vertical=vertical, subtitles=subtitles, wait=wait, resume=resume)
 
 
 @mcp.tool()

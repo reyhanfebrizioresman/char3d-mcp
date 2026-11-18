@@ -1,3 +1,4 @@
+import { switcher } from "./film.js";
 import { lookPicker, mountLookPicker } from "./looks.js";
 import { screenRoot } from "./ui.js";
 import { run, state, scene, request } from "./api.js";
@@ -29,7 +30,7 @@ export function mount(root) {
       "Periksa dunia Anda, satu objek dan satu frame pada satu waktu.",
       `<div class="row">${button("scene-refresh", "Sinkronkan", "refresh", "subtle small")}${button("scene-save", "Simpan proyek", "save", "small")}</div>`,
     ) +
-    `<div class="scene-layout"><div class="stack"><section class="panel"><div class="panel-head"><h2>Objek adegan</h2><span id="object-count" class="chip">—</span></div><div style="padding:13px"><label class="search">${icon("search")}${input("object-search", "", "search", 'placeholder="Cari objek…" aria-label="Cari objek"')}</label></div><div class="object-list" id="object-list" tabindex="0" aria-label="Daftar objek adegan"><div class="skeleton"></div></div></section><div class="row">${button("scene-open", "Buka proyek", "folder", "small subtle")}${button("scene-new", "Adegan baru", "plus", "small subtle")}</div><div class="help">Z ke atas · satuan meter<br>Karakter menghadap −Y (depan).</div></div><div class="stack"><section class="panel"><div class="panel-head"><h2>${icon("camera")} Monitor adegan</h2><span id="scene-meta" class="mono muted">SCENE VIEW</span></div><div class="viewport" id="scene-viewport">${state.previews[0] ? `<img src="${esc(state.previews[0])}" alt="Pratinjau adegan terbaru">` : empty("camera", "Temukan sudut terbaik.", "Pilih frame dan kamera, lalu buat pratinjau untuk memeriksa komposisi.")}</div><form id="preview-form" class="preview-controls">${field("Frame · pisahkan koma", input("preview-frames", "1", "text", 'required pattern="[0-9, ]+"'))}${field(
+    `<section id="film-switcher" class="panel film-switcher" aria-label="Adegan film"></section><div class="scene-layout"><div class="stack"><section class="panel"><div class="panel-head"><h2>Objek adegan</h2><span id="object-count" class="chip">—</span></div><div style="padding:13px"><label class="search">${icon("search")}${input("object-search", "", "search", 'placeholder="Cari objek…" aria-label="Cari objek"')}</label></div><div class="object-list" id="object-list" tabindex="0" aria-label="Daftar objek adegan"><div class="skeleton"></div></div></section><div class="row">${button("scene-open", "Buka proyek", "folder", "small subtle")}${button("scene-new", "Adegan baru", "plus", "small subtle")}</div><div class="help">Z ke atas · satuan meter<br>Karakter menghadap −Y (depan).</div></div><div class="stack"><section class="panel"><div class="panel-head"><h2>${icon("camera")} Monitor adegan</h2><span id="scene-meta" class="mono muted">SCENE VIEW</span></div><div class="viewport" id="scene-viewport">${state.previews[0] ? `<img src="${esc(state.previews[0])}" alt="Pratinjau adegan terbaru">` : empty("camera", "Temukan sudut terbaik.", "Pilih frame dan kamera, lalu buat pratinjau untuk memeriksa komposisi.")}</div><form id="preview-form" class="preview-controls">${field("Frame · pisahkan koma", input("preview-frames", "1", "text", 'required pattern="[0-9, ]+"'))}${field(
       "Kamera / sudut",
       select("preview-camera", [
         ["scene", "Kamera adegan"],
@@ -76,6 +77,7 @@ export function mount(root) {
     const revision = lookRevision;
     const info = await scene(true);
     showObjects(root, info);
+    await switcher(root, refresh);
     const currentLook = info.cinematic_look?.preset || "none";
     if (revision === lookRevision) {
       looks.dataset.value = currentLook;
@@ -133,6 +135,14 @@ export function mount(root) {
     );
   };
   $("#scene-save", root).onclick = () => {
+    if (state.scene?.film && state.film) {
+      const entry = state.film.scenes[state.scene.film.index - 1];
+      action($("#scene-save", root), async () => {
+        await run("save_project", { path: entry.project });
+        toast("Adegan film tersimpan.");
+      }, target);
+      return;
+    }
     modal(
       "Simpan proyek",
       `<form id="save-form"><div class="modal-body">${field("Nama proyek (.blend)", input("project-name", "adegan.blend", "text", 'required pattern="[^/\\\\]+[.]blend"'))}<p class="help" style="margin-top:12px">Proyek disimpan ke workspace/projects/.</p></div><div class="modal-actions"><button class="button primary" type="submit">${icon("save")} Simpan proyek</button></div></form>`,

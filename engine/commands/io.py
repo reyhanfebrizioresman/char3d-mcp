@@ -243,6 +243,9 @@ def save_project(path="scene.blend"):
     from .weather import refresh_weather
     refresh_weather()
     path = context.resolve(path, "projects")
+    from .film import saved_scene
+    saved_scene(path)
+    bpy.context.scene.pop("char3d_editor_source", None)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     _absolute_external_paths()
     bpy.ops.wm.save_as_mainfile(filepath=path)

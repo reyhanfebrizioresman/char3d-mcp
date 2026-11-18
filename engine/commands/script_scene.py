@@ -18,7 +18,7 @@ def _appearance(char, catalog, seed, warnings):
     from ..script_plan import CLOTHES
 
     ident = char["id"]
-    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories", "voice", "pitch", "rate")}
+    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate")}
     args["seed"] = seed
     assets = catalog["assets"]
     metadata = catalog.get("clothing_metadata", {})
@@ -104,7 +104,7 @@ def _skeleton(command_name, params):
 @command("script_to_scene")
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
                     subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
-                    body_language=True):
+                    body_language=True, character_seeds=None):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -177,7 +177,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 objname = f"{ident}_{suffix}"
                 suffix += 1
             if realistic:
-                args = _appearance(char, catalog, seed + i * 101, warnings)
+                args = _appearance(char, catalog, (character_seeds or {}).get(ident, seed + i * 101), warnings)
                 h = dispatch("create_realistic_human", {"name": objname, **args})
                 warnings.extend(f"{ident}: {note}" for note in h.get("warnings", []))
                 rig = h["armature"]
@@ -189,6 +189,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     raise RuntimeError(f"rig failed: {r}")
                 rig = r["armature"]
             characters[ident] = {"rig": rig, "mesh": h["name"], "realistic": realistic}
+            if realistic and character_seeds is not None:
+                characters[ident]["appearance"] = {**args,
+                    **{k: h[k] for k in ("skin", "hair", "clothes", "beard", "outfit", "seed")}}
             _skeleton("apply_pose", {"armature": rig, "pose": "relaxed", "keyframe": True, "frame": 1})
     cast = [c["rig"] for c in characters.values()]
     prefix = f"{cast[0]}_Script"

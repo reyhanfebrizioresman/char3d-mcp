@@ -51,6 +51,8 @@ Keep previews ≤ 512 px unless the user asks for more.
   `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
+- Multi-scene films: `script_to_film`, `film_info`, `open_film_scene`,
+  `film_render_options`, `render_film` (shared `render_status` / `cancel_render`)
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
   `hold_prop`, `release_prop` (indoor + city_street, park, cafe_terrace, beach)
 - Interactions: `interact` (handshake, hug, high_five, fist_bump, handover, pat_shoulder)
@@ -563,6 +565,69 @@ Limits inherit the component tools: no obstacle/desk/arm collision avoidance, st
 seats, one held prop per hand, rule-based text pronunciation and approximate text/audio alignment.
 Outfit/accessory selection does not solve garment/hair/seat intersections; inspect posed Eevee frames.
 Declare characters before using them; invalid references fail with a clear error.
+
+## Films (multi-scene)
+`script_to_film(script, name=None, build=True, scene_index=None, ...)` reuses the
+single-scene pipeline, saving `projects/<name>/scene_01.blend`, etc., and `film.json`.
+It replaces the editor scene during building; save outstanding work first.
+`build=False` returns a deterministic storyboard without Blender/file/audio/network
+changes. Single-scene scripts still work with `script_to_scene`, with their original
+result shape. That tool rejects ADEGAN/SCENE headers and points to `script_to_film`.
+
+Text adds `ADEGAN 1: Kafe` / `SCENE 1:` / `ADEGAN:` / `SCENE:`. Each scene accepts
+LOKASI/LOCATION, SUASANA/LOOK/MOOD, CUACA/WEATHER and PENCAHAYAAN/LIGHTING.
+Declare characters once (a bare `ANA (perempuan, 28)` is valid for films), or at
+first dialogue. References are case-insensitive; up to four global characters.
+Scene casts are inferred from speech/actions/targets, or specified by dict `cast`.
+A silent establishing scene uses all declared characters unless `cast` is supplied.
+Identity/build parameters, global outfit seeds and voice casting persist across scenes.
+Place `[Ana berganti baju formal]` / `[Ana changes into formal]` **before** the scene's
+beats to change its outfit for that scene and later ones. No animated wardrobe swap.
+
+Put `[TRANSISI: dissolve 0.5 detik]` / `[TRANSITION: dip_black 0.5 seconds]` between
+scenes; default `cut`. Dissolve/crossfade overlaps adjacent segments by the requested
+frames. fade_black/dip_black/fade_white keep a cut and dip around it. Transitions must
+fit adjacent segments and cannot overlap one another. `KARTU: Sore harinya...` /
+`CARD:` inserts a two-second centered card before the scene. Dict cards accept
+`{text, duration_s}`. Incoming transitions lead into the card when present.
+Dict film: `{title, characters:[...], scenes:[{name, environment, look, weather,
+lighting, card, transition_in:{kind,duration_s}, cast?, beats:[...]}]}`.
+Dict costume beat: `{do:"outfit", who:"Ana", outfit:"formal"}`.
+
+`film_info(name)` reads the canonical JSON; each blend embeds a manifest snapshot.
+`open_film_scene(name,index)` opens a one-based scene for preview/editing. Save changes
+with `save_project` to the returned project path; timeline changes refresh manifest
+offsets. Keep a common fps. `scene_index=N` rebuilds only that scene if other source
+scenes are unchanged; a costume change affecting later scenes requires rebuilding all.
+
+`film_render_options(name,quality,vertical,calibrate)` aggregates existing per-scene
+`render_options` and machine calibration. **The owner still chooses the resolution
+before preview/final/Cycles renders.** `render_film(name,path,quality="draft",
+resolution=None,wait=False,resume=True)` prepares existing `render_video` snapshots,
+runs one worker at a time, then composes one H.264/AAC MP4 in Blender VSE. Poll
+`render_status` for whole-film/per-scene progress; `cancel_render` stops pending/active
+workers. Completed scene clips are cached by blend SHA-256 + render settings; changed
+projects invalidate only their clip. External assets changed in-place require
+`resume=False`. The live editor is restored from a temporary snapshot, preserving
+unsaved edits and its logical save path. Render only saved scene edits.
+
+Each clip contains its own voice/music/Foley. Transitions also fade audio; cards and
+silent scenes retain a continuous silent AAC bed. Captions are composed globally and
+an `.srt` is written beside the film, including card/dissolve offsets. All scene-level
+looks, graphics, weather, camera, voice and motion limitations still apply. Draft is
+workbench; inspect Eevee stills for materials/continuity. No system ffmpeg is required.
+
+Recipe: `script_to_film(script,build=False)` → `script_to_film(script,language="id")`
+→ for each scene `open_film_scene(name,index)` → `render_frames([8],camera="scene",
+engine_name="eevee",size=512)` → inspect/edit/save → `render_film(name,quality="draft")`
+→ `film_render_options(name,quality="final")` → owner selects resolution → render.
+Studio shows a storyboard, build/rebuild progress, an Adegan switcher, whole-film
+resolution estimates and playable MP4s in Galeri. Director drafts may optionally use
+several scenes for multiple places or >45-second ideas.
+
+Verify: `.venv/bin/python tests/test_film.py` prints `FILM UNIT OK`; isolated
+`CHAR3D_PORT=9996 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/e2e_smoke.py
+--film-only` checks MPFB/Piper, offsets, AAC continuity, transitions, cache and cancel.
 
 ## Sutradara AI (idea → script)
 `director_status()` reports offline/API/Claude Code availability, configured yes/no,

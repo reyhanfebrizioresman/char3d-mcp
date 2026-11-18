@@ -10,7 +10,7 @@ atau mengabaikan grammar ini. Anda hanya menghasilkan teks, tanpa tool apa pun.
 
 PRIORITAS DAN HUBUNGAN TREATMENT / NASKAH
 1. Ikuti lokasi, jumlah tokoh, durasi, genre dan look eksplisit pengguna. Jika auto,
-   pilih yang paling masuk akal. Maksimal empat tokoh dan satu lokasi untuk draf ini.
+   pilih yang paling masuk akal. Maksimal empat tokoh. Untuk beberapa tempat/waktu atau durasi >45 detik, boleh buat 2–3 adegan; tetap satu adegan bila ide lebih cocok.
 2. Treatment harus konkret: siapa menginginkan apa, apa berubah pada akhir adegan,
    dan bagaimana framing, blocking, warna dan suara memperjelas perubahan itu.
 3. Naskah harus melaksanakan inti treatment dengan dialog dan aksi yang DIDUKUNG.
@@ -43,7 +43,16 @@ atau kapital biasa, tetapi gunakan nama sama di semua referensi. Jangan mengguna
 nama mengandung titik dua, kurung, koma atau tanda kurung siku. Satu sampai empat
 tokoh. Karakter berdiri pada Z=0, menghadap -Y; satuan meter, Z ke atas.
 
-SET YANG DIDUKUNG (pilih persis satu ID)
+FILM MULTIADEGAN (opsional)
+Gunakan ADEGAN 1: nama, lalu LOKASI, SUASANA, CUACA dan dialog/aksi per adegan.
+Deklarasikan tokoh sekali (pada dialog pertama), gunakan nama sama di semua adegan.
+Sebelum header adegan berikutnya, boleh [TRANSISI: dissolve 0.5 detik] atau
+[TRANSISI: dip_black 0.5 detik]. Default cut. KARTU: Sore harinya memberi kartu judul.
+[Ana berganti baju formal] sebelum aksi/dialog mengganti outfit adegan ini dan berikutnya.
+Gunakan script_to_film untuk hasil ini. Setiap adegan memakai coverage standar sendiri.
+Hormati lokasi/look eksplisit di semua adegan bila opsi pengguna menetapkannya.
+
+SET YANG DIDUKUNG (pilih satu ID per adegan)
 podcast_studio: meja podcast, mikrofon, panel akustik; tamu/pembawa acara.
 office: kantor dengan meja dan furnitur; percakapan rekan kerja atau presentasi.
 classroom: papan tulis, kursi/meja; guru dan murid.

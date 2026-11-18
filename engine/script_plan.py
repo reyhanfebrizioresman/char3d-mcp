@@ -186,6 +186,9 @@ def _direction(text, warnings):
 
 def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None):
     """Normalize dict or bilingual text. Estimated frames never read files or mutate a scene."""
+    from .film_plan import is_film
+    if is_film(script):
+        raise ValueError("Multi-scene screenplay: use script_to_film instead of script_to_scene")
     warnings = []
     if isinstance(script, str):
         raw = {"characters": [], "beats": []}

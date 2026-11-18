@@ -261,13 +261,15 @@ def online_request(tool, arguments):
     if tool == "text_to_speech":
         engine, _ = parse_voice(arguments.get("voice"), arguments.get("engine", "piper"))
         return bool(REGISTRY[engine].online)
-    if tool not in {"script_to_scene", "dialog"}:
+    if tool not in {"script_to_scene", "script_to_film", "dialog"}:
         return False
-    if not arguments.get("voice", tool == "script_to_scene") or arguments.get("build", True) is False:
+    if not arguments.get("voice", tool in {"script_to_scene", "script_to_film"}) or arguments.get("build", True) is False:
         return False
-    if tool == "script_to_scene":
+    if tool in {"script_to_scene", "script_to_film"}:
         from engine.script_plan import parse_script
-        characters = parse_script(arguments.get("script", ""))["characters"]
+        from engine.film_plan import parse_film
+        parser = parse_film if tool == "script_to_film" else parse_script
+        characters = parser(arguments.get("script", ""))["characters"]
     else:
         characters = []
     choices = [arguments.get("tts_engine", "piper")]

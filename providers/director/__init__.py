@@ -75,7 +75,8 @@ def direct(idea, generator='auto', language='id', duration_s=30, characters=None
         plan = validate(payload, opts)
     result = {**payload, 'generator': generator, 'plan': plan,
               'build_options': {'language': language, 'lighting': LIGHTING[(plan.get('look') or {}).get('preset', 'none')],
-                                'camera': 'mixed', 'seed': seed},
+                                'camera': 'mixed', 'seed': seed,
+                                **({'tool': 'script_to_film'} if plan.get('scenes') else {})},
               'warnings': list(dict.fromkeys(notes + payload['warnings'] + plan['warnings']))}
     if factory.online:
         result.update(backend.metadata())

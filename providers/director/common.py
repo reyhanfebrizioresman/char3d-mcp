@@ -76,7 +76,7 @@ def user_prompt(opts, previous=None, feedback=None):
     return text
 
 
-def validate(payload, opts):
+def validate(payload, opts, _scene_plan=None):
     if not isinstance(payload, dict) or set(payload) != set(SCHEMA['required']):
         raise ValueError('Hasil harus berisi brief, script, characters, warnings saja.')
     for key in ('brief', 'script'):
@@ -89,7 +89,21 @@ def validate(payload, opts):
     for char in payload['characters']:
         if not isinstance(char, dict) or set(char) != set(CHARACTER_FIELDS) or not all(isinstance(v, str) for v in char.values()):
             raise ValueError('Metadata tokoh tidak mengikuti schema.')
-    plan = parse_script(payload['script'], seed=opts['seed'])
+    from engine.film_plan import is_film, parse_film
+    if _scene_plan is None and is_film(payload['script']):
+        film = parse_film(payload['script'], seed=opts['seed'])
+        for scene in film['scenes']:
+            # Validate scene content with the same single-scene contract.
+            subset = {c['id'].casefold() for c in scene['plan']['characters']}
+            local = dict(payload, script=payload['script'],
+                characters=[c for c in payload['characters'] if c['id'].casefold() in subset])
+            validate(local, dict(opts, characters=None), _scene_plan=dict(scene['plan'], title=film['title']))
+        if {c['id'].casefold() for c in payload['characters']} != {c['id'].casefold() for c in film['characters']}:
+            raise ValueError('Tokoh pada metadata dan film harus sama.')
+        if opts['characters'] and len(film['characters']) != opts['characters']:
+            raise ValueError('Jumlah tokoh harus mengikuti opsi pengguna.')
+        return film
+    plan = _scene_plan or parse_script(payload['script'], seed=opts['seed'])
     if plan['environment'] not in LOCATIONS:
         raise ValueError('LOKASI harus berupa set char3d yang didukung.')
     if plan.get('weather') is None or plan.get('look') is None and 'SUASANA: none' not in payload['script'] and 'LOOK: none' not in payload['script']:
