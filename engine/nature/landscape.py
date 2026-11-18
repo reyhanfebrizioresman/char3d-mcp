@@ -29,28 +29,25 @@ def hills(area=(30,30), height=3., roughness=.5, seed=0):
 
 
 def mountains_backdrop(layers=3, area=(130,65), height=24., seed=0):
-    """One to six sloping ridge layers with distance palettes, extending along +Y."""
-    layers = integer(layers,'layers',1,6)
-    w,l = area_size(area)
-    h = number(height,'height',1,150)
-    random = rng(seed)
-    out = Asset('mountains_backdrop',metadata=dict(seed=seed))
+    """Seeded 96×28 sculpted ridgelines, foothills, and progressively hazier layers."""
+    layers=integer(layers,'layers',1,6);w,l=area_size(area);h=number(height,'height',1,150)
+    random=rng(seed);out=Asset('mountains_backdrop',metadata=dict(seed=seed))
     for layer in range(layers):
-        t = layer/max(1,layers-1)
-        mat = Material('distant_ridge',(.095+t*.14,.18+t*.14,.19+t*.19))
-        mesh = Mesh(f'ridge_{layer}',materials=[mat],occludes=False,smooth=True)
-        phase = random.random()*math.tau
-        for i in range(121):
-            x=(i/120-.5)*w
-            z=h*(.32+.09*layer+.25*math.sin(i*.12+phase)**2+
-                 .16*math.sin(i*.29+phase)**2+.055*math.sin(i*.78+phase))
-            y=layer*l/max(1,layers-1)+math.sin(i*.13+phase)*4
-            # Sloping front and back, not camera-facing cardboard silhouettes.
-            mesh.vertices.extend(((x,y-l*.18,-.5),(x,y,z),(x,y+l*.18,-.5)))
-            if i:
-                k=i*3
-                mesh.faces.extend(((k-3,k,k+1,k-2),(k-2,k+1,k+2,k-1)))
-                mesh.indices.extend((0,0))
+        t=layer/max(1,layers-1)
+        mat=Material('distant_ridge',(.12+t*.24,.23+t*.22,.25+t*.25),shader='mountain')
+        mesh=Mesh(f'ridge_{layer}',materials=[mat],occludes=False,smooth=True)
+        phase=random.random()*math.tau;nx=96;ny=28
+        for j in range(ny+1):
+            v=j/ny;cross_section=math.sin(math.pi*v)**1.7
+            for i in range(nx+1):
+                u=i/nx;x=(u-.5)*w
+                ridge=(.38+.27*abs(math.sin(u*13+phase))+.18*abs(math.sin(u*31-phase))+.08*math.sin(u*61+phase))
+                y=layer*l/max(1,layers-1)+(v-.5)*l*.65+math.sin(u*12+phase)*l*.06
+                z=-.5+h*(1+.10*layer)*ridge*cross_section
+                z+=h*.055*math.sin(u*79+v*13+phase)*cross_section*math.sin(v*math.pi*3)**2
+                mesh.vertices.append((x,y,z))
+                if i and j:
+                    k=j*(nx+1)+i;mesh.faces.append((k-nx-2,k-nx-1,k,k-1));mesh.indices.append(0)
         out.parts.append(mesh)
     return out
 
@@ -203,16 +200,31 @@ def waterfall(height=5.,width=1.2,seed=0):
     return Asset('waterfall',[mesh],dict(seed=seed))
 
 
-def clouds(cover=.4,height=35.,style='wisps',seed=0):
-    """Cheap opaque lobes at nominal altitude; cover 0..1, wisps or cumulus."""
-    cover=number(cover,'cover',0,1);h=number(height,'height',5,150)
-    if style not in ('wisps','cumulus'): raise ValueError('style must be wisps or cumulus')
-    random=rng(seed)
-    mesh=Mesh('clouds',materials=[Material('cloud',(.72,.79,.80),1,emission=.20)],
-              occludes=False,smooth=True)
-    for i in range(round(cover*36)):
-        p=(random.uniform(-100,100),random.uniform(20,140),h+random.uniform(-4,4))
-        for j in range(5):
-            mesh.blob(add(p,(j*2,random.uniform(-2,2),random.uniform(-.4,.4))),
-                      (random.uniform(3,7),1.7,.5 if style=='wisps' else 2.3),random,rings=4,sides=10)
-    return Asset('clouds',[mesh] if mesh.faces else [],dict(seed=seed))
+def clouds(cover=.4,height=35.,style='wisps',seed=0,*,area=(200,120)):
+    """Seamless billows arranged in near/mid/far layers; zero volumes.
+
+    area is width/depth, beginning 20m along +Y. Cumulus has tall sculpted crowns;
+    wisps form broad low banks. Farther layers have lifted, less contrasted colors.
+    """
+    from .surfaces import cloud_union
+    cover=number(cover,'cover',0,1);h=number(height,'height',5,150);w,l=area_size(area)
+    if style not in ('wisps','cumulus'):raise ValueError('style must be wisps or cumulus')
+    random=rng(seed);out=Asset('clouds',metadata=dict(seed=seed))
+    for layer in range(3):
+        t=layer/2
+        mat=Material('cloud',(.85+t*.08,.82+t*.09,.75+t*.16),1,emission=.015,shader='cloud')
+        mesh=Mesh('cloud_layer_'+str(layer),materials=[mat],occludes=False,smooth=True)
+        for i in range(round(cover*5)):
+            x=(i/max(1,round(cover*5)-1)-.5)*w+random.uniform(-w*.07,w*.07)
+            y=20+(layer+.3+random.random()*.4)/3*l;z=h+random.uniform(-2,2)
+            size=random.uniform(4,7)*(1+.12*layer)
+            lobes=[]
+            for j in range(9):
+                a=j*2.399;spread=size*(.4 if j<3 else 1)
+                p=(math.cos(a)*spread,math.sin(a)*spread*.65,(1.1 if j<3 else -.6)*size*.28)
+                radii=(size*random.uniform(.6,1),size*random.uniform(.5,.8),size*(.70 if style=='cumulus' and j<3 else .35 if style=='cumulus' else .18)*random.uniform(.7,1.3))
+                random.random()  # Keep placement random stream stable across surface revisions.
+                lobes.append((p,radii))
+            cloud_union(mesh,lobes,(x,y,z))
+        if mesh.faces:out.parts.append(mesh)
+    return out

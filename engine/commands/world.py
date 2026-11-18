@@ -84,12 +84,34 @@ def _apply_hero_motion(obj,spec):
     kind=spec.get('kind','');amp=spec.get('amplitude',.2)
     rate=spec.get('speed',1);phase=spec.get('phase',0)
     if 'seed' in spec:phase+=random.Random(spec['seed']).random()*math.tau
-    if kind=='hero_swim':
+    if kind in ('hero_hinge','hero_jaw'):
+        pivot=Vector(spec['pivot']);axis=Vector(spec['axis']).normalized()
+        # Two basis shapes reconstruct a true hinge rotation at arbitrary time.
+        angle=spec['amplitude'];omega=spec.get('speed',1.4)
+        _shape(obj,'Articulation sin',lambda p:axis.cross(p-pivot),f'sin({angle}*sin(frame*base/fps*{omega}+{phase}))')
+        _shape(obj,'Articulation cos',lambda p:(p-pivot)-axis*(p-pivot).dot(axis),f'cos({angle}*sin(frame*base/fps*{omega}+{phase}))-1')
+        if 'swim_length' in spec:
+            _apply_hero_motion(obj,{'kind':'hero_swim','length':spec['swim_length'],
+                'amplitude':spec['swim_amplitude'],'seed':spec.get('seed',0),'spatial':spec.get('spatial',False)})
+    elif kind=='hero_orbit':
+        radius=spec['radius'];phase=spec['phase']
+        for i,a in enumerate((radius,radius*.55,radius*.12)):
+            _driver(obj,'location',f'{a}*'+('cos' if i==0 else 'sin')+f'(frame*base/fps*.32+{phase})',index=i)
+    elif kind=='hero_swim':
         length=spec['length']
-        _shape(obj,'Swim A',lambda p:(amp*math.sin(p.y/length*math.tau),0,amp*.3*math.cos(p.y/length*math.tau)),
+        def wave(p):return (p.y*(3 if spec.get('spatial') else 1)+p.z*(2 if spec.get('spatial') else 0))/length*math.tau
+        _shape(obj,'Swim A',lambda p:(amp*math.sin(wave(p)),0,amp*.3*math.cos(wave(p))),
                f'sin(frame*base/fps*{1.7*rate}+{phase})')
-        _shape(obj,'Swim B',lambda p:(amp*math.cos(p.y/length*math.tau),0,amp*.3*math.sin(p.y/length*math.tau)),
+        _shape(obj,'Swim B',lambda p:(amp*math.cos(wave(p)),0,amp*.3*math.sin(wave(p))),
                f'cos(frame*base/fps*{1.7*rate}+{phase})')
+        if 'tail_amplitude' in spec:
+            pivot=Vector(spec['tail_pivot']);angle=spec['tail_amplitude']
+            def weight(p):
+                u=min(1,max(0,(p.y/length-.10)/.25));return u*u*(3-2*u)
+            _shape(obj,'Tail power stroke sin',lambda p:Vector((1,0,0)).cross(p-pivot)*weight(p),
+                f'sin({angle}*sin(frame*base/fps*1.4+{phase}))')
+            _shape(obj,'Tail power stroke cos',lambda p:Vector((0,p.y-pivot.y,p.z-pivot.z))*weight(p),
+                f'cos({angle}*sin(frame*base/fps*1.4+{phase}))-1')
     elif kind=='hero_flap':
         _shape(obj,'Wingbeat',lambda p:(0,0,abs(p.x)*amp),f'sin(frame*base/fps*{2.3*rate}+{phase})')
     elif kind=='hero_banner':
@@ -179,10 +201,20 @@ def _atmosphere(recipe):
 
 def _camera(builder,recipe):
     sc=bpy.context.scene
-    hint=recipe.get('camera_hints',{}).get('hero',{'location':[20,-32,14],'target':[0,8,5],'lens':40})
-    data=bpy.data.cameras.new('WorldHero');data.lens=hint.get('lens',40)
-    camera=builder._link(bpy.data.objects.new('WorldHero',data));camera.parent=builder.root
-    camera.location=hint['location'];camera.rotation_euler=(Vector(hint['target'])-camera.location).to_track_quat('-Z','Y').to_euler()
+    hints=recipe.get('camera_hints',{})
+    hint=hints.get('hero',{'location':[20,-32,14],'target':[0,8,5],'lens':40})
+    def make(label,hint):
+        data=bpy.data.cameras.new(label);data.lens=hint.get('lens',40)
+        obj=builder._link(bpy.data.objects.new(label,data));obj.parent=builder.root
+        obj.location=hint['location'];direction=Vector(hint['target'])-obj.location
+        obj.rotation_euler=direction.to_track_quat('-Z','Y').to_euler()
+        if 'f_stop' in hint:
+            data.dof.use_dof=True;data.dof.focus_distance=direction.length
+            data.dof.aperture_fstop=hint['f_stop'];data.dof.aperture_blades=7
+        return obj
+    camera=make('WorldHero',hint)
+    for key in ('medium','close'):
+        if key in hints:make('World'+key.title()+'Hint',hints[key])
     sc.camera=camera
     path=recipe.get('camera_hints',{}).get('establishing_path')
     if path:
@@ -250,8 +282,11 @@ def compose_world(recipe,build=True):
                                 node.inputs['Emission Color'].default_value = (*color, 1)
                             for source, target in [('roughness', 'Roughness'), ('metallic', 'Metallic'), ('emission', 'Emission Strength')]:
                                 if source in cfg: node.inputs[target].default_value = cfg[source]
-                        if cfg.get('transparency', 'opaque') != 'opaque':
-                            node.inputs['Alpha'].default_value = .55 if cfg['transparency'] == 'glass' else .25
+                        if 'transparency' in cfg:
+                            # An explicit recipe preset wins over a generator's
+                            # authored mist fade, including an opaque override.
+                            for link in list(node.inputs['Alpha'].links):mat.node_tree.links.remove(link)
+                            node.inputs['Alpha'].default_value = {'opaque':1.,'glass':.55,'mist':.25}[cfg['transparency']]
                             mat.surface_render_method = 'DITHERED'
                 for spec in e.get('animation',[]):
                     if spec['kind'] in ('flap','swim'):
@@ -339,6 +374,7 @@ def compose_world(recipe,build=True):
     collection['applied_frames']=json.dumps([sc.frame_start,sc.frame_end])
     _cleanup()
     return {**report,'built':True,'root':b.root.name,'elements':elements,'hero_camera':camera.name,
+            'portrait_cameras':{k:next(o.name for o in collection.all_objects if o.type=='CAMERA' and o.data.name.startswith('World'+k.title()+'Hint')) for k in ('medium','close') if k in r.get('camera_hints',{})},
             'stage':s,'objects':[o.name for o in collection.all_objects]}
 
 

@@ -16,8 +16,15 @@ async def _world_checks(call,text_of):
     assert before==await py("result=sorted(o.name for o in bpy.context.scene.objects)")
     for i,idea in enumerate([words[0] for _,words in ARCHETYPES]+['phoenix over crystals','a quiet original dream']):
         draft=await data('direct_world',idea=idea,generator='offline',seed=i)
+        if i==3:
+            draft['recipe'].setdefault('materials',{})['test_spray']={'transparency':'opaque'}
+            next(e for e in draft['recipe']['elements'] if e['id']=='near_island')['material_overrides']={'spray_mist':'test_spray'}
         built=await data('compose_world',recipe=draft['recipe'])
         assert built['built'] and built['cost']==draft['cost']
+        assert set(built['portrait_cameras'])=={'medium','close'}
+        assert await py(f"result=all(bpy.data.objects[n].data.dof.use_dof and bpy.data.objects[n].data.dof.focus_distance>0 for n in {list(built['portrait_cameras'].values())!r})")
+        if i==3:
+            assert await py("mats=[m for m in bpy.data.materials if m.get('c3d_world') and 'world_test_spray' in m.name]\nresult=bool(mats) and all(m.node_tree.nodes['Principled BSDF'].inputs['Alpha'].default_value==1 and not m.node_tree.nodes['Principled BSDF'].inputs['Alpha'].is_linked for m in mats)")
         await call('render_preview',engine_name='workbench',camera=built['hero_camera'],width=128,height=72)
         owned=set(built['objects'])
         assert await py("result='UserKeep' in bpy.data.objects")

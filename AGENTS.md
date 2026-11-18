@@ -1203,6 +1203,18 @@ floating_island, lantern_swarm, hot_air_balloons, crystal_cluster, arch_gate,
 pagoda_like and banner_cloth; existing waterfall is reused. Architecture uses
 generic vocabulary; never recreate specific films/games/brands/landmarks.
 
+Art quality: serpent uses round parallel-transport sections along a spatial coil,
+UV scale shading, belly/mane, articulated jaw, horns/whiskers and optional legs.
+`coil` 0–1, length 2–100m, emission 0–3. Whale `motion` .2–2.5 drives independent
+fin/fluke hinges with shared swim. Islands have strata, grass, roots/vines,
+waterfall spray and 0–12 `orbiting_rocks`. Clouds use three seamless Gaussian-union
+billow layers (`area` controls extent); mountain layers are sloped heightfields.
+All shaders/motion remain fixed internal profiles. `camera_hints.medium/close`
+plus `f_stop` create reusable owned DOF cameras (`portrait_cameras` in build output).
+Dress the portrait midground and keep paths/faces clear. Quality evidence is in
+`output/world_sheets/quality_v2/`; harness supports `--refresh` to rebuild recipes
+around saved actors, and `--reuse` to render saved milestones without rebuilding.
+
 Hard budgets: 20k internal instances, 256 placements, 400k estimated triangles,
 1.2M vertices, 1,200 objects, 16 lights, 2 volumes, 200k transform keys. Geometry
 is preflighted; prop costs are conservative. Warnings begin at 70%. World motion

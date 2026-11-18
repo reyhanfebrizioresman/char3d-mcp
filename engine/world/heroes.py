@@ -31,86 +31,7 @@ def _fin(m, points, thickness=.08, mat=0):
             m.face((a,b,peak) if sign==1 else (b,a,peak),mat)
 
 
-def serpent(length=14., radius=.65, segments=80, taper=.85, scales=True,
-            horns=True, whiskers=True, fins=True, color=(.045,.32,.29), seed=0):
-    """Sinuous tapered body, plated dorsal crest, expressive horned head; saved swim."""
-    random=rng(seed);r=radius
-    skin=Material('jade_scales',tuple(color),.34,.22)
-    gold=Material('ivory_gold',(.86,.53,.16),.32,.45)
-    body=Mesh('serpent_body',materials=[skin,Material('belly',(.36,.64,.48),.5),gold],smooth=True,
-              motion={'kind':'hero_swim','length':length,'amplitude':r*.28})
-    centers=[]
-    for j in range(segments+1):
-        u=j/segments;y=(u-.5)*length;x=math.sin(u*math.tau*1.15)*length*.12
-        z=math.cos(u*math.tau)*length*.055
-        rad=r*(1-taper*u**1.7)*(.84+.16*math.sin(math.pi*u))
-        centers.append((x,y,z,rad))
-        for k in range(16):
-            a=k*math.tau/16
-            body.vertices.append((x+rad*math.cos(a),y,z+rad*math.sin(a)))
-        if j:
-            for k in range(16):
-                b=(j-1)*16+k;c=(j-1)*16+(k+1)%16
-                body.faces.append((b,b+16,c+16,c));body.indices.append(1 if k>=8 else 0)
-    body.faces += [tuple(reversed(range(16))),tuple(range(segments*16,(segments+1)*16))]
-    body.indices += [0,0]
-    detail=Mesh('serpent_crest',materials=[gold,skin],motion=dict(body.motion))
-    for j,(x,y,z,rad) in enumerate(centers):
-        if j%3==0 and fins:
-            _fin(detail,[(x,y-r*.45,z+rad*.9),(x,y+r*.5,z+rad),
-                (x,y+r*.6,z+rad+r*.65*(1-j/(segments+1)))],.035)
-        if scales and j%2==0:
-            for a in (.3,1.,2.1,2.8,3.5,5.7):
-                xx=x+rad*1.015*math.cos(a);zz=z+rad*1.015*math.sin(a)
-                detail.face(((xx-r*.075,y,zz),(xx,y-r*.19,zz+r*.02),
-                             (xx+r*.075,y,zz),(xx,y+r*.19,zz-r*.02)),0)
-    x,y,z,_=centers[0]
-    head=Mesh('serpent_head',materials=[skin,gold,Material('eye',(1,.73,.19),.2,emission=.8),
-        Material('pupil',(.003,.009,.012),.2)],smooth=True,motion=dict(body.motion))
-    _ellipsoid(head,(x,y-r*.45,z),(r*1.15,r*1.7,r*.82))
-    _ellipsoid(head,(x,y-r*1.5,z-r*.18),(r*.76,r*.9,r*.46))
-    for s in (-1,1):
-        _ellipsoid(head,(x+s*r*.95,y-r*.8,z+r*.3),(r*.21,r*.32,r*.22),8,16,2)
-        _ellipsoid(head,(x+s*r*1.08,y-r*.88,z+r*.31),(r*.065,r*.19,r*.13),8,12,3)
-        if horns:
-            a=(x+s*r*.64,y+r*.1,z+r*.48);b=(x+s*r*.95,y+r*.7,z+r*1.65)
-            head.tube(a,b,r*.17,r*.055,10,1)
-            head.tube(b,(x+s*r*1.2,y+r*1.25,z+r*2.1),r*.055,0,8,1)
-        if whiskers:
-            ps=[(x+s*r*.55,y-r*2,z-r*.14),(x+s*r*1.8,y-r*2.5,z-r*.3),
-                (x+s*r*2.5,y-r*2.3,z+r*.12)]
-            for a,b in zip(ps,ps[1:]): head.tube(a,b,r*.035,r*.012,6,1)
-    return Asset('serpent',[body,detail,head],{'seed':seed})
-
-
-def whale_like(length=12., color=(.075,.24,.34), seed=0):
-    """Broad smooth sky swimmer with throat pleats, swept pectorals and split flukes."""
-    rng(seed);l=length
-    skin=Material('whale_blue',tuple(color),.4,.15)
-    cream=Material('whale_underside',(.64,.78,.73),.55)
-    m=Mesh('whale_body',materials=[skin,cream],smooth=True,
-           motion={'kind':'hero_swim','length':l,'amplitude':l*.018})
-    _ellipsoid(m,(0,-l*.12,0),(l*.17,l*.37,l*.15),24,48)
-    _ellipsoid(m,(0,-l*.17,-l*.065),(l*.145,l*.31,l*.095),16,32,1)
-    for j in range(7):
-        x=(j-3)*l*.026
-        m.tube((x,-l*.43,-l*.087),(x,-l*.05,-l*.16),l*.002,sides=5)
-    m.tube((0,l*.1,0),(0,l*.48,-l*.015),l*.12,l*.035,24)
-    fins=Mesh('whale_fins',materials=[skin,cream],smooth=True,
-              motion={'kind':'hero_swim','length':l,'amplitude':l*.045})
-    for s in (-1,1):
-        _fin(fins,[(s*l*.11,-l*.2,-l*.03),(s*l*.46,l*.02,-l*.12),
-                   (s*l*.38,l*.12,-l*.14),(s*l*.12,-l*.02,-l*.08)],l*.022)
-        _fin(fins,[(0,l*.40,0),(s*l*.25,l*.49,.02*l),(s*l*.21,l*.59,.045*l),
-                   (s*l*.06,l*.53,-l*.01),(0,l*.55,0)],l*.014)
-    _fin(fins,[(0,l*.07,l*.12),(0,l*.16,l*.23),(0,l*.25,l*.08)],l*.01)
-    eyes=Mesh('whale_eyes',materials=[Material('eye',(.005,.014,.018),.1),
-                   Material('eye_glint',(.8,.95,1),.2,emission=.4)],smooth=True,
-        motion={'kind':'hero_swim','length':l,'amplitude':l*.018})
-    for s in (-1,1):
-        _ellipsoid(eyes,(s*l*.153,-l*.3,l*.015),(l*.012,l*.023,l*.012),8,16)
-        _ellipsoid(eyes,(s*l*.163,-l*.307,l*.019),(l*.003,l*.006,l*.003),6,8,1)
-    return Asset('whale_like',[m,fins,eyes],{'seed':seed})
+from .creatures import serpent, whale_like
 
 
 def bird_like(wingspan=9., glowing=False, color=(.48,.12,.045), seed=0):
@@ -246,32 +167,7 @@ def hot_air_balloons(count=3,area=(30,18),height=18.,size=2.,seed=0):
     return out
 
 
-def floating_island(radius=5.,depth=7.,vegetation=True,waterfall=True,seed=0):
-    """Hanging faceted rock cone with moss rim, small grove and descending water ribbons."""
-    from ..nature import tree, waterfall as falling_water
-    random=rng(seed);r=radius
-    m=Mesh('island_rock',materials=[Material('island_slate',(.17,.22,.23)),Material('island_edge',(.28,.34,.32)),
-        Material('moss_top',(.14,.29,.08),surface='grass')],walkable=True)
-    rings=[(1,0),(.94,-depth*.14),(.60,-depth*.57),(.12,-depth),(0,-depth*1.08)]
-    n=32
-    for j,(factor,z) in enumerate(rings):
-        for i in range(n):
-            a=i*math.tau/n;rr=r*factor*(1+.08*math.sin(a*5)+random.uniform(-.035,.035))
-            m.vertices.append((rr*math.cos(a),rr*.82*math.sin(a),z))
-        if j:
-            for i in range(n):
-                k=(j-1)*n+i;q=(j-1)*n+(i+1)%n
-                m.faces.append((k,k+n,q+n,q));m.indices.append(1 if j==1 else 0)
-    m.faces.append(tuple(range(n)));m.indices.append(2)
-    out=Asset('floating_island',[m],{'seed':seed})
-    if vegetation:
-        for i in range(4):
-            a=i*2.4
-            out.parts.extend(tree('broadleaf',height=r*.6,detail=.25,seed=(seed+i)%2147483648).placed(
-                (math.cos(a)*r*.48,math.sin(a)*r*.38,0)).parts)
-    if waterfall:
-        out.parts.extend(falling_water(height=depth*1.6,width=r*.24,seed=seed).placed((0,-r*.78,-depth*1.6)).parts)
-    return out
+from .islands import floating_island
 
 
 def banner_cloth(width=1.8,height=4.,color=(.65,.14,.09),seed=0):

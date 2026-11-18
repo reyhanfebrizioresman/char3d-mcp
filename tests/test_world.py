@@ -1,6 +1,7 @@
 """Pure world contracts and fully mocked online director transports. No Blender/network."""
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -21,7 +22,64 @@ IDEAS=[words[0] for _,words in ARCHETYPES]+['phoenix over crystal arch','pemanda
 
 
 class WorldTests(unittest.TestCase):
+    def test_volumetric_heroes_and_articulation(self):
+        from engine.world.creatures import serpent,whale_like
+        from engine.nature.core import dot,sub,norm
+        asset=serpent(length=65,radius=1.15,segments=144,seed=17)
+        body=asset.parts[0];stride=33
+        centers=[tuple(sum(p[k] for p in body.vertices[j:j+32])/32 for k in range(3))
+                 for j in range(0,len(body.vertices),stride)]
+        # Cross sections remain circular and perpendicular through every bend.
+        for j in range(1,144):
+            ring=body.vertices[j*stride:j*stride+32];center=centers[j]
+            distances=[math.dist(p,center) for p in ring]
+            self.assertLess(max(distances)-min(distances),1e-8)
+            tangent=norm(sub(centers[j+1],centers[j-1]))
+            self.assertLess(max(abs(dot(sub(p,center),tangent)) for p in ring),1e-8)
+        self.assertGreater(max(p[1] for p in centers)-min(p[1] for p in centers),10)
+        self.assertEqual(len(body.uvs),len(body.vertices))
+        self.assertEqual({v[1] for v in body.uvs},{i/32 for i in range(33)})
+        self.assertTrue(any(p.motion.get('kind')=='hero_jaw' for p in asset.parts))
+        hinges=[p for p in whale_like().parts if p.motion.get('kind')=='hero_hinge']
+        self.assertEqual(len(hinges),4)
+        self.assertTrue(all('swim_length' in p.motion for p in hinges))
+
+    def test_showcase_layers_portraits_and_budgets(self):
+        for idea in ('lantern lake','serpent gateway','whale sunset','floating islands'):
+            recipe=offline(idea,17)['recipe'];report=validate_recipe(recipe)
+            self.assertLess(report['cost']['triangles'],320000)
+            self.assertLessEqual(report['cost']['lights'],5)
+            self.assertLessEqual(report['cost']['volumes'],1)
+            self.assertIn('f_stop',recipe['camera_hints']['medium'])
+            self.assertIn('f_stop',recipe['camera_hints']['close'])
+        whale=offline('whale sunset',17)['recipe']
+        self.assertFalse(any(e['generator']=='mountains_backdrop' for e in whale['elements']))
+        self.assertTrue(any(e['id']=='sun_disk' for e in whale['elements']))
+        for generator,params in [('serpent',{'coil':1.1}),('whale_like',{'motion':3}),('floating_island',{'orbiting_rocks':13})]:
+            with self.assertRaises(ValueError):
+                validate_recipe({'version':1,'elements':[{'id':'hero','generator':generator,'params':params}]})
+
+    def test_cloud_skin_is_closed_and_layers_lift_into_haze(self):
+        from collections import Counter
+        from engine.nature import clouds
+        asset=clouds(cover=.2,seed=4)
+        self.assertEqual(len(asset.parts),3)
+        for mesh in asset.parts:
+            edges=Counter(tuple(sorted((f[i],f[(i+1)%len(f)])))
+                          for f in mesh.faces for i in range(len(f)))
+            self.assertEqual(set(edges.values()),{2})
+            self.assertTrue(mesh.smooth)
+        self.assertGreater(sum(asset.parts[-1].materials[0].color),sum(asset.parts[0].materials[0].color))
+
     def test_catalog_and_all_heroes(self):
+        from engine.world.heroes import serpent,whale_like,floating_island
+        from engine.nature import clouds
+        # New art controls remain keyword-only: old positional seed/color calls
+        # must retain their meaning for agents using the pure library API.
+        for asset in (serpent(14,.65,80,.85,True,True,True,True,(.1,.3,.2),7),
+                      whale_like(12,(.1,.3,.4),7),floating_island(1,1,False,False,7),
+                      clouds(.2,35,'wisps',7)):
+            self.assertEqual(asset.metadata['seed'],7)
         catalog=world_schema()
         self.assertEqual(len(catalog['generators']),38)
         for name,fn in GENERATORS.items():

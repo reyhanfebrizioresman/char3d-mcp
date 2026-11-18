@@ -25,7 +25,9 @@ def _material(builder, spec):
     bsdf.inputs['Roughness'].default_value = spec.roughness
     if spec.surface:
         mat['char3d_surface'] = spec.surface
-    if spec.surface == 'water':
+    if spec.shader:
+        _authored_shader(nodes,links,bsdf,spec)
+    elif spec.surface == 'water':
         bsdf.inputs['Coat Weight'].default_value = .35
         # Opaque water is deliberate: CPU Eevee reflections without screen-space
         # refraction, layered transparent planes, simulation or render subdivision.
@@ -69,6 +71,64 @@ def _material(builder, spec):
         bump.inputs['Distance'].default_value=.025
         links.new(noise.outputs['Fac'],bump.inputs['Height']);links.new(bump.outputs[0],bsdf.inputs['Normal'])
     return mat
+
+
+def _authored_shader(nodes,links,bsdf,spec):
+    """Fixed internal profiles. Recipe data can never supply nodes or expressions."""
+    coord=nodes.new('ShaderNodeTexCoord')
+    noise=nodes.new('ShaderNodeTexNoise');noise.inputs['Scale'].default_value=3.8
+    noise.inputs['Detail'].default_value=3
+    links.new(coord.outputs['Object'],noise.inputs['Vector'])
+    ramp=nodes.new('ShaderNodeValToRGB')
+    lo,hi=.65,1.15
+    if spec.shader=='cloud':
+        geometry=nodes.new('ShaderNodeNewGeometry');xyz=nodes.new('ShaderNodeSeparateXYZ')
+        links.new(geometry.outputs['Normal'],xyz.inputs[0])
+        height=nodes.new('ShaderNodeMapRange');height.inputs['From Min'].default_value=-1
+        links.new(xyz.outputs['Z'],height.inputs[0]);links.new(height.outputs[0],ramp.inputs[0])
+        ramp.color_ramp.elements[0].color=(spec.color[0]*.38,spec.color[1]*.47,spec.color[2]*.65,1)
+        ramp.color_ramp.elements[1].color=(*spec.color,1)
+        bsdf.inputs['Subsurface Weight'].default_value=.22
+        bsdf.inputs['Subsurface Radius'].default_value=(2,1.4,.9)
+    elif spec.shader=='mist':
+        ramp.color_ramp.elements[0].color=(*spec.color,1)
+        ramp.color_ramp.elements[1].color=(*spec.color,1)
+        # Thin mist geometry, with a soft Fresnel edge and noise holes; no volume.
+        layer=nodes.new('ShaderNodeLayerWeight');fade=nodes.new('ShaderNodeMath');fade.operation='SUBTRACT'
+        fade.inputs[0].default_value=1;links.new(layer.outputs['Facing'],fade.inputs[1])
+        alpha=nodes.new('ShaderNodeMath');alpha.operation='MULTIPLY'
+        links.new(fade.outputs[0],alpha.inputs[0]);alpha.inputs[1].default_value=.17
+        links.new(alpha.outputs[0],bsdf.inputs['Alpha'])
+        bsdf.inputs['Emission Color'].default_value=(*spec.color,1)
+        bsdf.inputs['Emission Strength'].default_value=.12
+    else:
+        field=noise.outputs['Fac']
+        if spec.shader=='scales':
+            mapping=nodes.new('ShaderNodeVectorMath');mapping.operation='MULTIPLY'
+            links.new(coord.outputs['UV'],mapping.inputs[0]);mapping.inputs[1].default_value=(90,24,1)
+            vor=nodes.new('ShaderNodeTexVoronoi');vor.feature='DISTANCE_TO_EDGE'
+            links.new(mapping.outputs[0],vor.inputs['Vector']);field=vor.outputs['Distance']
+            ramp.color_ramp.elements[0].position=.018;ramp.color_ramp.elements[1].position=.12
+            lo=.42;hi=1.22
+        elif spec.shader=='belly':
+            wave=nodes.new('ShaderNodeTexWave');wave.bands_direction='Y'
+            wave.inputs['Scale'].default_value=4;wave.inputs['Distortion'].default_value=.35
+            links.new(coord.outputs['Object'],wave.inputs['Vector']);field=wave.outputs['Color'];lo=.85;hi=1.08
+        elif spec.shader=='strata':
+            wave=nodes.new('ShaderNodeTexWave');wave.bands_direction='Z'
+            wave.inputs['Scale'].default_value=3;wave.inputs['Distortion'].default_value=7
+            wave.inputs['Detail Scale'].default_value=.6
+            links.new(coord.outputs['Object'],wave.inputs['Vector']);field=wave.outputs['Color'];lo=.78;hi=1.15
+        elif spec.shader=='mountain':
+            geo=nodes.new('ShaderNodeNewGeometry');xyz=nodes.new('ShaderNodeSeparateXYZ')
+            links.new(geo.outputs['Normal'],xyz.inputs[0]);field=xyz.outputs['Z'];lo=.55;hi=1.25
+        ramp.color_ramp.elements[0].color=(*[v*lo for v in spec.color],1)
+        ramp.color_ramp.elements[1].color=(*[min(1,v*hi) for v in spec.color],1)
+        links.new(field,ramp.inputs[0])
+    links.new(ramp.outputs['Color'],bsdf.inputs['Base Color'])
+    bump=nodes.new('ShaderNodeBump');bump.inputs['Strength'].default_value=.13
+    bump.inputs['Distance'].default_value=.015 if spec.shader in ('scales','skin','belly') else .06
+    links.new(noise.outputs['Fac'],bump.inputs['Height']);links.new(bump.outputs[0],bsdf.inputs['Normal'])
 
 
 def _driver(owner, prop, expression, wind=False,index=None):
@@ -317,6 +377,9 @@ def realize(builder,asset,location=(0,0,0),rotation=0.,scale=1.):
         if not part.faces: continue
         data=bpy.data.meshes.new('Nature_'+part.name)
         data.from_pydata(part.vertices,[],part.faces);data.update()
+        if part.uvs:
+            uv=data.uv_layers.new(name='AuthoredUV')
+            for loop in data.loops:uv.data[loop.index].uv=part.uvs[loop.vertex_index]
         if part.pivots: _pivots(data,part.pivots)
         obj=builder._link(bpy.data.objects.new(builder.root.name+'_'+part.name,data))
         obj.parent=builder.root

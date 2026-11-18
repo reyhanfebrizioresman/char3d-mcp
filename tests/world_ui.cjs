@@ -3,8 +3,9 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/tmp/layar-browser/node_modules/playwright-core');
 const base=process.env.CHAR3D_UI_URL||'http://127.0.0.1:8798';
+const shots='output/world_sheets/quality_v2/ui';
 (async()=>{
- fs.mkdirSync('output/world_sheets/ui',{recursive:true});
+ fs.mkdirSync(shots,{recursive:true});
  const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  const errors=[];
  try{
@@ -19,7 +20,7 @@ const base=process.env.CHAR3D_UI_URL||'http://127.0.0.1:8798';
    const recipe=JSON.parse(await page.locator('#world-json').inputValue());assert.equal(recipe.name,'Sky Whale');
    assert.equal(await page.locator('#world-generator').inputValue(),'offline');
    await page.locator('#toasts button').evaluateAll(bs=>bs.forEach(b=>b.click()));
-   await page.screenshot({path:`output/world_sheets/ui/world_${theme}_${width}.png`,fullPage:true});
+   await page.screenshot({path:`${shots}/world_${theme}_${width}.png`,fullPage:true});
    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'horizontal overflow');
    recipe.python='dangerous';await page.locator('#world-json').fill(JSON.stringify(recipe));
    await page.locator('#world-validate').click();
@@ -35,7 +36,7 @@ const base=process.env.CHAR3D_UI_URL||'http://127.0.0.1:8798';
     await page.locator('#world-preview-button').click();
     await page.waitForSelector('#world-preview img',{timeout:180000});
     await page.locator('#world-preview img').evaluate(img=>img.decode());
-    await page.locator('.world-workbench').screenshot({path:'output/world_sheets/ui/world_preview.png'});
+    await page.locator('.world-workbench').screenshot({path:shots+'/world_preview.png'});
     await page.locator('#world-name').fill('ui-world');
     await page.locator('#world-use').click();
     await page.waitForSelector('#script-text',{timeout:30000});

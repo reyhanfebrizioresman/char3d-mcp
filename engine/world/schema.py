@@ -45,9 +45,9 @@ RANGES={
  'fence':{'length':(.5,100),'height':(.2,3)},'lantern':{'height':(.3,5)},
  'wooden_bridge':{'length':(1,30),'width':(.8,8),'height':(0,2)},
  'gazebo':{'width':(1.6,10),'height':(2,8)},'village_house':{'width':(2,15),'depth':(2,15),'height':(2,8)},
- 'serpent':{'length':(2,40),'radius':(.1,2),'segments':(24,160),'taper':(.2,.98)},
- 'whale_like':{'length':(2,40)},'bird_like':{'wingspan':(1,30)},
- 'floating_island':{'radius':(1,18),'depth':(1,30)},'lantern_swarm':{'count':(0,100),'height':(2,40),'size':(.1,2),'rise':(0,2)},
+ 'serpent':{'length':(2,100),'radius':(.1,2),'segments':(24,160),'taper':(.2,.98),'coil':(0,1),'emission':(0,3)},
+ 'whale_like':{'length':(2,40),'motion':(.2,2.5)},'bird_like':{'wingspan':(1,30)},
+ 'floating_island':{'radius':(1,18),'depth':(1,30),'orbiting_rocks':(0,12)},'lantern_swarm':{'count':(0,100),'height':(2,40),'size':(.1,2),'rise':(0,2)},
  'hot_air_balloons':{'count':(0,12),'height':(5,80),'size':(.5,6)},
  'crystal_cluster':{'count':(1,40),'height':(.2,12)},'arch_gate':{'width':(2,20),'height':(2,20)},
  'pagoda_like':{'width':(2,15),'height':(3,30),'tiers':(1,5)},'banner_cloth':{'width':(.3,5),'height':(1,12)},
@@ -86,7 +86,7 @@ MATERIAL=obj({'color':{'anyOf':[RGB,ID]},'roughness':num(0,1),'metallic':num(0,1
     'emission':num(0,10),'transparency':enum('opaque','glass','mist')})
 LOOK=obj({'preset':enum(*LOOKS),'intensity':num(0,1),'haze':num(0,.1),'god_rays':num(0,1),
     'bloom':num(0,1),'dof':enum('auto','off'),'sun':obj({'elevation':num(-90,90),'azimuth':num(-360,360)})},['preset'])
-CAMERA=obj({'location':vec(),'target':vec(),'lens':num(12,120)},['location','target'])
+CAMERA=obj({'location':vec(),'target':vec(),'lens':num(12,120),'f_stop':num(1.2,32)},['location','target'])
 STAGE=obj({'location':vec(),'area':vec(1,60,2),'standing':arr(vec(),0,4),'seats':arr(ID,0,4),
     'floor':{'type':'boolean'},'surface':enum('wood','stone','grass','sand'),'color':RGB})
 COMMON={'id':ID,'transform':TRANSFORM,'instances':arr(TRANSFORM,1,64),
@@ -106,7 +106,7 @@ SCHEMA={
  'sky':obj({'preset':enum('noon','sunset','overcast','night'),'strength':num(.05,2),'rotate':num(-360,360)}),
  'look':{'anyOf':[enum(*LOOKS),LOOK]},
  'weather':obj({'kind':enum('clear','rain','snow','fog','wind'),'intensity':num(0,1),'seed':SEED,'wind':vec(-100,100)}),
- 'camera_hints':obj({'hero':CAMERA,'establishing_path':arr(vec(),2,16)}),
+ 'camera_hints':obj({'hero':CAMERA,'medium':CAMERA,'close':CAMERA,'establishing_path':arr(vec(),2,16)}),
  'stage':STAGE},['version','elements'])}
 
 
@@ -207,7 +207,8 @@ def instance_cost(name,p):
     if name in ('grass_field','flowers','reeds','rice_paddies'):
         w,h=p['area'];limit={'grass_field':18000,'flowers':3000,'reeds':20000,'rice_paddies':9000}[name]
         return max(1,min(limit,round(w*h*p['density'])))
-    if name=='clouds':return max(1,round(p['cover']*36)*5)
+    if name=='clouds':return max(1,round(p['cover']*5)*27)
+    if name=='floating_island':return 110+p['orbiting_rocks']+(24 if p['vines'] else 0)+(8 if p['vegetation'] else 0)+(22 if p['waterfall'] else 0)+(13 if p['waterfall'] and p['mist'] else 0)
     if name in ('rocks','falling_petals','birds_flock','butterflies','fireflies','lantern_swarm','hot_air_balloons','crystal_cluster'):return max(1,p['count'])
     if name=='hedge':return min(160,max(1,math.ceil(p['length']/p['height'])))
     return 1
@@ -229,6 +230,7 @@ def validate_recipe(recipe,assets=False):
         x=min(.85,s['area'][0]*.25);y=min(1,s['area'][1]*.25)
         s['standing']=[[-x,0,0],[x,0,0],[-x,y,0],[x,y,0]]
     costs={key:0 for key in LIMITS};costs['objects']=3+(1 if s['floor'] else 0)+len(r.get('lights',[]))
+    costs['objects']+=sum(k in r.get('camera_hints',{}) for k in ('medium','close'))
     costs['lights']=1+len(r.get('lights',[]));costs['animation_keys']=6*len(r.get('camera_hints',{}).get('establishing_path',[]));notes=[];prepared=[];ids=set()
     for i,e in enumerate(r['elements']):
         path=f'$.elements[{i}]'

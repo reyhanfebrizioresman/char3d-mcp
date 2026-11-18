@@ -15,6 +15,11 @@ Return JSON only: recipe, brief, warnings. No code, expressions, external files,
 Use foreground framing, one readable midground hero, layered background silhouettes.
 Leave the stage center clear for human characters. Describe motivated light, scale cues,
 a harmonious limited palette matching the chosen cinematic look, negative space and readable motion.
+Use spatial serpent coils that pass in front of and behind architecture, layered cloud banks,
+and an emissive sun disk aligned with sunset light. Use modest cloud cover to preserve negative space.
+Choose three-quarter creature views that reveal round bodies, fins and tail silhouettes.
+For medium/close camera hints use f_stop and dress the 3–8m midground with foliage or practicals;
+avoid framing bare ground planes behind faces. Keep silhouettes, faces and stage paths clear.
 Use meters, Z up, character front -Y. Place scenic heroes behind stage (+Y), camera toward +Y.
 A hero camera must show both stage and hero. Keep floor/standing heights consistent.
 Prefer 8–18 elements, sparse detail and a single main motion. Schema ranges and budgets are hard limits.
@@ -69,7 +74,9 @@ def offline(idea,seed=0,look=None):
     recipe={'version':1,'name':name.replace('_',' ').title(),'seed':seed,'duration_s':4,'elements':els,
         'stage':{'location':[0,0,0],'area':[7,6],'surface':'wood','color':[.22,.12,.06],
                  'standing':[[-.85,0,0],[.85,0,0]]},
-        'camera_hints':{'hero':{'location':[20,-32,14],'target':[0,10,5],'lens':42}},
+        'camera_hints':{'hero':{'location':[20,-32,14],'target':[0,10,5],'lens':42},
+            'medium':{'location':[-.10,-3.5,1.6],'target':[-.85,0,1.34],'lens':58,'f_stop':4.0},
+            'close':{'location':[0,-2.6,1.68],'target':[.85,0,1.57],'lens':85,'f_stop':2.8}},
         'lights':[{'kind':'area','location':[0,-4,5],'target':[0,0,1],'energy':400,'color':[1,.78,.54],'size':5}],
         'sky':{'preset':'sunset'},'look':{'preset':'golden_hour','haze':.003,'bloom':.25},
         'weather':{'kind':'clear','seed':seed}}
@@ -86,35 +93,39 @@ def offline(idea,seed=0,look=None):
         add('reeds','reeds',[-9,10,-.25],{'area':[6,3],'density':4,'height':1.5})
         recipe['camera_hints']['hero']={'location':[18,-27,11],'target':[0,11,5],'lens':43}
     elif name=='mountain_gateway':
-        recipe['look']={'preset':'misty_morning','haze':.007,'bloom':.2,'sun':{'elevation':12,'azimuth':155}}
+        recipe['look']={'preset':'misty_morning','haze':.0045,'bloom':.25,'god_rays':.6,'sun':{'elevation':12,'azimuth':155}}
         add('ridge_floor','hills',[0,19,-1],{'area':[45,40],'height':2})
         add('gateway','arch_gate',[0,13,1],{'width':6,'height':7,'style':'beam'})
         add('pavilion','pagoda_like',[-10,21,2],{'width':5,'height':10,'tiers':3})
-        add('sky_serpent','serpent',[1,15,11],{'length':19,'radius':.7},rotation=-65,
-            animation=[{'kind':'orbit','radius':4,'speed':.8,'amplitude':.3}])
+        add('sky_serpent','serpent',[0,15,9],{'length':65,'radius':1.15,'segments':144,'emission':.18},rotation=-18,
+            animation=[{'kind':'bob','speed':.5,'amplitude':.35}])
         add('left_frame','tree',[-10,1,0],{'kind':'pine','height':12,'detail':.35})
         add('right_frame','tree',[13,18,0],{'kind':'pine','height':10,'detail':.35})
         add('banners','banner_cloth',[5,11,1],{'height':5,'width':1.8})
         add('approach','path',[0,0,0],{'points':[[0,0,0],[0,9,.2],[0,13,1]],'width':3,'material':'stone'})
-        recipe['camera_hints']['hero']={'location':[22,-30,15],'target':[0,11,6],'lens':36}
+        recipe['camera_hints']['hero']={'location':[26,-39,17],'target':[0,12,7],'lens':43}
     elif name=='sky_whale':
-        recipe['look']={'preset':'sunset','haze':.002,'bloom':.3}
-        add('sky_swimmer','whale_like',[0,16,13],{'length':17},rotation=-65,
+        recipe['look']={'preset':'sunset','haze':.0025,'bloom':.38,'god_rays':.8,'sun':{'elevation':12,'azimuth':168}}
+        add('sky_swimmer','whale_like',[0,17,15],{'length':23,'motion':1.9},rotation=-25,
             animation=[{'kind':'drift','speed':.9,'amplitude':.35}])
         add('balloons','hot_air_balloons',[-4,30,0],{'count':4,'area':[32,18],'height':16,'size':1.6})
-        add('cloud_sea','clouds',[0,-5,-2],{'cover':.8,'height':8,'style':'cumulus'})
+        add('cloud_sea','clouds',[0,-5,-2],{'cover':.85,'height':8,'style':'cumulus','area':[115,90]})
         add('stage_island','floating_island',[0,0,-.1],{'radius':5,'depth':8,'vegetation':False,'waterfall':False})
-        add('crystals','crystal_cluster',[-5,3,0],{'count':6,'height':2})
-        recipe['camera_hints']['hero']={'location':[22,-32,16],'target':[0,10,7],'lens':34}
+        add('crystals','crystal_cluster',[-4,3,0],{'count':6,'height':2})
+        recipe['materials']={'sunlight':{'color':[1,.49,.13],'emission':7}}
+        add('sun_disk','primitive',[12,80,17],{'shape':'sphere','size':[10,4,10]})
+        els[-1]['material']='sunlight'
+        add('scale_birds','birds_flock',[-2,24,16],{'count':9})
+        recipe['camera_hints']['hero']={'location':[27,-36,9],'target':[0,17,10],'lens':34}
     elif name=='floating_islands':
         add('near_island','floating_island',[-8,13,8],{'radius':5,'depth':8})
         add('far_island','floating_island',[10,27,13],{'radius':6,'depth':10})
         add('tiny_island','floating_island',[-5,36,18],{'radius':2.8,'depth':5})
         add('stage_island','floating_island',[0,0,-.1],{'radius':5,'depth':9,'vegetation':False,'waterfall':False})
-        add('cloud_sea','clouds',[0,-5,-5],{'cover':.65,'height':8,'style':'wisps'})
-        add('bird','bird_like',[0,16,15],{'wingspan':5,'glowing':False},rotation=-70,
-            animation=[{'kind':'drift','amplitude':.3}])
-        recipe['camera_hints']['hero']={'location':[24,-34,17],'target':[0,13,6],'lens':34}
+        add('cloud_sea','clouds',[0,-5,-5],{'cover':.55,'height':8,'style':'cumulus','area':[120,100]})
+        add('birds','birds_flock',[0,16,15],{'count':7})
+        add('garden_arch','arch_gate',[-8,12.5,8],{'width':3,'height':4})
+        recipe['camera_hints']['hero']={'location':[26,-36,8],'target':[0,14,9],'lens':32}
     elif name=='blossom_valley':
         recipe['look']={'preset':'dreamy','haze':.004,'bloom':.3}
         for i,(x,y,h) in enumerate([(-8,5,8),(9,9,10),(-11,18,9),(10,25,8)]):
@@ -170,10 +181,31 @@ def offline(idea,seed=0,look=None):
     if name == 'beach_fire':
         recipe['materials']={'embers':{'color':[1,.24,.025],'emission':4}}
         next(e for e in els if e['id']=='embers')['material']='embers'
+    # Portraits look through an intentionally dressed midground, with clear faces.
+    if name=='lake_lanterns':
+        recipe['stage'].update(floor=False)
+        add('portrait_lanterns','lantern_swarm',[0,6,0],{'count':8,'area':[8,3],'height':4,'size':.6,'rise':.08})
+    if name=='mountain_gateway':
+        recipe['stage'].update(floor=False,surface='stone',color=[.29,.35,.31])
+        els[0]['params'].update(height=14,area=[150,65])
+        els[0]['transform']['location']=[0,48,-2]
+        add('foreground_ground','hills',[0,18,-.30],{'area':[100,100],'height':.4,'roughness':.3})
+        add('portrait_garden','bush',[-2.6,4,0],{'height':1.7,'detail':.5})
+        add('portrait_pine','tree',[2.9,6,0],{'kind':'broadleaf','height':5.2,'detail':.55})
+        add('portrait_practical','lantern',[1.9,4.5,0],{'height':2.7})
+        add('portrait_lanterns','lantern_swarm',[0,7,0],{'count':5,'area':[7,2],'height':4,'size':.55,'rise':.05})
     if name in ('sky_whale', 'floating_islands'):
-        els[0]['params'].update(height=12,area=[170,60])
-        els[0]['transform']['location']=[0,70,-9]
-        add('low_cloud_bed','clouds',[0,-60,-18],{'cover':.9,'height':5,'style':'cumulus'})
+        # No flat mountain slab across the cloud sea.
+        els.remove(els[0])
+        recipe['stage'].update(surface='grass',color=[.13,.29,.055])
+        add('low_cloud_bed','clouds',[0,-60,-16],{'cover':.85,'height':5,'style':'cumulus','area':[125,110]})
+        add('portrait_clouds','clouds',[0,-16,-4],{'cover':.45,'height':5,'style':'cumulus','area':[40,20]})
+        add('portrait_garden','bush',[-2.7,3.0,0],{'height':1.4,'detail':.4})
+        add('portrait_tree','tree',[3.0,3.2,0],{'kind':'broadleaf','height':3.8,'detail':.35})
+    if name in ('mountain_gateway','sky_whale','floating_islands'):
+        add('portrait_leafy_backdrop','bush',[2.0,3.6,.15],{'height':2.5,'detail':.6})
+    if name=='floating_islands':
+        recipe['look'].update(preset='epic',haze=.0035,bloom=.3,god_rays=.7,sun={'elevation':15,'azimuth':145})
     if name in ('mountain_gateway', 'sky_whale', 'floating_islands'):
         recipe['lights'].append({'kind':'area','location':[3,4,23],'target':[0,16,10],
             'energy':2200,'color':[1,.78,.54],'size':10})
@@ -183,8 +215,11 @@ def offline(idea,seed=0,look=None):
     # Seed affects not just generated geometry but a subtle, stable art choice.
     recipe['lights'][0]['color']=[1,.72+randomizer.random()*.12,.50+randomizer.random()*.08]
     validated=validate_recipe(recipe)
-    return {'recipe':validated['recipe'],'brief':f'{recipe["name"]}\n\nForeground: open timber acting platform and sparse framing. '
-        'Midground: one clear hero silhouette. Background: layered atmospheric ridges. '
+    foreground={'sky_whale':'planted grass ledge above a cloud sea','floating_islands':'hanging garden ledge',
+        'mountain_gateway':'stone approach and lantern garden','lake_lanterns':'timber pier and warm lanterns'}.get(name,'open acting platform and sparse framing')
+    background='layered cloud banks and aerial haze' if name in ('sky_whale','floating_islands') else 'layered atmospheric ridges'
+    return {'recipe':validated['recipe'],'brief':f'{recipe["name"]}\n\nForeground: {foreground}. '
+        f'Midground: one clear hero silhouette. Background: {background}. '
         'Warm motivated practicals balance cool distance; human figures supply scale. '
         'Motion is saved and deterministic. Review wide and face coverage before final render.',
         'warnings':['Offline uses ten seeded archetypes; edit the recipe for bespoke art direction.']}

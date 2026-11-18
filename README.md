@@ -626,4 +626,7 @@ Validate without Blender using `compose_world(..., build=False)`, build/inspect,
 then `save_world("name")` and use `DUNIA: name` in a script. Studio's **Dunia** page
 provides generation, JSON editing, inline validation and Eevee preview. No
 AI-authored Python runs; schemas and hard budgets bound every build.
+Heroes include a round coiling serpent, articulated whale fins/tail, stratified
+floating gardens, seamless cloud billows and layered mountain heightfields.
+Saved medium/close camera hints support depth of field and dressed backgrounds.
 See [world recipe guide](engine/world/README.md) for catalog, consent, limits and tests.

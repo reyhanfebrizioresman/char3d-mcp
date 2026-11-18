@@ -20,13 +20,13 @@ is involved in generation or composition.
      "params": {"width": 6, "height": 7, "style": "beam"},
      "transform": {"location": [0, 12, 0]}},
     {"id": "guardian", "generator": "serpent",
-     "params": {"length": 15, "radius": 0.7},
-     "transform": {"location": [0, 14, 10], "rotation_deg": [0, 0, -65]},
-     "animation": [{"kind": "orbit", "radius": 4, "speed": 0.8}]}
+     "params": {"length": 65, "radius": 1.15, "segments": 144, "coil": 1},
+     "transform": {"location": [0, 15, 9], "rotation_deg": [0, 0, -18]},
+     "animation": [{"kind": "bob", "amplitude": 0.35, "speed": 0.5}]}
   ],
   "stage": {"area": [7, 6], "standing": [[-0.85, 0, 0], [0.85, 0, 0]]},
   "look": {"preset": "misty_morning", "haze": 0.006},
-  "camera_hints": {"hero": {"location": [22, -30, 15], "target": [0, 13, 6], "lens": 44}}
+  "camera_hints": {"hero": {"location": [26, -39, 17], "target": [0, 12, 7], "lens": 43}}
 }
 ```
 
@@ -49,7 +49,11 @@ for selective recoloring. Keep creature eyes and belly contrast readable.
 paper with no light per lantern. `sky` delegates the established outdoor sky
 preset/strength/rotation; `look` and `weather` delegate cinematic/weather tools.
 
-`camera_hints.hero` is an explicit location/target/lens. An optional
+`camera_hints.hero` is an explicit location/target/lens. Optional `medium` and
+`close` hints create owned portrait cameras, returned as `portrait_cameras`.
+Each accepts `f_stop` (1.2–32) for saved DOF, focused on its target. Portrait
+coordinates are absolute; choose eye/chest height for the actual cast and put
+foliage, cloud banks or practicals 3–8m behind the stage for depth. An optional
 `establishing_path` animates that camera through XYZ points. `stage` contains
 world `location`, floor `area`, local `standing` positions, floor flag,
 `surface` and color, plus `seats` referencing chair/bench/sofa/stool elements.
@@ -60,19 +64,26 @@ absolute world XY coordinates. Static obstacle and foot-lock rules still apply.
 
 ## Catalog
 
-All 26 nature generators are available unchanged: `tree`, `bush`, `hedge`,
+All 26 nature generators are available: `tree`, `bush`, `hedge`,
 `grass_field`, `flowers`, `reeds`, `rice_paddies`, `hills`, `mountains_backdrop`,
 `rocks`, `cliff`, `path`, `lake`, `river`, `sea`, `waterfall`, `clouds`,
 `falling_petals`, `birds_flock`, `butterflies`, `fireflies`, `fence`, `lantern`,
 `wooden_bridge`, `gazebo`, `village_house`.
+Clouds now use three layers of seamless Gaussian-union billow clusters with top/bottom
+shading and lifted distance palettes; `area` controls width/depth. They use no
+volumes. Mountains are full sloping heightfields with wandering ridgelines,
+slope shading and atmospheric palettes. Both retain deterministic topology.
+Internal material profiles are authored node graphs; recipes cannot supply
+nodes, shader code or driver expressions.
+
 See [nature API](../nature/README.md) and the published schema for exact ranges.
 
 | Original hero | Main parameters / intent |
 |---|---|
-| `serpent` | length 2–40, radius .1–2, segments 24–160, taper, scales/horns/whiskers/fins, color; sinuous body with saved swim deformation |
-| `whale_like` | length 2–40, color; broad body, throat pleats, pectorals, flukes, swimming motion |
+| `serpent` | length 2–100 (approximate arc length), radius .1–2, segments 24–160, taper, coil 0–1, scales/horns/whiskers/fins/legs, emission 0–3, color; round transported 3D coil, UV scale shader, belly, mane, articulated jaw, swept horns and claws |
+| `whale_like` | length 2–40, motion .2–2.5, color; continuous tapered body, curved throat pleats, separate rounded pectorals/flukes with saved hinge motion and shared body sway |
 | `bird_like` | wingspan 1–30, glowing, color; feather wings, fan tail, saved wingbeat |
-| `floating_island` | radius 1–18, depth 1–30, vegetation, waterfall; hanging rock, grove, water ribbons |
+| `floating_island` | radius 1–18, depth 1–30, vegetation/waterfall/vines/mist, orbiting_rocks 0–12; ledged strata, grass rim, roots, grove, foam and translucent spray billows |
 | `lantern_swarm` | count 0–100, area, height 2–40, size .1–2, rise 0–2, optional stylized water glints; individual glowing lanterns, bob and flicker |
 | `hot_air_balloons` | count 0–12, area, height 5–80, size .5–6; striped envelopes, ropes, baskets, bob |
 | `crystal_cluster` | count 1–40, height .2–12, color; faceted luminous prisms |
@@ -163,8 +174,9 @@ then `.venv/bin/python tests/e2e_smoke.py --world-only`.
 Visuals: same port/workspace, `.venv/bin/python tests/world_visuals.py --stills`;
 `--reuse --stills` inspects saved milestones; `--reuse --clips` makes two 3-second
 384×216/12fps Eevee clips in the same Blender process. No second Blender is started.
-Contact sheets: `output/world_sheets/`; stills/clips: `output/renders/world_*`;
-recipes: `output/worlds/showcase-*.json`; projects: `output/projects/world_*.blend`.
+Contact sheets: `output/world_sheets/quality_v2/`; stills/clips: `output/renders/world_v2_*`;
+recipes: `output/worlds/showcase-*.json`; projects: `output/projects/world_v2_*.blend`. `--refresh` rebuilds the current
+offline recipe around saved actors, preserving an efficient visual iteration loop.
 UI on **8798**: `node tests/world_ui.cjs` records dark/light 390/1440 screenshots.
 Never use production port 9876. Stop the isolated engine/UI after verification.
 
