@@ -139,10 +139,10 @@ def _image_result(r: dict):
 async def render_preview(view: View = "three_quarter", width: int = 512, height: int = 512,
                          engine_name: Engine = "workbench", frame: int | None = None,
                          objects: list[str] | None = None, transparent: bool = False,
-                         camera: Literal["auto", "scene"] = "auto"):
+                         camera: str = "auto"):
     """Render a still and return the image so you can SEE the result.
     camera="auto": temporary auto-framed camera from `view` (`objects` frames/isolates
-    those objects). camera="scene": look through the shot camera active at `frame`
+    those objects). A camera object name selects it directly. camera="scene": look through the shot camera active at `frame`
     (check your camera_shot framing; height follows the scene aspect).
     workbench = fast clay preview; eevee = real lights/materials (~2-10 s); cycles = slow."""
     r = await run("render_preview", view=view, width=width,
@@ -1238,6 +1238,60 @@ async def talk_gestures(character: str, frame_start: int | None = None,
     return await run("talk_gestures", character=character, frame_start=frame_start,
                      frame_end=frame_end, style=style, hands=hands, intensity=intensity,
                      seed=seed, fingers=fingers, semantic=semantic, cues=cues)
+
+
+# --- Mode bebas: closed declarative world recipes -----------------------------
+@mcp.tool()
+async def world_schema() -> dict:
+    """Published closed JSON Schema, generator catalog, parameter ranges and hard budgets.
+    Pure local data, no Blender. Use this before composing original worlds."""
+    from engine.world import world_schema as contract
+    return contract()
+
+
+@mcp.tool()
+async def compose_world(recipe: dict, build: bool = True) -> dict:
+    """Validate a declarative world. build=False returns normalized recipe, warnings,
+    exact geometry estimate and budgets without starting Blender or changing a scene.
+    Build replaces only the previous owned world; returns hero camera and staging.
+    No authored Python, expressions, external assets or network are executed."""
+    if not build:
+        from engine.world import validate_recipe
+        return {**await anyio.to_thread.run_sync(lambda: validate_recipe(recipe)), 'built': False}
+    return await run('compose_world', recipe=recipe)
+
+
+@mcp.tool()
+async def clear_world() -> dict:
+    """Remove only world-owned objects/data and restore owned atmosphere. Characters,
+    user props and cameras survive. Recipes saved under worlds/ remain on disk."""
+    return await run('clear_world')
+
+
+@mcp.tool()
+async def save_world(name: str, recipe: dict | None = None) -> dict:
+    """Save the current or supplied validated recipe as workspace/worlds/name.json.
+    Name is a simple identifier, never a filesystem path. Does not build."""
+    return await run('save_world', name=name, recipe=recipe)
+
+
+@mcp.tool()
+async def load_world(name: str, build: bool = True) -> dict:
+    """Load a saved world recipe. build=False validates/estimates without scene edits;
+    True composes it. Use DUNIA: name or WORLD: name in a script."""
+    return await run('load_world', name=name, build=build)
+
+
+@mcp.tool()
+async def direct_world(idea: str, generator: str = 'auto', consent: bool = False,
+                       seed: int = 0, look: str | None = None) -> dict:
+    """Idea → original world recipe, art-direction brief, warnings and budget estimate.
+    offline uses ten seeded archetypes, no network/Blender. Claude API is paid;
+    claude_cli uses subscription quota. Both require consent=True to send idea/options
+    to Anthropic. One schema repair, then visible offline fallback on failure.
+    Does not build or save; edit then compose_world(build=False), build and inspect."""
+    from providers.director.world import direct_world as direct
+    return await anyio.to_thread.run_sync(lambda: direct(idea, generator, consent, seed, look))
 
 
 # --- dialog --------------------------------------------------------------------------

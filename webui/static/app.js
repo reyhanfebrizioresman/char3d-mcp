@@ -17,7 +17,9 @@ import * as characters from "./characters.js";
 import * as render from "./render.js";
 import * as gallery from "./gallery.js";
 import * as tools from "./tools.js";
+import * as world from "./world.js";
 const pages = {
+  dunia: ["Dunia", "spark", world],
   naskah: ["Naskah ke adegan", "script", script],
   adegan: ["Adegan", "scene", scene],
   karakter: ["Karakter", "user", characters],
@@ -144,10 +146,12 @@ document.addEventListener("job-finished", (event) => {
       "mpfb_assets",
       "render_options",
       "director_status",
+      "world_schema",
       "list_voices",
     ].includes(job.tool)
   )
     return;
+  if (job.tool === "compose_world" && job.result?.data?.built === false) return;
   if (job.tool === "direct_scene") {
     toast(job.status === "completed" ? "Draf sutradara siap ditinjau." : "Draf sutradara gagal. Periksa pesan pada panel.", job.status === "failed" ? "error" : "success");
     return;

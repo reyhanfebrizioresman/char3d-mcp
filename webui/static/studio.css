@@ -1731,3 +1731,30 @@ textarea#director-idea { min-height: 112px; font-size: 15px; padding: 16px 18px;
 .scene-look-body .look-swatch { height: 48px; }
 .scene-look-body .look-actions { margin-top: 14px; justify-content: space-between; }
 @media (max-width: 600px) { .scene-look-body .look-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .look-name { font-size: 12px; } }
+
+/* Mode bebas: a quiet drafting desk beside the world composition. */
+.world-intro { display:flex; justify-content:space-between; align-items:center; padding:28px 32px; margin-bottom:24px; overflow:hidden; background:linear-gradient(125deg,var(--panel-raised),color-mix(in srgb,var(--accent) 8%,var(--panel-raised))); }
+.world-intro h2 { margin:10px 0; font-size:26px; }
+.world-intro p { color:var(--muted); max-width:520px; }
+.world-orbit { font-size:100px; line-height:1; color:var(--accent); padding:0 22px; }
+.world-layout { display:grid; grid-template-columns:minmax(260px,.75fr) minmax(0,1.5fr); gap:24px; align-items:start; }
+.world-form { padding:26px; display:grid; gap:18px; }
+.world-form textarea { width:100%; resize:vertical; min-height:135px; }
+.world-examples { display:flex; flex-wrap:wrap; gap:8px; }
+.world-contract { border-top:1px solid var(--line); padding-top:24px; margin-top:16px; }
+.world-workbody { padding:26px; display:grid; gap:16px; }
+.world-summary h3 { font-size:24px; margin:0 0 10px; }
+.world-summary > p { color:var(--muted); line-height:1.65; }
+.world-costs { display:flex; flex-wrap:wrap; gap:10px; margin:18px 0; }
+.world-costs span { background:var(--panel-raised); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:12px; }
+.world-costs b { display:block; font-size:20px; margin-bottom:4px; }
+.world-json { width:100%; font:12px/1.6 var(--mono); min-height:280px; resize:vertical; tab-size:2; }
+.world-json[aria-invalid="true"] { border-color:var(--danger,#dc7668); }
+.world-valid { color:var(--accent); }
+.world-actions,.world-save .row { flex-wrap:wrap; }
+.world-save { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:14px; }
+.world-preview { border-radius:12px; overflow:hidden; background:#172227; }
+.world-preview img { display:block; width:100%; height:auto; }
+#world-progress { font-size:13px; color:var(--muted); }
+@media(max-width:1000px) { .world-layout { grid-template-columns:1fr; } .world-form { grid-template-columns:1fr; } }
+@media(max-width:680px) { .world-intro { padding:22px; } .world-intro h2 { font-size:22px; } .world-orbit { display:none; } .world-form,.world-workbody { padding:18px; } .world-save { grid-template-columns:1fr; } .world-actions .button { flex:1; } }

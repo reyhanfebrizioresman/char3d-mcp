@@ -1197,6 +1197,63 @@ MPFB character (~10× preview, ≈ 4.5 h for a 15 s clip). Always do a draft fir
 - Vertical video: `vertical=True` (e.g. 1080p → 1080×1920). Output is H.264 MP4, 24 fps
   unless `set_timeline(fps=...)`.
 
+## Mode bebas (world recipes)
+
+Use `world_schema()` for the closed JSON Schema, 38-generator catalog, parameter
+ranges and hard budgets. `compose_world(recipe, build=False)` validates, normalizes
+and estimates without Blender or scene changes; True builds an owned world.
+`clear_world()` removes it; `save_world(name)` / `load_world(name)` store validated
+JSON under workspace `worlds/`. Names never accept paths. No AI-authored Python,
+expressions, URLs or external assets execute: only declarative allowlisted data.
+
+Recipes contain version/seed, elements (generator/params, XYZ transform, explicit
+instances or seeded scatter with spacing/exclusions), named palette/material
+presets, practical lights, sky/look/weather, saved animation presets, hero camera
+hints and walkable stage/standing/seats. All 26 nature builders plus primitive and
+prop are available. Original heroes: serpent, whale_like, bird_like,
+floating_island, lantern_swarm, hot_air_balloons, crystal_cluster, arch_gate,
+pagoda_like and banner_cloth; existing waterfall is reused. Architecture uses
+generic vocabulary; never recreate specific films/games/brands/landmarks.
+
+Art quality: serpent uses round parallel-transport sections along a spatial coil,
+UV scale shading, belly/mane, articulated jaw, horns/whiskers and optional legs.
+`coil` 0–1, length 2–100m, emission 0–3. Whale `motion` .2–2.5 drives independent
+fin/fluke hinges with shared swim. Islands have strata, grass, roots/vines,
+waterfall spray and 0–12 `orbiting_rocks`. Clouds use three seamless Gaussian-union
+billow layers (`area` controls extent); mountain layers are sloped heightfields.
+All shaders/motion remain fixed internal profiles. `camera_hints.medium/close`
+plus `f_stop` create reusable owned DOF cameras (`portrait_cameras` in build output).
+Dress the portrait midground and keep paths/faces clear. Quality evidence is in
+`output/world_sheets/quality_v2/`; harness supports `--refresh` to rebuild recipes
+around saved actors, and `--reuse` to render saved milestones without rebuilding.
+
+Hard budgets: 20k internal instances, 256 placements, 400k estimated triangles,
+1.2M vertices, 1,200 objects, 16 lights, 2 volumes, 200k transform keys. Geometry
+is preflighted; prop costs are conservative. Warnings begin at 70%. World motion
+uses saved native drivers/keys, without simulation caches or Python handlers.
+
+`direct_world("paus berenang melalui awan senja", generator="offline", seed=17)`
+returns recipe/brief/warnings/cost without building. Offline has ten seeded world
+archetypes. Claude API and Claude Code reuse existing director generators, privacy
+and explicit `consent=True`; auto selects online only with consent. Structured
+JSON gets one validation-repair round, then visible offline fallback on failure.
+Prompts include composition layers, motivated lighting, palette, scale and motion.
+
+Use `DUNIA: saved-name` / `WORLD:` headers or dict `world` (name/inline recipe).
+The world supplies the set and stage; dialog/cameras/sound work normally and script
+look/weather override recipe defaults. Studio's **Dunia** page offers describe,
+generator/consent, summary, JSON with inline validation, Eevee hero preview, save
+and use in Naskah. Existing characters remain during composition and preview.
+
+Recipe example, full catalog/ranges, lifecycle/safety/cost details and limits:
+[`engine/world/README.md`](engine/world/README.md).
+Verify: `tests/test_world.py` → `WORLD UNIT OK`; `tests/e2e_smoke.py --world-only`;
+`tests/world_visuals.py --stills` / `--reuse --clips`; `tests/world_ui.cjs`.
+Use only engine **9998**, UI **8798**, workspace `$PWD/output`; one Blender at a
+time. Evidence: `output/world_sheets/`, `output/world_visuals.json`, saved world
+JSON and `.blend` milestones. Clouds/water/creatures are stylized; inspect hero,
+medium/close and motion. Procedural Blender motion needs baking for other apps.
+
 ## Cinematic look
 
 `cinematic_look(preset="golden_hour", intensity=1, haze=None, god_rays=None,

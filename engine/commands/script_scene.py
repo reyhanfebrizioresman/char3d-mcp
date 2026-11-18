@@ -145,6 +145,12 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
         timings["total"] = round(time.perf_counter() - started, 4)
         return result
 
+    world_recipe = None
+    if plan.get('world') is not None:
+        from .world import load_world
+        from ..world import validate_recipe
+        world_recipe = (load_world(plan['world'], build=False)['recipe'] if isinstance(plan['world'], str)
+                        else validate_recipe(plan['world'])['recipe'])
     # Validate known action names and audio readability before adding any objects.
     for beat in plan["beats"]:
         action = beat.get("do")
@@ -193,8 +199,18 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             dispatch("stage_dialog", {"characters": cast, "cheat_deg": 55.0})
         if plan["environment"]:
             dispatch("set_environment", {"preset": plan["environment"], "subject": cast, "variant": abs(int(seed))})
+        if world_recipe is not None:
+            result['world'] = dispatch('compose_world', {'recipe': world_recipe})
+            stage = result['world']['stage']
+            for i, rig in enumerate(cast):
+                offset = stage['standing'][i % len(stage['standing'])]
+                bpy.data.objects[rig].location = Vector(stage['location']) + Vector(offset)
+            bpy.context.view_layer.update()
 
     props, occupied, assigned_seats, body_started, looks, titles, lines = {}, set(), {}, set(), [], [], []
+    if world_recipe is not None:
+        for ident in world_recipe.get('stage', {}).get('seats', []):
+            props[ident] = result['world']['elements'][ident]
     preferred_seats = {}
     fps = sc.render.fps
 
@@ -589,6 +605,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 interaction_shots()
     with timed("lighting"):
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
+    if world_recipe is not None:
+        from .world import _atmosphere
+        _atmosphere(world_recipe)
     if "weather" in plan:
         with timed("weather"):
             result["weather"] = dispatch("set_weather", {"kind": plan["weather"], "seed": abs(int(seed))})

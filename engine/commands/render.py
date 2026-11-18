@@ -94,6 +94,19 @@ def render_preview(view="three_quarter", width=512, height=512, engine="workbenc
                  fp=sc.render.filepath, transparent=sc.render.film_transparent,
                  fmt=sc.render.image_settings.file_format)
 
+    if camera not in ('auto', 'scene'):
+        chosen = obj_or_raise(camera)
+        if chosen.type != 'CAMERA':
+            raise ValueError('camera must name a camera object')
+        previous = sc.camera
+        markers = [(m, m.camera) for m in sc.timeline_markers if m.camera]
+        try:
+            for m, _ in markers: m.camera = None
+            sc.camera = chosen
+            return _render_scene_camera(sc, width, height, engine, filename, view)
+        finally:
+            sc.camera = previous
+            for m, c in markers: m.camera = c
     if camera == "scene":
         return _render_scene_camera(sc, width, height, engine, filename, view)
     cam_data = bpy.data.cameras.new("__c3d_preview_cam")
@@ -207,7 +220,7 @@ def _render_scene_camera(sc, width, height, engine, filename, view):
             sc.render.image_settings.media_type = saved["media"]
         sc.render.image_settings.file_format = saved["fmt"]
     return {"path": out, "view": f"camera:{cam.name}", "engine": engine,
-            "frame": sc.frame_current, "size": [sc.render.resolution_x, sc.render.resolution_y]}
+            "frame": sc.frame_current, "size": [int(width), int(round(width * aspect)) if height is None else int(height)]}
 
 
 @command("render_frames")

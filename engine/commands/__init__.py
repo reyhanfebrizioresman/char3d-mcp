@@ -24,3 +24,4 @@ from . import weather  # noqa: E402,F401
 
 from . import cinematic  # noqa: E402,F401
 from . import nature  # noqa: E402,F401
+from . import world  # noqa: E402,F401

@@ -37,11 +37,16 @@ class Backend:
 
     def generate(self, opts, previous=None, feedback=None):
         import anthropic
+        output_schema, blocks = SCHEMA, system_blocks()
+        if opts.get('task') == 'world':
+            from .world import contract
+            output_schema, prompt = contract()
+            blocks = [{'type': 'text', 'text': prompt, 'cache_control': {'type': 'ephemeral'}}]
         try:
             with anthropic.Anthropic(timeout=180.0, max_retries=0) as client:
                 args = dict(model=self.model, max_tokens=16000, stream=False,
-                            system=system_blocks(), messages=[{'role': 'user', 'content': user_prompt(opts, previous, feedback)}],
-                            output_config={'effort': effort(), 'format': {'type': 'json_schema', 'schema': SCHEMA}})
+                            system=blocks, messages=[{'role': 'user', 'content': user_prompt(opts, previous, feedback)}],
+                            output_config={'effort': effort(), 'format': {'type': 'json_schema', 'schema': output_schema}})
                 # Inspect the installed SDK, never send unsupported beta kwargs.
                 create = client.beta.messages.create
                 if {'fallbacks', 'output_config'} <= set(inspect.signature(create).parameters):

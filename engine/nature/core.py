@@ -58,6 +58,7 @@ class Material:
     metallic: float = 0.
     emission: float = 0.
     surface: str = ''
+    shader: str = ''  # Internal, authored node profile; never recipe expressions.
 
 
 @dataclass
@@ -74,6 +75,7 @@ class Mesh:
     motion: dict = field(default_factory=dict)
     seat: dict = field(default_factory=dict)
     pivots: list = field(default_factory=list)
+    uvs: list = field(default_factory=list)
 
     def face(self, vertices, mat=0):
         start = len(self.vertices)

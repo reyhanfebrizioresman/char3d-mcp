@@ -17,7 +17,8 @@ stream = river(points=[[-12, 8, -.03], [0, 6, -.03], [12, 9, -.03]],
 An `Asset` has `kind`, `parts: list[Mesh]`, and `metadata`. A `Mesh` has local
 `vertices`, indexed `faces`, per-face `indices`, material recipes, `solid`,
 `occludes`, `walkable`, `smooth`, optional `seat`, analytic `motion` and per-vertex
-particle `pivots`.
+particle `pivots`, and optional per-vertex `uvs`. Materials may select a fixed
+internal `shader` profile; no authored node graphs or expressions are accepted.
 `dataclasses.asdict(asset)` is JSON serializable. Material RGB is linear 0..1.
 Coordinates and heights are meters, Z is up. Fields are centered on XY except
 `rice_paddies` / `sea`, which extend along +Y, and paths, which follow XYZ points.
@@ -37,7 +38,7 @@ extend above it. Read recipe vertices or `scene_info` dimensions for exact bound
 | `rocks`, `cliff` | count/area/height; cliff width/height |
 | `path` | XYZ points, width, gravel/earth/stone/wood; feathered crown, nonwalkable decorative aggregate |
 | `lake`, `river`, `sea`, `waterfall` | ellipse-like irregular shape; river XYZ points/width and optional banks; sea area/wave height; waterfall height/width |
-| `clouds` | cover 0..1, height, wisps/cumulus; opaque smooth lobes, no volume cost |
+| `clouds` | cover 0..1, height, wisps/cumulus; area, three seamless Gaussian-union billow layers, distance palettes and top/bottom shading; no volume cost |
 | `falling_petals` | area, count 0..500, height, kind petals/leaves; ground=True creates a static carpet |
 | `birds_flock`, `butterflies` | count 0..60 / 0..80; cyclic closed XYZ flight path / area and height |
 | `fireflies` | area, count 0..500, height, night flag; emissive saved flight |

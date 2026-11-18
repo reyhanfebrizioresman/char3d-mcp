@@ -194,9 +194,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
             line = line.strip()
             if not line:
                 continue
-            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD)\s*:\s*(.*)$", line, re.I)
+            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD|DUNIA|WORLD)\s*:\s*(.*)$", line, re.I)
             if header:
                 key = ("title" if header[1].upper() in ("JUDUL", "TITLE") else
+                       "world" if header[1].upper() in ("DUNIA", "WORLD") else
                        "weather" if header[1].upper() in ("CUACA", "WEATHER") else
                        "look" if header[1].upper() in ("SUASANA", "LOOK", "MOOD") else "environment")
                 raw[key] = header[2]
@@ -381,6 +382,14 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
     location = resolve_alias(location)
     weather = raw.get("weather")
     extra = {}
+    if raw.get('world') is not None:
+        world = raw['world']
+        if isinstance(world, dict):
+            from .world import validate_recipe
+            world = validate_recipe(world)['recipe']
+        elif not isinstance(world, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}(?:\.json)?', world):
+            raise ValueError('world must be a saved recipe name or a declarative recipe dict')
+        extra['world'] = world
     if weather is not None:
         weather = {"hujan": "rain", "salju": "snow", "kabut": "fog", "berangin": "wind",
                    "cerah": "clear"}.get(str(weather).strip().casefold(), str(weather).strip().casefold())
