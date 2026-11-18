@@ -538,7 +538,9 @@ async def set_lighting(preset: Light = "studio", subject: list[str] | None = Non
 
 
 Environment = Literal["podcast_studio", "classroom", "office", "stage", "living_room", "news_desk",
-                      "city_street", "park", "cafe_terrace", "beach"]
+                      "city_street", "park", "cafe_terrace", "beach", "blossom_garden", "pine_forest",
+                      "lakeside", "riverside", "rice_terraces", "mountain_village",
+                      "forest", "mountain_lake", "village"]
 Prop = Literal["chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
                "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
                "handheld_microphone"]
@@ -548,7 +550,7 @@ Prop = Literal["chair", "desk", "table", "microphone", "laptop", "plant", "lamp"
 async def set_environment(preset: Environment, subject: list[str] | None = None,
                           scale: float = 1.0, variant: int = 0,
                           color_theme: str | dict[str, list[float]] | None = None,
-                          screen_image: str | None = None) -> dict:
+                          screen_image: str | None = None, density: float = 1.0) -> dict:
     """Replace all char3d sets/props with a procedural furnished set and practical lights.
     subject: character armature/mesh names (None = visible subjects; empty scene = origin).
     Furniture is sized to subject height * scale, anchored at its feet, facing -Y; the
@@ -563,9 +565,46 @@ async def set_environment(preset: Environment, subject: list[str] | None = None,
     and set_lighting lights. Outdoor city_street/park/cafe_terrace/beach have walkable
     ground, seat metadata, distant backdrops and a procedural sky/sun. Outdoor lighting
     suppresses the extra ground plane; walk_path routes around static furniture.
-    Use sit_on for benches, cafe chairs and the beach deck chair."""
+    Use sit_on for benches, cafe chairs and the beach deck chair.
+    Nature presets also include blossom_garden, pine_forest, lakeside, riverside,
+    rice_terraces and mountain_village. density .2..2 scales their dressing (default 1);
+    park and beach use the same original generators. Use nature_catalog/add_nature
+    to compose custom worlds. Wind is saved procedural motion; no downloads."""
     return await run("set_environment", preset=preset, subject=subject, scale=scale,
-                     variant=variant, color_theme=color_theme, screen_image=screen_image)
+                     variant=variant, color_theme=color_theme, screen_image=screen_image, density=density)
+
+
+@mcp.tool()
+async def nature_catalog() -> dict:
+    """List deterministic nature generators, parameters, units and budgets.
+    Trees (8 kinds), meadow/bush/flowers/rice, hills/ridges/rocks/cliff/path, water,
+    clouds, animated petals/birds/butterflies/fireflies, fences, lanterns, bridges,
+    gazebos and village houses. No downloads or paid services."""
+    return await run('nature_catalog')
+
+
+@mcp.tool()
+async def add_nature(kind: str, location: list[float] | None = None, rotation_z: float = 0.,
+                     scale: float = 1., seed: int = 0, params: dict | None = None,
+                     name: str | None = None, camera_aware: bool = True,
+                     area: list[float] | None = None, density: float | None = None,
+                     season: str | None = None) -> dict:
+    """Add procedural nature without replacing the set. Inspect nature_catalog first.
+    Example: kind='tree', params={'kind':'blossom','height':5,'season':'spring'}.
+    Positions are local meters under one transformable root; density means clumps/m².
+    Foliage responds live to set_weather wind; rebake secondary hair/cloth separately.
+    camera_aware snapshots existing shots at build time and thins distant patches;
+    False keeps requested density/detail. The saved choice never switches per frame.
+    Native motion survives save/open. clear_environment removes all managed props."""
+    return await run('add_nature',kind=kind,location=location or [0,0,0],rotation_z=rotation_z,
+                     scale=scale,seed=seed,params=params,name=name,camera_aware=camera_aware,
+                     area=area,density=density,season=season)
+
+
+@mcp.tool()
+async def clear_nature() -> dict:
+    """Remove standalone add_nature groups; preserve preset scenery and other props."""
+    return await run('clear_nature')
 
 
 @mcp.tool()

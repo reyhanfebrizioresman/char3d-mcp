@@ -56,6 +56,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Interactions: `interact` (handshake, hug, high_five, fist_bump, handover, pat_shoulder)
 - Weather: `set_weather` (clear, rain, snow, fog, wind; saved procedural animation)
 - Walkable ground: `add_terrain`, `clear_terrain`
+- Nature: `nature_catalog`, `add_nature`, `clear_nature` (original seeded generators)
 - Models from elsewhere: `prepare_model`
 - AI (fal.ai paid / Hugging Face Spaces free): `ai_status`, `ai_text_to_3d`,
   `ai_image_to_3d`, `ai_image_to_video`, `ai_text_to_video`, `ai_job_status`, `ai_cancel_job`
@@ -986,6 +987,65 @@ shadow resolution for CPU previews. Clear/replace restores the previous world an
 shadow settings, including after save/open. `CHAR3D_OUTDOOR_VISUALS=1` enables all
 outdoor stills in the smoke test; numeric checks, precipitation workbench checks and
 the weather draft always run.
+
+## Nature kit
+
+`set_environment` adds `blossom_garden`, `pine_forest`, `lakeside`, `riverside`,
+`rice_terraces`, `mountain_village`; park and beach use the same richer generators.
+`density=.2..2` (default 1) scales vegetation dressing. Subject-foot anchoring,
+variant seeds, theme accents, clear/replace, benches and beach deck chairs retain
+the existing contracts. The acting corridor stays open; inspect later custom blocking.
+Script aliases: kebun bunga/taman sakura, hutan/hutan pinus/forest, danau/tepi danau,
+sungai/tepi sungai, sawah/sawah bertingkat, desa/desa pegunungan. Existing aliases remain.
+The tool also accepts `forest`, `mountain_lake`, `village`; scripts additionally
+accept taman bunga, rice field and kampung.
+
+Pure library: [`engine/nature/README.md`](engine/nature/README.md).
+`from engine.nature import tree, grass_field, flowers, rice_paddies, ...` returns
+Blender-free `Asset`/`Mesh` recipes, deterministic with local `seed`, without IO or
+global RNG changes. Twenty-six generators cover eight tree kinds, bush/hedge/reeds,
+meadows, terraced rice, hills/ridges/rocks/cliffs/paths, lake/river/sea/waterfall,
+clouds, petals/leaves, birds, butterflies and fireflies; fences, lanterns, bridges,
+gazebos and village houses. Tree seasons include dry/wet. Units are meters, Z up.
+
+`nature_catalog()` lists signatures and limits.
+`add_nature("tree", location=[-4,6,0], seed=17,
+params={"kind":"blossom","height":5,"season":"spring"})` adds a transformable root.
+`clear_nature()` removes only standalone nature groups; `clear_environment()` also
+removes preset scenery and other managed props. Nature generators use no downloads.
+
+Opaque folded foliage and shared material palettes bound CPU cost. Near/middle/far
+detail is fixed at build time, with larger distant leaves; existing shot frusta
+thin distant groves/patches toward 35% density. Without cameras, builds use the
+acting area. Reapply after framing to redistribute, or use `camera_aware=False`
+on add_nature. Cameras never switch LOD per frame. Trunks/bushes/rocks block walking;
+thin ground cover does not.
+Camera probes consider actual tree foliage and bushes; grass/flowers/life/sky/water
+are ignored. Hills and terrace banks are walkable, but rises >.25 m still block routes.
+Large terraces need explicit stairs for access. Low flattened stones can be seats.
+
+Wind sway, wingbeats, cyclic bird flight, drifting petals and animated water normals
+are saved drivers/nodes and evaluate on arbitrary frames without simulation caches.
+Weather wind updates foliage live; secondary hair/cloth still needs its usual rebake.
+Normal separate-process videos preserve motion. GLB exports geometry/morph targets;
+procedural drivers/nodes need baking for non-Blender consumers. Water is opaque,
+with no fluid/refraction simulation. Clouds are cheap geometry; distant ridges use
+layered palettes and cooperate with cinematic haze. Ground fallback permits walking
+across water: keep routes on banks or add walkable bridge geometry.
+
+`render_options` includes `nature_cost_factor`, multiplied with style/look once and
+removed once during calibration. Draft is 1; default Eevee floors are 1.15..1.50,
+scaled by density. These are estimates; measured evidence is in
+`output/nature_baseline.json`, `nature_benchmark.json`, `nature_visuals.json` and
+`nature_clips.json`. Sheets: `output/nature_sheets/`; saved scenes: `output/projects/nature_*.blend`.
+Measured i5-4460 CPU Eevee, two MPFB actors, 960×540/16 samples, overcast/no look:
+old park 30.02 s/frame; eight new/upgraded sets 24.46–43.48 s/frame (0.81–1.45×).
+These are two-sample means after a warm-up, at density 1 with no camera thinning;
+shared CPU load varies. Per-preset table and raw conditions are in the library README.
+Reproduce on port **9997** with `tests/nature_visuals.py` (see library README).
+Use `--only park --looks none`, then `--reuse` for other looks; `--bench` measures
+960×540/16 samples after a warm-up. `--clips` renders 3-second drafts in the engine,
+without a second Blender. Tests: `tests/test_nature.py`, `tests/nature_e2e.py`.
 
 **Lighting** — `set_lighting(preset, subject, follow="auto")`: studio, soft, dramatic, sunset, noon,
 overcast, night, neon, silhouette, horror. Adds a large ground plane indoors by default and

@@ -19,6 +19,16 @@ from . import command
 from .render_style import applied_style, cost_factor, get_config as style_config
 from .cinematic import applied_look, cost_factor as look_cost_factor, get_config as look_config
 
+
+def nature_cost_factor(sc, engine):
+    from ..nature.presets import cost_factor as nature_cost
+    root=next((o for o in sc.objects if o.get('c3d_nature_preset')),None)
+    return nature_cost(root['c3d_nature_preset'],root.get('c3d_nature_density',1.),engine) if root else 1.
+
+
+def _effects_cost(sc, engine):
+    return cost_factor(sc,engine)*look_cost_factor(sc,engine)*nature_cost_factor(sc,engine)
+
 QUALITY = {
     # engine, resolution %, samples
     "draft": ("BLENDER_WORKBENCH", 50, 0),
@@ -179,7 +189,7 @@ def _fmt_duration(sec):
 
 
 def _estimate(sc, quality, w, h, frames):
-    spf = _seconds_per_frame(quality, w, h, _scene_weight(sc)) * cost_factor(sc, QUALITY[quality][0]) * look_cost_factor(sc, QUALITY[quality][0])
+    spf = _seconds_per_frame(quality, w, h, _scene_weight(sc)) * _effects_cost(sc, QUALITY[quality][0])
     total = spf * frames
     return {"seconds_per_frame": round(spf, 1), "total_s": round(total),
             "total": _fmt_duration(total)}
@@ -234,7 +244,7 @@ def _test_frame(sc, quality, frame):
         if cyc:
             sc.cycles.samples, sc.cycles.device, sc.cycles.use_denoising = cyc
         sc.frame_set(saved["frame"])
-    predicted = _model_spf(engine, samples, w, h, _scene_weight(sc)) * cost_factor(sc, engine) * look_cost_factor(sc, engine)
+    predicted = _model_spf(engine, samples, w, h, _scene_weight(sc)) * _effects_cost(sc, engine)
     learned = _learn(engine, measured, predicted, "test_frame",
                      {"quality": quality, "size": [w, h], "samples": samples})
     return {"engine": ENGINE_KEY[engine], "size": f"{w}x{h}", "samples": samples,
@@ -516,7 +526,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
                         "handle_frames": sum(h["frames"][1] - h["frames"][0] + 1 for h in handles)}}
     job["estimate"] = _estimate(sc, quality, out_w, out_h, end - start + 1 + job["graphics"]["handle_frames"])
     job["model_spf"] = _model_spf(QUALITY[quality][0], QUALITY[quality][2], out_w, out_h,
-                                  _scene_weight(sc)) * cost_factor(sc, QUALITY[quality][0]) * look_cost_factor(sc, QUALITY[quality][0])
+                                  _scene_weight(sc)) * _effects_cost(sc, QUALITY[quality][0])
     JOBS[job_id] = job
     if wait:
         while job["status"] == "running":
@@ -557,6 +567,7 @@ def render_options(quality="final", frame_start=None, frame_end=None, vertical=F
     out = {"quality": quality, "frames": [start, end], "duration_s": round(frames / fps, 2),
            "render_style": style_config(sc), "style_cost_factor": cost_factor(sc, engine),
            "cinematic_look": look_config(sc), "look_cost_factor": look_cost_factor(sc, engine),
+           "nature_cost_factor": nature_cost_factor(sc, engine),
            "handle_frames": handles,
            "scene_weight": "heavy" if _scene_weight(sc) >= 1 else "light",
            "options": options, "machine_speed": calib[ENGINE_KEY[engine]]}

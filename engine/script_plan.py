@@ -377,6 +377,8 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
                "taman": "park", "park": "park", "kafe": "cafe_terrace", "cafe": "cafe_terrace",
                "pantai": "beach", "beach": "beach"}
     location = aliases.get(str(location).strip().casefold(), location)
+    from .nature.presets import resolve_alias, PRESETS as NATURE_PRESETS
+    location = resolve_alias(location)
     weather = raw.get("weather")
     extra = {}
     if weather is not None:
@@ -387,7 +389,7 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
         extra["weather"] = weather
     from .cinematic import look_spec
     extra['look'] = look_spec(look if look is not None else raw.get('look'))
-    extra['recommended_look'] = 'golden_hour' if location in ('park', 'beach', 'cafe_terrace', 'city_street') else 'studio_film'
+    extra['recommended_look'] = 'golden_hour' if location in ('park', 'beach', 'cafe_terrace', 'city_street', *NATURE_PRESETS) else 'studio_film'
     return {"name": name or raw.get("title") or "ScriptScene", "title": raw.get("title"),
             "environment": location, **extra,
             "characters": characters, "beats": beats, "estimated_frames": [1, max(2, frame - 1)],

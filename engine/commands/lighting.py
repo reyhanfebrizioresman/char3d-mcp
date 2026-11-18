@@ -204,6 +204,9 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
     following = bool(motion and (follow is True or (follow == "auto" and travel > 0.43 * standing_height))
                      and any(light[0] != "SUN" for light in lights))
     _clear_c3d("light")
+    for obj in sc.objects:
+        if obj.get('c3d_nature_night_fill'):
+            obj.data.energy=obj['c3d_nature_night_fill'] if preset=='night' else 0
     rig = _follow_rig(samples) if following else None
     if following:
         H = standing_height

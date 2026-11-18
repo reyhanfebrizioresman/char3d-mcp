@@ -4,7 +4,8 @@ import math
 import bpy
 from mathutils import Vector
 
-PRESETS = ("city_street", "park", "cafe_terrace", "beach")
+from ..nature.presets import PRESETS as NATURE_PRESETS
+PRESETS = ("city_street", "park", "cafe_terrace", "beach") + NATURE_PRESETS
 DAYLIGHT = {
     # elevation, sun energy, sun RGB, horizon RGB, zenith RGB, world strength
     "noon": (65, 3.0, (1, .96, .85), (.62, .79, .89), (.12, .39, .72), .65),
@@ -192,7 +193,7 @@ def _facade(b, x, y, width=6, height=7):
             b.box("window_mullion", (xx, y-1.09, zz), (.035, .02, 1.16), "white", 0)
 
 
-def build_outdoor(b, preset, variant):
+def build_outdoor(b, preset, variant, density=1.):
     b.root["c3d_outdoor"] = preset
     side = -1 if variant % 2 else 1
     for name, color in {"grass": (.19, .34, .12), "path": (.56, .50, .39),
@@ -200,7 +201,10 @@ def build_outdoor(b, preset, variant):
                         "glass": (.12, .28, .34), "leaf_light": (.24, .43, .13),
                         "road": (.075, .09, .105)}.items():
         b.materials[name] = b.material(name, color)
-    if preset == "city_street":
+    if preset in (*NATURE_PRESETS, 'park', 'beach'):
+        from ..nature.sets import build_nature_set
+        build_nature_set(b, preset, variant, density)
+    elif preset == "city_street":
         _ground(b, "sidewalk", (0, 42, -.1), (220, 90, .2), "path")
         _ground(b, "road", (0, -53, -.06), (220, 100, .12), "road")
         _ground(b, "curb", (0, -3, -.03), (220, .20, .16), "white")

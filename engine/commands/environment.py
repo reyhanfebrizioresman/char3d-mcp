@@ -20,6 +20,8 @@ from .util import scene_bounds, vec
 COLLECTION = "char3d_env"
 PRESETS = ("podcast_studio", "classroom", "office", "stage", "living_room", "news_desk",
            "city_street", "park", "cafe_terrace", "beach")
+from ..nature.presets import PRESETS as NATURE_PRESETS, resolve_alias
+PRESETS += NATURE_PRESETS
 PROPS = ("chair", "desk", "table", "microphone", "laptop", "plant", "lamp", "screen",
          "bookshelf", "sofa", "whiteboard", "bench", "stool", "cup", "phone", "book",
          "handheld_microphone")
@@ -128,6 +130,8 @@ def clear_environment():
         for item in list(pool):
             if item.get("c3d_environment") and item.users == 0:
                 pool.remove(item)
+    from ..nature.blender import cleanup
+    cleanup()
     coll = bpy.data.collections.get(COLLECTION)
     if coll is not None and not coll.objects and not coll.children:
         bpy.data.collections.remove(coll)
@@ -482,8 +486,11 @@ def _build_set(b, preset, variant):
 
 @command("set_environment")
 def set_environment(preset, subject=None, scale=1.0, variant=0, color_theme=None,
-                    screen_image=None):
+                    screen_image=None, density=1.0):
     """Replace the set around subject feet, auto-sized to its height; never move the subject."""
+    preset = resolve_alias(preset)
+    from ..nature.core import number
+    density = number(density, 'density', .2, 2.)
     if preset not in PRESETS:
         raise ValueError(f"preset must be one of {list(PRESETS)}")
     scale = _positive_scale(scale)
@@ -513,7 +520,7 @@ def set_environment(preset, subject=None, scale=1.0, variant=0, color_theme=None
         if preset in OUTDOORS:
             from .lighting import _clear_c3d
             _clear_c3d("ground")
-            build_outdoor(b, preset, variant)
+            build_outdoor(b, preset, variant, density)
         else:
             _build_set(b, preset, variant)
         bpy.context.view_layer.update()
