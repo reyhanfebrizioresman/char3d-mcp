@@ -106,7 +106,7 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                   move="static", lead_frames=4, gestures="presenter", expression="smile",
                   expression_strength=0.3, blink=True, motion=True, idle=True,
                   frame_start=None, frame_end=None, shot_prefix="Dialog", two_shot_angle=0.0,
-                  single_angle_bias=-25.0, single_angle_limits=None):
+                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False):
     """Perform lip-synced dialog lines: gaze, listener nods, gestures, blinks and cameras.
 
     turns: [{"speaker": rig name, "start": frame, "end": frame}] (from lip sync).
@@ -154,6 +154,10 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                                keyframe=True)
             except (ValueError, RuntimeError):
                 pass      # no face shapes (mannequin)
+
+    if body_language:
+        from .motion import dialog_body
+        report["body_language"] = dialog_body(turns, names)
 
     for i, (n, rig) in enumerate(rigs.items()):
         others = [m for m in names if m != n]
@@ -233,7 +237,7 @@ def line_frames(line, fps):
 @command("dialog")
 def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
            start_frame=1, gap_s=0.35, camera="mixed", shot="medium",
-           gestures="presenter", expression="smile", language=None, perform=True):
+           gestures="presenter", expression="smile", language=None, perform=True, body_language=False):
     """In-process dialog for scene orchestration. Audio accepts pre-transcribed `words`.
 
     perform=False authors only speech, leaving performance/cameras for a later pass.
@@ -280,11 +284,12 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
                 word_frames = text_word_frames(ln["text"], a, fps / 14.0, text_tokens)
             store_words(base, word_frames, a, b)
             warnings.append(f"{ln['speaker']}: no face shapes; speech timing/audio only")
-        turns.append({"speaker": ln["speaker"], "start": a, "end": b, "text": ln.get("text")})
+        turns.append({"speaker": ln["speaker"], "start": a, "end": b, "text": ln.get("text"),
+                      **{k: ln[k] for k in ("emotion", "body_emotion") if ln.get(k)}})
         frame = b + 1 + round(float(ln.get("pause_s", gap_s)) * fps)
     sc.frame_end = max(sc.frame_end, turns[-1]["end"])
     report = dialog_direct(turns, characters=cast, camera=camera, shot=shot,
-                           gestures=gestures, expression=expression) if perform else {
+                           gestures=gestures, expression=expression, body_language=body_language) if perform else {
                                "frames": [int(start_frame), turns[-1]["end"]], "shots": []}
     return {**report, "lines": turns, "next_start_frame": max(frame, report["frames"][1] + 1),
             "warnings": list(dict.fromkeys(warnings))}

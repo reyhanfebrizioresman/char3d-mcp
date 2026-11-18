@@ -433,12 +433,16 @@ Run body clips (animate, walk) BEFORE `dialog` (it keys head/eyes/arms on top); 
 `add_subtitles()` afterwards for captions of every speaker. `talk_motion(look_at=...,
 listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
 `render_frames([...], camera="scene", engine_name="eevee")` at a frame inside each line.
+- `body_language=True` optionally adds emotion-aware torso/shoulder/head movement under
+  speech gestures, including subtle sad/surprised listener reactions. `dialog` defaults
+  to False; `script_to_scene` defaults to True. Explicit line `emotion` wins; otherwise
+  the local sentence-emotion matcher supplies it. Routes and seated legs are preserved.
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
 
 ## Script → scene
 `script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
-subtitles=True, language="auto", seed=0, build=True, sound=True, voice=True,
+subtitles=True, language="auto", seed=0, build=True, sound=True, body_language=True, voice=True,
 tts_engine="piper", voices=None)` composes the existing tools into
 a complete scene for 1–4 characters. `build=False` returns a deterministic normalized
 `plan` (characters, beats with `estimated_frames`, warnings) without changing the scene,
@@ -483,6 +487,19 @@ Unknown descriptor words and stage directions produce warnings, not guesses.
 Directions: `[Budi walks to 1, -1]`, `[Budi jalan ke kursi]`, `[Budi sits on the chair]`,
 `[Budi berdiri]`, `[Ana holds a cup in the left hand]`, `[Ana menunjuk]`,
 `[Ana melihat Budi]`, `[pause 1 second]` (or `[jeda 1 detik]`).
+
+Motion directions also accept `[Ana menangis]`, `[Budi tertawa]`, `[Ana sedih]`,
+`[Budi marah]`, `[Ana gugup]`, `[Ana berjoget]` / `[Ana menari tradisional]`,
+`[Budi berlutut]`, `[Ana berbaring]`, `[Budi bangun]`, `[Ana duduk di lantai]`,
+`[Ana mengetik]`, `[Budi minum]`, `[Ana menelepon]`, `[Budi membaca buku]`,
+`[Ana mengangkat bahu]`, `[Budi bertepuk tangan]`, `[Ana membungkuk]` and
+`[Budi meninju Ana]`, with English equivalents. Required cups/phones/books are
+created and held through `hold_prop`; typing adds a seat and nearby desk/laptop when
+needed. A directed
+punch turns toward its partner and times a stylized recoil; it is not contact IK.
+Dict `gesture` beats accept `bpm`, `cycles`, `speed`, `amplitude`, and kneel `phase`.
+Unknown directions still warn. Explicit motion beats retain their arms/head through
+the later dialog layers. Use `body_language=False` to disable inferred body emotion.
 
 For explicit control, use a dict:
 ```python
@@ -568,6 +585,37 @@ Arms rest at ~35° down (A-pose), so arms fully down ≈ `upper_arm.L` Z −50, 
 animation until phase 3 adds clips).
 
 ## Animation
+### Extended motion scores
+`list_animations()` reports category, duration at 24 fps, looping, description,
+`required_props`, `required_seat`, and dance beats. All entries below are also poses.
+
+| category | clips |
+|---|---|
+| body language (loops) | sad, angry, nervous, happy, excited, tired, confident, shy, bored |
+| reactions (one shot) | laugh, cry, shrug, startle, surprised, facepalm, thinking, sigh, clap, bow, nod_agree, disagree, point, beckon, cover_mouth, arms_crossed |
+| everyday actions | kneel, lie_down, get_up, sit_floor, type, drink, eat, phone_call, read_book, look_around, stretch, pick_up |
+| dance (loops, four beats) | dance_casual, dance_energetic, dance_traditional |
+| stylized fight (one shot) | punch, kick, block, dodge, hit_react, fall_down |
+
+`animate(rig, "dance_casual", bpm=90, cycles=2)` synchronizes four-beat phrases to
+30..240 BPM (default dance period is 64 frames at 24 fps). `speed` multiplies cadence.
+`kneel` supports `phase="full"` (down/hold/up), `"down"`, `"hold"`, `"up"`.
+`lie_down`/`sit_floor`/`fall_down` end on the floor; `get_up` reverses the floor transition.
+Grounding measures evaluated skin/clothing. Typing requires `sit_on` and preserves its
+lower body; nearby laptop/desk geometry supplies hand targets. `drink`, `phone_call`,
+`read_book` require a held native `add_prop` cup/phone/book, in either hand. Existing grip constraints keep
+the cup upright and fingers wrapped. `eat` is pantomime; `pick_up` reaches without attaching
+an object. Dance uses explicit stepped contacts with foot IK.
+Hand contacts are corrected after palm orientation; MPFB teeth, lashes and brows calibrate
+mouth/eye/forehead targets (mannequins use proportional face locations). Dance rounds its
+whole phrase once to avoid accumulated BPM drift; `cycle_frames_exact` reports its period.
+`clear_animation` removes action/NLA animation while preserving structural rig drivers;
+new motions select FK controls on Rigify before solving contacts.
+There is no collision/cloth solver; large skirts, extreme builds and furniture can still
+intersect. Traditional dance is an
+original general hand-led phrase, not a reconstruction of a named regional tradition.
+
+### Core animation and navigation
 Works on **any humanoid rig**: char3d `basic`, char3d `rigify`, and imported skeletons
 with common naming (Mixamo `mixamorig:LeftArm`, CMU BVH `LeftUpLeg`, Unreal `thigh_l`,
 ...). Non-basic rigs are driven through a hidden proportion-matched basic rig and a

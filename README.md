@@ -40,7 +40,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `auto_rig_humanoid` | Rig `basic` (21 tulang) atau `rigify` (kontrol FK/IK), plus skinning otomatis |
 | `validate_rig`, `list_bones`, `set_pose` | Cek kualitas rig, daftar tulang, pose dan keyframe |
 | `list_animations`, `apply_pose` | 12 pose siap pakai (wave, cheer, sit, crouch, fight stance, dll.) |
-| `animate` | Klip prosedural: idle, walk, run, wave, cheer, jump, nod, head_shake; disambung dengan crossfade otomatis (transisi halus, kaki tetap menapak) |
+| `animate` | Klip prosedural dan 46 gerak baru: bahasa tubuh emosi, reaksi, aksi harian, tiga tarian dengan `bpm`, serta fight bergaya; crossfade dan foot IK. Daftar lengkap serta kebutuhan prop/kursi: `list_animations()` |
 | `walk_path`, `turn_to` | Jalan/lari melewati target XY dengan lintasan halus, belok maksimal 100°/detik, langkah berputar di sudut tajam, kaki terkunci, lalu berhenti; bisa menghadap titik, objek, atau kamera (`face_end`); mendukung basic/Rigify/MPFB; `avoid="auto"` menghindari perabot dan karakter lain, `ignore` untuk pendekatan kursi |
 | `import_mocap`, `retarget_animation` | Mocap .bvh/.fbx/.glb (CMU, Mixamo, dll.) ke rig apa pun, diselaraskan otomatis |
 | `lock_feet` | Foot IK: kaki yang menapak dikunci di lantai (tidak selip, tidak tenggelam), tumit → jari berguling alami; otomatis di walk/run/jump dan mocap |
@@ -211,6 +211,14 @@ Nama karakter dibuat unik; objek lama dipertahankan, set terkelola mengikuti per
 `set_environment`. Tidak menyimpan atau merender otomatis. Periksa beberapa shot dengan
 `render_frames(camera="scene", engine_name="eevee", size=512)`, lalu simpan dan render
 draft. Format lengkap dan resep ada di [Script → scene](AGENTS.md#script--scene).
+
+Gerak baru mencakup emosi (`sad`, `angry`, `nervous`, `happy`), reaksi (`cry`,
+`laugh`, `shrug`, `clap`), aksi (`kneel`, `lie_down`, `type`, `drink`, `phone_call`),
+tiga `dance_*` dengan `bpm=90`, serta `punch`/`kick`/`block` tanpa gore.
+Naskah menerima `[Ana menangis]`, `[Budi minum]`, `[Ana menari]` dan padanan Inggris;
+cup/phone/book dipasang lewat sistem pegangan yang sama. `body_language=True`
+menambahkan bahasa tubuh emosi di bawah gestur dialog (default naskah: aktif;
+`dialog`: nonaktif). Lihat [Animation](AGENTS.md#animation) untuk daftar lengkap.
 
 `camera_shot(..., avoid_occlusion="auto")` memeriksa wajah/mata pada awal, tengah,
 akhir dan kira-kira setiap 0,5 detik dengan raycast mesh yang sudah dievaluasi.
