@@ -1728,7 +1728,7 @@ async def _lighting_checks(call):
           f"renders {looks}")
 
 
-async def _script_scene_checks(call):
+async def _script_scene_checks(call, single_engine=False):
     """Bilingual parse purity, real scheduling/word ownership and rendered coverage."""
     import time
     import shutil
@@ -1781,7 +1781,7 @@ Budi (male, 36, short hair, casual): Thank you.
     assert en["title"] == "Morning" and en["environment"] == "office"
     assert en["characters"][0]["hair"] == "ponytail01"
     assert en["characters"][0]["outfit"] == "formal" and "clothes" not in en["characters"][0]
-    assert en["warnings"] == ["Ana: unknown descriptors: mysterious"]
+    assert en["warnings"] == ["Ana: unknown descriptors: mysterious"], en["warnings"]
     assert en["beats"][2]["to"] == [1, -1]
     assert [b.get("do") for b in en["beats"][2:]] == ["walk", "sit", "stand", "gesture", "hold", "gesture", "look", "pause"]
     assert en["beats"][-1]["estimated_frames"][1] - en["beats"][-1]["estimated_frames"][0] + 1 == 24
@@ -1879,8 +1879,12 @@ result = {{'word_counts': {{n: len(w) for n,w in words.items()}}, 'markers': len
     rendered = await call("render_frames", frames=frames, camera="scene", engine_name="eevee", size=512)
     stills = [json.loads(t) for t in text_of(rendered)]
     assert len(stills) == 3
-    movie = await data("render_video", path="e2e_script_scene.mp4", quality="draft", width=384, height=216,
-                       frame_start=1, frame_end=built["frames"][1], wait=True)
+    if single_engine:
+        from motion_checks import single_engine_draft
+        movie = await single_engine_draft(call, text_of, "e2e_script_scene.mp4", built["frames"][1])
+    else:
+        movie = await data("render_video", path="e2e_script_scene.mp4", quality="draft", width=384, height=216,
+                           frame_start=1, frame_end=built["frames"][1], wait=True)
     assert movie["status"] == "done" and os.path.getsize(movie["path"]) > 1000, movie
     import av
     with av.open(movie["path"]) as clip:
@@ -3685,6 +3689,54 @@ result = {{'words': words, 'peak_counts': {{n: len(p) for n,p in peaks.items()}}
     print(f"TTS {backend.upper()} E2E OK: 2 speaker strips | words/subtitles/lip peaks OK | AAC aligned | {movie['path']}", flush=True)
 
 
+async def _animation_checks(call):
+    # phase 3: poses, clips, chaining, BVH round-trip mocap, animated glb
+    await call("new_scene")
+    await call("create_human", name="Walker", style="stylized")
+    await call("auto_rig_humanoid", mesh="Walker")
+    w = json.loads(text_of(await call("animate", armature="Walker_rig", clip="walk", cycles=1))[0])
+    a = json.loads(text_of(await call("animate", armature="Walker_rig", clip="wave",
+                                      start_frame=w["next_start_frame"], cycles=1))[0])
+    assert a["frames"][0] == w["frames"][1] + 1, (w, a)
+    fl = w["foot_lock"]["contacts"]
+    assert fl["L"] and fl["R"], w
+    assert a["crossfade"]["blend_frames"] >= 4, a      # wave blends in from the walk
+    assert a["foot_lock"]["contacts"]["L"], a          # feet planted through the blend
+    cut = json.loads(text_of(await call("animate", armature="Walker_rig", clip="nod",
+                                        start_frame=a["next_start_frame"], cycles=1,
+                                        blend_frames=0))[0])
+    assert "crossfade" not in cut, cut
+    lk = json.loads(text_of(await call("lock_feet", armature="Walker_rig", frame_start=1,
+                                       frame_end=w["frames"][1]))[0])
+    assert lk["feet"]["L"]["contacts"] and lk["max_ik_error_m"] < 0.01, lk
+    bvh = json.loads(text_of(await call("export_asset", path="e2e_walk.bvh",
+                                        objects=["Walker_rig"]))[0])
+    await call("create_human", name="Pro", style="realistic", location=[2, 0, 0])
+    await call("auto_rig_humanoid", mesh="Pro", rig_type="rigify")
+    await call("apply_pose", armature="Pro_rig", pose="cheer")
+    mo = json.loads(text_of(await call("import_mocap", path=bvh["path"], armature="Pro_rig",
+                                       start_frame=1))[0])
+    assert mo["bones"] >= 18, mo
+    assert mo["foot_lock"]["contacts"]["L"] and mo["foot_lock"]["contacts"]["R"], mo
+    frames = await call("render_frames", frames=[1, 9], view="right", size=128, objects=["Pro"])
+    assert [c.type for c in frames.content].count("image") == 2
+    anim_glb = json.loads(text_of(await call("export_asset", path="e2e_walker.glb",
+                                             objects=["Walker_rig"]))[0])
+    import struct
+    raw = open(anim_glb["path"], "rb").read()
+    gltf = json.loads(raw[20:20 + struct.unpack("<I", raw[12:16])[0]])
+    assert len(gltf.get("animations", [])) == 1, gltf.get("animations")
+    print("phase 3: mocap bones", mo["bones"], "| glb animations", len(gltf["animations"]),
+          "| foot contacts", fl)
+
+
+async def _motion_checks(call):
+    """Body/action/dance/fight registry, all-rig baking, contacts and loop continuity."""
+    from motion_checks import run, scene_checks
+    await run(call, text_of)
+    await scene_checks(call, text_of)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -3714,6 +3766,36 @@ async def main():
                 await call("engine_shutdown")
                 print(flag[2:].upper()+" OK", flush=True)
                 return
+        if "--motion-sitting-only" in sys.argv:
+            await _sitting_checks(call)
+            await call("engine_shutdown")
+            print("MOTION SITTING REGRESSION OK", flush=True)
+            return
+        if "--motion-scene-only" in sys.argv:
+            from motion_checks import scene_checks
+            await scene_checks(call, text_of)
+            await call("engine_shutdown")
+            return
+        if "--motion-only" in sys.argv:
+            if "--motion-bake-only" in sys.argv:
+                from motion_checks import run
+                await run(call, text_of)
+            else:
+                await _motion_checks(call)
+            await call("engine_shutdown")
+            return
+        if "--motion-regression-only" in sys.argv:
+            if "--motion-regression-rest" not in sys.argv:
+                await _animation_checks(call)
+                await _sitting_checks(call)
+            if "--motion-regression-script" not in sys.argv:
+                await _interaction_checks(call)
+                await _rotated_rig_checks(call)
+            await _script_scene_checks(call, single_engine=True)
+            await _dialog_gaze_checks(call)
+            await call("engine_shutdown")
+            print("MOTION REGRESSION OK", flush=True)
+            return
         await _tts_checks(call)
         if "--tts-only" in sys.argv:
             if "--tts-edge" in sys.argv:
@@ -3721,6 +3803,7 @@ async def main():
             await call("engine_shutdown")
             print("TTS E2E OK", flush=True)
             return
+        await _motion_checks(call)
         assert "auto_sfx" in tools
         await _auto_sfx_checks(call)
         assert "set_weather" in tools
@@ -3771,44 +3854,7 @@ async def main():
         assert invalid.isError, invalid
         print("phase 2 rig:", rep["rig_type"], rep["deform_bones"], "deform bones")
 
-        # phase 3: poses, clips, chaining, BVH round-trip mocap, animated glb
-        await call("new_scene")
-        await call("create_human", name="Walker", style="stylized")
-        await call("auto_rig_humanoid", mesh="Walker")
-        w = json.loads(text_of(await call("animate", armature="Walker_rig", clip="walk", cycles=1))[0])
-        a = json.loads(text_of(await call("animate", armature="Walker_rig", clip="wave",
-                                          start_frame=w["next_start_frame"], cycles=1))[0])
-        assert a["frames"][0] == w["frames"][1] + 1, (w, a)
-        fl = w["foot_lock"]["contacts"]
-        assert fl["L"] and fl["R"], w
-        assert a["crossfade"]["blend_frames"] >= 4, a      # wave blends in from the walk
-        assert a["foot_lock"]["contacts"]["L"], a          # feet planted through the blend
-        cut = json.loads(text_of(await call("animate", armature="Walker_rig", clip="nod",
-                                            start_frame=a["next_start_frame"], cycles=1,
-                                            blend_frames=0))[0])
-        assert "crossfade" not in cut, cut
-        lk = json.loads(text_of(await call("lock_feet", armature="Walker_rig", frame_start=1,
-                                           frame_end=w["frames"][1]))[0])
-        assert lk["feet"]["L"]["contacts"] and lk["max_ik_error_m"] < 0.01, lk
-        bvh = json.loads(text_of(await call("export_asset", path="e2e_walk.bvh",
-                                            objects=["Walker_rig"]))[0])
-        await call("create_human", name="Pro", style="realistic", location=[2, 0, 0])
-        await call("auto_rig_humanoid", mesh="Pro", rig_type="rigify")
-        await call("apply_pose", armature="Pro_rig", pose="cheer")
-        mo = json.loads(text_of(await call("import_mocap", path=bvh["path"], armature="Pro_rig",
-                                           start_frame=1))[0])
-        assert mo["bones"] >= 18, mo
-        assert mo["foot_lock"]["contacts"]["L"] and mo["foot_lock"]["contacts"]["R"], mo
-        frames = await call("render_frames", frames=[1, 9], view="right", size=128, objects=["Pro"])
-        assert [c.type for c in frames.content].count("image") == 2
-        anim_glb = json.loads(text_of(await call("export_asset", path="e2e_walker.glb",
-                                                 objects=["Walker_rig"]))[0])
-        import struct
-        raw = open(anim_glb["path"], "rb").read()
-        gltf = json.loads(raw[20:20 + struct.unpack("<I", raw[12:16])[0]])
-        assert len(gltf.get("animations", [])) == 1, gltf.get("animations")
-        print("phase 3: mocap bones", mo["bones"], "| glb animations", len(gltf["animations"]),
-              "| foot contacts", fl)
+        await _animation_checks(call)
 
         # phase 4: lighting, two shots, scene-camera check, draft video
         await call("set_lighting", preset="studio", subject=["Walker"])

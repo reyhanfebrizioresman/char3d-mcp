@@ -103,7 +103,8 @@ def _skeleton(command_name, params):
 
 @command("script_to_scene")
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
-                    subtitles=True, language="auto", seed=0, build=True, sound=True, look=None):
+                    subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
+                    body_language=True):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -112,6 +113,8 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     from .semantic import load_words
     from .walk import _start as navigation_start
     from .interaction import preserve_interactions
+    from .motion import preserve_motion, dialog_body, script_faces
+    from ..motion_library import MOTIONS, FLOOR
 
     started = time.perf_counter()
     timings = {}
@@ -324,7 +327,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             if "say" in beat:
                 end = start + beat["speech_frames"] - 1
                 ln = {"speaker": characters[beat["say"]]["rig"], "start_frame": start,
-                      **{k: beat[k] for k in ("text", "audio", "words") if k in beat}}
+                      **{k: beat[k] for k in ("text", "audio", "words", "emotion", "body_emotion") if k in beat}}
                 lines.append(ln)
                 frame = end + 1 + round(0.35 * fps)
             elif "title" in beat:
@@ -401,7 +404,41 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     end = start + 11
                 elif action in ("pose", "gesture"):
                     if action == "gesture" and beat["name"] in CLIPS:
-                        report = _skeleton("animate", {"armature": rig, "clip": beat["name"], "start_frame": start, "cycles": 1})
+                        meta = MOTIONS.get(beat["name"], {})
+                        for kind in meta.get("required_props", []):
+                            from .motion import held_prop, held_props
+                            if held_prop(bpy.data.objects[rig], kind, start) is None:
+                                prop, _ = resolve(kind, ident)
+                                obj = bpy.data.objects[prop]
+                                if obj.get("c3d_hold_character") and obj.get("c3d_hold_release", start+1) > start:
+                                    prop = dispatch("add_prop", {"kind": kind})["root"]
+                                occupied_hands = {o["c3d_hold_hand"] for o in held_props(bpy.data.objects[rig], start)}
+                                hand = next((h for h in ("right", "left") if h not in occupied_hands), None)
+                                if hand is None:
+                                    raise ValueError(f"{ident}: release a held prop before {beat['name']}")
+                                dispatch("hold_prop", {"character": rig, "prop": prop, "hand": hand, "start_frame": start})
+                        if meta.get("required_seat") and not bpy.data.objects[rig].get("c3d_seat_active"):
+                            seat, index = resolve("chair", ident, seat=True)
+                            dispatch("set_timeline", {"frame_end": start+20})
+                            dispatch("sit_on", {"character": rig, "seat": seat, "seat_index": index, "start_frame": start})
+                            start += 21
+                        if beat["name"] == "type":
+                            from .motion import prepare_typing
+                            beat["created_props"] = prepare_typing(bpy.data.objects[rig])
+                        args = {"armature": rig, "clip": beat["name"], "start_frame": start, "cycles": 1,
+                                **{k: beat[k] for k in ("cycles", "bpm", "speed", "amplitude", "phase") if k in beat}}
+                        if beat["name"] == "punch" and isinstance(beat.get("at"), str) and beat["at"] in characters:
+                            partner = characters[beat["at"]]["rig"]
+                            initial_idle(beat["at"], start-1)
+                            turn = _skeleton("turn_to", {"armature": rig, "target": partner, "start_frame": start, "avoid": False})
+                            args["start_frame"] = turn["next_start_frame"]
+                        # Floor grounding measures evaluated skin, so keep it visible.
+                        report = (dispatch if beat["name"] in FLOOR else _skeleton)("animate", args)
+                        if beat["name"] == "punch" and isinstance(beat.get("at"), str) and beat["at"] in characters:
+                            reaction = _skeleton("animate", {"armature": partner, "clip": "hit_react",
+                                "start_frame": args["start_frame"]+round(report["cycle_frames"]*.18), "cycles": 1})
+                            report["reaction"] = reaction
+                            report["frames"][1] = max(report["frames"][1], reaction["frames"][1])
                     else:
                         _skeleton("apply_pose", {"armature": rig, "pose": beat["name"], "frame": start, "keyframe": True})
                         _skeleton("apply_pose", {"armature": rig, "pose": beat["name"], "frame": start + 23, "keyframe": True})
@@ -430,6 +467,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
 
     with timed("speech"):
         turns = []
+        expression_results = {}
         for line in lines:
             start = line.pop("start_frame")
             d = dispatch("dialog", {"lines": [line], "characters": cast, "stage": False,
@@ -444,8 +482,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             cues = [{"frame": b["frames"][0], "expression": b["emotion"], "strength": 0.65}
                     for b in plan["beats"] if b.get("say") == ident and b.get("emotion")]
             if cues or load_words(bpy.data.objects[char["mesh"]], 1, final):
-                dispatch("auto_expression", {"character": rig, "frame_start": 1, "frame_end": final,
+                expression_results[rig] = dispatch("auto_expression", {"character": rig, "frame_start": 1, "frame_end": final,
                                               "language": language, "cues": cues})
+            script_faces(rig, ident, plan["beats"])
     def make_cameras():
         with timed("cameras"):
             if turns and camera != "none":
@@ -508,7 +547,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             # Explicit camera glances need a provisional camera to sample. Final
             # coverage replaces these shots after the head performance is baked.
             shots.clear()
-    with timed("performance"), _bones_only(), preserve_interactions(plan["beats"]):
+    with timed("performance"), _bones_only(), preserve_interactions(plan["beats"]), preserve_motion(plan["beats"]):
+        if body_language:
+            result["body_language"] = dialog_body(turns, cast, language, expression_results)
         for i, (ident, char) in enumerate(characters.items()):
             rig = char["rig"]
             if char["realistic"]:

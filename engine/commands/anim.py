@@ -11,11 +11,13 @@ relative to a T-pose (0 = horizontal, -90 = down, +90 = up), whatever the rest p
 import json
 import math
 import os
+from functools import wraps
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 from .. import context
+from ..motion_library import FLOOR, MOTIONS, cycle_frames, total_frames, score
 from . import command
 from . import rig as rigmod
 from .util import obj_or_raise
@@ -376,6 +378,20 @@ CLIPS = {  # name: (fn, frames per cycle at 24 fps, loops?, description)
 }
 
 
+def _motion_clip(name):
+    def sample(i, period, dimensions, rest, amplitude):
+        spec, offsets = score(name, i/period, amplitude)
+        return _resolve(spec, rest), tuple(v*dimensions["H"] for v in offsets)
+    return sample
+
+
+for _name, _meta in MOTIONS.items():
+    CLIPS[_name] = (_motion_clip(_name), _meta["frames_per_cycle"], _meta["loops"], _meta["description"])
+    if _name not in POSES:
+        _time = 1. if _name in ("lie_down", "sit_floor", "fall_down") else .45
+        POSES[_name] = (score(_name, _time)[0], _meta["description"])
+
+
 # ----------------------------------------------------------------------------- retarget
 def _depth(rig, bone):
     return len(rig.data.bones[bone].parent_recursive)
@@ -646,7 +662,9 @@ def _extend_range(end):
 def list_animations():
     return {
         "poses": {k: v[1] for k, v in POSES.items()},
-        "clips": {k: {"frames_per_cycle": v[1], "loops": v[2], "description": v[3]}
+        "clips": {k: {"frames_per_cycle": v[1], "loops": v[2], "description": v[3],
+                      "category": "locomotion" if k in ("walk", "run", "jump") else "gesture",
+                      "required_props": [], "required_seat": False, **MOTIONS.get(k, {})}
                   for k, v in CLIPS.items()},
     }
 
@@ -659,11 +677,21 @@ def apply_pose(armature, pose, frame=None, keyframe=False):
     sc = bpy.context.scene
     f = int(frame) if frame is not None else sc.frame_current
     sc.frame_set(f)
+    lower = None
+    if pose in MOTIONS:
+        from .motion import validate, seated_samples
+        validate(rig, pose, f, "full")
+        lower = seated_samples(rig, pose, f, f)
 
     def author(basic, lm, direct, carry):
         rots = _resolve(POSES[pose][0], _arm_rest_deg(lm)) if pose != "rest" else {}
         drop = POSE_HIPS_DROP.get(pose, 0.0) * _dims(lm)["hip_h"]
         loc = (carry.x, -drop, -carry.y)
+        if pose in MOTIONS:
+            time = 1. if pose in ("lie_down", "sit_floor", "fall_down") else .45
+            spec, off = score(pose, time)
+            rots = _resolve(spec, _arm_rest_deg(lm))
+            loc = (carry.x+off[0]*_dims(lm)["H"], off[1]*_dims(lm)["H"], -carry.y+off[2]*_dims(lm)["H"])
         if keyframe and direct:
             _key_basic(basic, f, rots, loc)
         else:
@@ -671,6 +699,10 @@ def apply_pose(armature, pose, frame=None, keyframe=False):
         bpy.context.view_layer.update()
 
     info = _drive(rig, author, f, f, f, key=bool(keyframe), canonical=True)
+    if pose in MOTIONS:
+        from .motion import finish
+        info.update(finish(rig, pose, f, f, 1, 1., lower=lower, lock=False, keyed=keyframe,
+                           pose_time=1. if pose in ("lie_down", "sit_floor", "fall_down") else .45))
     bpy.context.view_layer.update()
     return {"armature": rig.name, "pose": pose, "frame": f, "keyed": bool(keyframe), **info}
 
@@ -796,9 +828,21 @@ def _lock(rig, f0, f1, contacts=None):
             **{k: r[k] for k in ("ground_heights", "max_penetration_m", "min_swing_clearance_m") if k in r}}
 
 
+def _motion_evaluation(fn):
+    @wraps(fn)
+    def wrapped(armature, clip, *args, **kwargs):
+        if clip in MOTIONS:
+            from .script_scene import _bones_only
+            with _bones_only():
+                return fn(armature, clip, *args, **kwargs)
+        return fn(armature, clip, *args, **kwargs)
+    return wrapped
+
+
 @command("animate")
+@_motion_evaluation
 def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
-            in_place=False, foot_lock=None, blend_frames=None):
+            in_place=False, foot_lock=None, blend_frames=None, bpm=None, phase="full"):
     """Key a procedural clip on any humanoid rig starting at start_frame.
     foot_lock: None = auto (walk/run/jump, not in_place), True/False to force.
     blend_frames: crossfade from the pose the rig has at start_frame-1 when there is earlier
@@ -807,28 +851,118 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
         raise ValueError(f"unknown clip '{clip}'. Available: {sorted(CLIPS)}")
     fn, period, loops, _desc = CLIPS[clip]
     rig = _target(armature)
-    fps_scale = bpy.context.scene.render.fps / 24.0
+    sc = bpy.context.scene
+    fps_scale = sc.render.fps / sc.render.fps_base / 24.0
     T = max(4, int(round(period * fps_scale / max(speed, 0.05))))
+    if not math.isfinite(amplitude) or not 0 <= amplitude <= 2:
+        raise ValueError("amplitude must be finite in 0..2")
+    if clip in MOTIONS:
+        from .motion import validate, seated_samples, finish
+        T = cycle_frames(clip, fps_scale*24, speed, bpm)
+        validate(rig, clip, int(start_frame), phase)
+    elif bpm is not None or phase != "full":
+        raise ValueError("bpm needs a dance clip; phase needs kneel")
     n = T * (max(1, int(cycles)) if loops else 1)
+    if clip in MOTIONS:
+        n = total_frames(clip, cycles, fps_scale*24, speed, bpm)
+    sample_period = n/max(1, int(cycles)) if bpm is not None else T
+    if n > 24000:
+        raise ValueError("animation is limited to 24000 frames; split and chain clips")
     start = int(start_frame)
     end = start + n
+    lower = seated_samples(rig, clip, start, end) if clip in MOTIONS else None
+    heading = 0.
+    relative_origin = clip in MOTIONS and _has_keys_before(rig, start) and (clip == "get_up" or (clip == "kneel" and phase in ("hold", "up")))
+    if clip in MOTIONS:
+        from .gaze import head_frame
+        sc.frame_set(start-1 if _has_keys_before(rig, start) else start)
+        smap = semantic_map(rig)
+        left = head_frame(rig, "hips")[1] @ Vector((1, 0, 0))
+        rest_left = rig.matrix_world.to_3x3() @ (rig.data.bones[smap["thigh.L"]].head_local-
+                                                rig.data.bones[smap["thigh.R"]].head_local)
+        heading = math.atan2(left.y, left.x)-math.atan2(rest_left.y, rest_left.x)
 
     def author(basic, lm, direct, carry):
         d, rest = _dims(lm), _arm_rest_deg(lm)
+        previous = {}
+        planted = None
         for i in range(n + 1):
-            rots, (x, up, fwd) = fn(i if loops else min(i, T), T, d, rest, amplitude)
+            rots, (x, up, fwd) = fn(i if loops else min(i, T), sample_period, d, rest, amplitude)
+            if clip == "kneel" and phase != "full":
+                spec, offsets = score(clip, min(i/T, 1), amplitude, phase)
+                rots = _resolve(spec, rest)
+                x, up, fwd = (v*d["H"] for v in offsets)
+            if relative_origin:
+                _, origin = score(clip, 0, amplitude, phase)
+                x -= origin[0]*d["H"]
+                fwd -= origin[2]*d["H"]
             if in_place:
                 fwd = 0.0
+            if clip in MOTIONS and heading:
+                off = Matrix.Rotation(heading, 3, "Z") @ Vector((x, -fwd, 0))
+                x, fwd = off.x, -off.y
+            if direct and clip in MOTIONS:
+                left = (lm["hip.L"]-lm["hip.R"])
+                left.z = 0
+                left.normalize()
+                front = Vector((left.y, -left.x, 0))
+                world = left*x+front*fwd
+                x, fwd = world.x, -world.y
             _key_basic(basic, start + i, rots, (x + carry.x, up, fwd - carry.y))
+            if clip in MOTIONS and abs(heading) > 1e-6:
+                bpy.context.view_layer.update()
+                hp = basic.pose.bones["hips"]
+                q = (basic.matrix_world @ hp.matrix).to_quaternion()
+                _set_world_rot(basic, hp, Quaternion((0, 0, 1), heading) @ q)
+                _key_rot(hp, start+i, previous)
+            if clip in ("kneel", "pick_up"):
+                # Let the pelvis travel over the folded legs while the ankle
+                # positions stay planted. Measure on the proportion-matched
+                # skeleton, rather than assuming equal thigh/calf lengths.
+                bpy.context.view_layer.update()
+                feet = [(basic.matrix_world @ basic.pose.bones[f"foot.{s}"].matrix).translation.copy()
+                        for s in "LR"]
+                if planted is None:
+                    planted = feet
+                correction = sum((a-b for a, b in zip(planted, feet)), Vector())/2
+                correction.z = 0
+                hp = basic.pose.bones["hips"]
+                world = basic.matrix_world @ hp.matrix
+                _set_world_rot(basic, hp, world.to_quaternion(), world.translation+correction)
+                hp.keyframe_insert("location", frame=start+i, group="hips")
 
     blend = None if blend_frames is None else int(blend_frames)
     prev = _sample_pose(rig, start) if blend != 0 else None
     info = _drive(rig, author, start, end, start, in_place=in_place, canonical=True)
     _extend_range(end)
-    fade = _crossfade(rig, prev, start, end, blend)
+    # Contact IK can substantially change the arms beyond the proxy pose.
+    # Measure/blend that completed performance; floor clips must instead blend
+    # before their final skin-to-ground correction.
+    contact_blend = clip in MOTIONS and clip not in FLOOR
+    fade = None if contact_blend else _crossfade(rig, prev, start, end, blend)
     if fade:
         info["crossfade"] = fade
     lock = foot_lock if foot_lock is not None else (clip in FOOT_LOCK_CLIPS and not in_place)
+    if clip in MOTIONS:
+        info.update(finish(rig, clip, start, end, sample_period, amplitude, lower,
+                           lock=foot_lock is not False))
+        if contact_blend:
+            fade = _crossfade(rig, prev, start, end, blend)
+            if fade:
+                info["crossfade"] = fade
+                if lower is None and foot_lock is not False:
+                    if MOTIONS[clip]["category"] == "dance":
+                        from .motion import _dance_feet, _landmarks
+                        height, _ = _landmarks(rig, semantic_map(rig))
+                        info["foot_lock"] = _dance_feet(rig, start, end, sample_period, height)
+                    else:
+                        info["foot_lock"] = _lock(rig, start, end, info["foot_lock"]["contacts"])
+        if bpm is not None:
+            info.update(bpm=bpm, effective_bpm=round(4*60*fps_scale*24/sample_period, 5),
+                        cycle_frames_exact=sample_period)
+        info["phase"] = phase
+        return {"armature": rig.name, "clip": clip, "frames": [start, end], "cycle_frames": T,
+                "next_start_frame": end+1, **info}
     if lock:
         contacts = None
         if clip in CLIP_CONTACTS:
@@ -923,10 +1057,16 @@ def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
 @command("clear_animation")
 def clear_animation(armature, reset_pose=True):
     rig = _target(armature)
-    rig.animation_data_clear()
+    # Rigify's deform chains are driven by F-curves on this same AnimData.
+    # Removing the container also removes those structural rig drivers.
+    if rig.animation_data:
+        rig.animation_data.action = None
+        for track in list(rig.animation_data.nla_tracks):
+            rig.animation_data.nla_tracks.remove(track)
     if "c3d_seat_events" in rig:
         del rig["c3d_seat_events"]
     if reset_pose:
+        rig["c3d_seat_active"] = False
         for pb in rig.pose.bones:
             pb.location = (0, 0, 0)
             pb.rotation_quaternion = (1, 0, 0, 0)

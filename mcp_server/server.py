@@ -5,6 +5,7 @@ Run:  .venv/bin/python -m mcp_server.server     (stdio transport)
 import json
 import os
 from typing import Literal
+from engine.motion_library import MOTIONS
 
 import anyio
 from mcp.server.fastmcp import FastMCP, Image
@@ -231,8 +232,8 @@ async def set_pose(armature: str, bones: dict[str, list[float]] | None = None,
 
 # --- animation (phase 3) -------------------------------------------------------
 Pose = Literal["rest", "t_pose", "relaxed", "wave", "cheer", "point_forward", "hands_on_hips",
-               "thinking", "crouch", "sit", "fight_stance", "run_pose"]
-Clip = Literal["idle", "walk", "run", "wave", "cheer", "jump", "nod", "head_shake"]
+               "thinking", "crouch", "sit", "fight_stance", "run_pose", *MOTIONS]
+Clip = Literal["idle", "walk", "run", "wave", "cheer", "jump", "nod", "head_shake", *MOTIONS]
 
 
 @mcp.tool()
@@ -252,7 +253,8 @@ async def apply_pose(armature: str, pose: Pose, frame: int | None = None,
 @mcp.tool()
 async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int = 2,
                   speed: float = 1.0, amplitude: float = 1.0, in_place: bool = False,
-                  foot_lock: bool | None = None, blend_frames: int | None = None) -> dict:
+                  foot_lock: bool | None = None, blend_frames: int | None = None,
+                  bpm: float | None = None, phase: Literal["full", "down", "hold", "up"] = "full") -> dict:
     """Keyframe a procedural motion clip on any humanoid rig. walk/run move the character
     forward (-Y) unless in_place. speed > 1 = faster, amplitude scales the motion.
     Chain clips with start_frame = previous result's next_start_frame.
@@ -260,10 +262,13 @@ async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int =
     floor with leg IK so they don't slide; the result lists the detected foot contacts.
     Crossfade: when the rig already has animation before start_frame, the clip blends in
     from that last pose (blend_frames None = automatic 4-18 frames by how big the change
-    is, 0 = hard cut); the feet finish their step and stay planted through the blend."""
+    is, 0 = hard cut); the feet finish their step and stay planted through the blend.
+    Dance clips accept bpm=30..240 (four beats/cycle; speed multiplies cadence).
+    kneel phase: full/down/hold/up. type requires sit_on; drink/phone_call/read_book
+    require a held cup/phone/book in either hand. list_animations reports all metadata."""
     return await run("animate", armature=armature, clip=clip, start_frame=start_frame,
                      cycles=cycles, speed=speed, amplitude=amplitude, in_place=in_place,
-                     foot_lock=foot_lock, blend_frames=blend_frames)
+                     foot_lock=foot_lock, blend_frames=blend_frames, bpm=bpm, phase=phase)
 
 
 @mcp.tool()
@@ -1231,7 +1236,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           subtitles: bool = True, language: str = "auto", seed: int = 0,
                           build: bool = True, sound: bool = True, voice: bool = True,
                           tts_engine: str = "piper", voices: dict | None = None,
-                          look: str | dict | None = None) -> dict:
+                          look: str | dict | None = None,
+                          body_language: bool = True) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     Optional look="golden_hour" or SUASANA:/LOOK:/MOOD: senja selects atmosphere.
@@ -1265,6 +1271,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     Generic seats hidden behind a peer or facing away get a clear guest chair facing
     the conversation (plan.guest_chairs and warnings); explicit object seats are honored.
     Dialog gaze and coverage follow the cast after walking, turning and sitting.
+    body_language=True layers sentence emotions under speech gestures, with subtle
+    listener reactions. Physical motion directions keep their authored performance.
     MPFB missing: rigged mannequins retain word times, audio, gestures and captions,
     without facial animation. Returns plan, character rig/mesh map, frames, shots,
     duration_s, warnings and per-stage timings. Nothing is saved automatically.
@@ -1294,7 +1302,9 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     audio_seconds = time.perf_counter() - audio_started
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
-                  language=language, seed=seed, build=build, sound=sound, look=look)
+                  language=language, seed=seed, build=build, sound=sound, look=look,
+                  body_language=body_language)
+    r["plan"]["warnings"] = list(dict.fromkeys(parse_warnings + r["plan"].get("warnings", [])))
     r["voices"] = casting
     r["generated_files"] = report["generated_files"]
     r["cache_hits"] = report["cache_hits"]
@@ -1326,7 +1336,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
                  gestures: Literal["calm", "presenter", "energetic"] | None = "presenter",
                  expression: Expression | None = "smile", language: str | None = None,
                  voice: bool = False, tts_engine: str = "piper",
-                 voices: dict | None = None, seed: int = 0) -> dict:
+                 voices: dict | None = None, seed: int = 0, body_language: bool = False) -> dict:
     """A conversation between 2-4 characters (realistic humans with faces work best), in one
     call. lines = [{"speaker": "Ana_rig", "audio": "audio/ana1.wav"},
                    {"speaker": "Budi_rig", "text": "Wah, ide yang bagus!"}, ...]
@@ -1345,7 +1355,9 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     they talk (same side of the live head-to-head action line). Gaze samples live
     head positions; singles follow actual face direction after walks/sits/turns.
     Run body clips (animate/walk) BEFORE this;
-    add_subtitles afterwards for captions. Returns turns, shots, next_start_frame."""
+    add_subtitles afterwards for captions. body_language=True optionally layers explicit
+    line emotion or locally inferred body emotion; its default is False.
+    Returns turns, shots, next_start_frame."""
     import time
     started = time.perf_counter()
     if not lines or any(not ln.get("speaker") or not (ln.get("audio") or ln.get("text")) for ln in lines):
@@ -1366,7 +1378,8 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
                 ln["text"] = tr["text"] or ln.get("text", "")
     d = await run("dialog", lines=prepared, characters=characters or speakers, stage=stage,
                   layout=layout, distance=distance, start_frame=start_frame, gap_s=gap_s,
-                  camera=camera, shot=shot, gestures=gestures, expression=expression, language=language)
+                  camera=camera, shot=shot, gestures=gestures, expression=expression, language=language,
+                  body_language=body_language)
     d.update(voices=casting, generated_files=report["generated_files"], cache_hits=report["cache_hits"])
     d["warnings"] = list(dict.fromkeys(d.get("warnings", []) + report["warnings"]))
     d["timings"] = {"tts": report["tts_seconds"], "total": round(time.perf_counter() - started, 4)}

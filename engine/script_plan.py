@@ -3,6 +3,7 @@ import copy
 import math
 import random
 import re
+from .motion_library import BASES, DIRECTIONS, MOTIONS, cycle_frames, total_frames
 
 
 HAIR = ("afro01", "bob01", "bob02", "braid01", "long01", "ponytail01",
@@ -141,6 +142,15 @@ def _descriptors(text, char, warnings):
 
 
 def _direction(text, warnings):
+    # Match full phrases first so e.g. "duduk di lantai" is not a chair sit.
+    for clip, words in DIRECTIONS.items():
+        auxiliary = r"(?:(?:is|feels|looks)\s+)?" if clip in BASES or clip == "surprised" else ""
+        match = re.fullmatch(r"(.+?)\s+" + auxiliary + r"(?:" + words + r")", text, re.I)
+        if match:
+            return {"do": "gesture", "who": match[1].strip(), "name": clip}
+    attack = re.fullmatch(r"(.+?)\s+(?:meninju|punches?)\s+(.+)", text, re.I)
+    if attack:
+        return {"do": "gesture", "who": attack[1].strip(), "name": "punch", "at": attack[2].strip()}
     interaction = _interaction_direction(text)
     if interaction:
         return interaction
@@ -281,6 +291,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
                 raise ValueError("speech text/audio must be strings")
             if beat.get("emotion"):
                 value = str(beat["emotion"]).lower()
+                if value in BASES:
+                    beat["body_emotion"] = value
+                    value = {"nervous": "fear", "tired": "sleepy", "confident": "smirk",
+                             "shy": "pout", "bored": "neutral", "excited": "big_smile"}.get(value, value)
                 beat["emotion"] = EMOTIONS.get(value, value)
                 if beat["emotion"] not in EXPRESSIONS:
                     warnings.append(f"Unknown emotion: {value}; using neutral")
@@ -299,6 +313,14 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
                 raise ValueError("hand must be left or right")
             if action == "pause":
                 beat["seconds"] = _number(beat.get("seconds", 1), "pause seconds", 0, 60)
+            if action == "gesture" and beat.get("name") in MOTIONS:
+                clip = beat["name"]
+                for key, low, high in (("bpm", 30, 240), ("speed", .05, 4), ("amplitude", 0, 2), ("cycles", 1, 100)):
+                    if key in beat:
+                        beat[key] = _number(beat[key], key, low, high)
+                cycle_frames(clip, fps, beat.get("speed", 1), beat.get("bpm"))
+                if beat.get("phase", "full") not in ("full", "down", "hold", "up") or (clip != "kneel" and beat.get("phase", "full") != "full"):
+                    raise ValueError("phase needs kneel: full/down/hold/up")
             if action == "interact":
                 if beat.get("kind") not in (*INTERACTIONS, "handover", "pat_shoulder"):
                     raise ValueError("unknown interaction kind")
@@ -321,6 +343,8 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
             duration = {"walk": 72, "sit": 21, "stand": 21, "hold": 12,
                         "gesture": 37, "pose": 24, "look": 24, "interact": round(3*fps),
                         "pause": max(1, round(beat.get("seconds", 1) * fps))}[action]
+            if action == "gesture" and beat.get("name") in MOTIONS:
+                duration = total_frames(beat["name"], beat.get("cycles", 1), fps, beat.get("speed", 1), beat.get("bpm")) + 1
         else:
             warnings.append(f"Unknown beat ignored: {source}")
             continue

@@ -339,6 +339,7 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
     record_seat_event(rig, "sit", seat, f0, info["transition_end"])
     rig["c3d_seated"] = json.dumps({"seat": seat, "front": list(front), "floor": floor,
                                     "center": list(center), "seat_index": seat_index})
+    rig["c3d_seat_active"] = True
     contact = _contact_height(rig, center, front, samples)
     return {"character": rig.name, "seat": seat, "seat_index": seat_index, "hands": hands,
             "seat_surface_z": round(center.z, 5), "buttock_z": round(contact, 5),
@@ -374,6 +375,7 @@ def stand_up(character, start_frame=None, transition_frames=20):
         target[b] = m2
     feet = {s: (target[f"foot.{s}"].translation, target[f"foot.{s}"].to_quaternion()) for s in "LR"}
     info = _bake(rig, smap, initial, target, feet, front, f0, transition_frames, True)
+    rig["c3d_seat_active"] = False
     from .sfx import record_seat_event
     record_seat_event(rig, "stand", seat["seat"], f0, info["transition_end"])
     return {"character": rig.name, "standing_pelvis_z": round(hip.z, 5), **info,
