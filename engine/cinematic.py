@@ -8,7 +8,7 @@ import math
 PRESETS = {
     'golden_hour': dict(elevation=9, azimuth=220, sun_energy=2.0, sun_color=(1, .69, .38),
         sky_strength=.055, sky_tint=(1, .89, .73), haze=.007, rays=.65, bloom=.10,
-        grade=dict(exposure=-.35, contrast=1.09, saturation=.98, temperature=.06, teal_orange=True)),
+        grade=dict(exposure=-.15, contrast=1.09, saturation=1.02, temperature=.08, teal_orange=True)),
     'sunset': dict(elevation=2, azimuth=205, sun_energy=1.2, sun_color=(1, .40, .22),
         sky_strength=.075, sky_tint=(1, .60, .78), haze=.009, rays=.5, bloom=.14,
         grade=dict(contrast=1.07, saturation=.97, tint=.07)),

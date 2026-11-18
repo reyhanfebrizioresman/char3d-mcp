@@ -72,6 +72,59 @@ def compositor_config(sc, style):
                 letterbox=style['letterbox'] if style else 0)
 
 
+# (energy gain on the look's base subject-light factor, tint amount toward the sun color)
+_ROLE_GAINS = {
+    'warm': {'key': (.8, .55), 'fill': (.35, 0), 'rim': (2.2, 1.)},
+    'cool': {'key': (.8, 0), 'fill': (.4, 0), 'rim': (1.8, 0)},
+    'neutral': {'key': (.85, .3), 'fill': (.4, 0), 'rim': (1.4, .5)},
+}
+_ROLES = {}
+
+
+def _mood(preset):
+    if preset in ('golden_hour', 'sunset', 'epic', 'dreamy'):
+        return 'warm'
+    return 'cool' if preset in ('night', 'blue_hour') else 'neutral'
+
+
+def _cast(sc):
+    """(eye-level center, standing height) of the visible characters, or None."""
+    rigs = _rigs(sc, None)
+    if not rigs:
+        return None
+    eyes = [_eye(rig) for rig in rigs]
+    center = sum(eyes, Vector()) / len(eyes)
+    floor = min(rig.matrix_world.translation.z for rig in rigs)
+    return center, max(1.0, (center.z - floor) / .93)
+
+
+def _classify_lights(sc, cast):
+    """Front lights: brightest is key, others fill; lights behind the cast are rims."""
+    _ROLES.clear()
+    lights = [o for o in sc.objects if o.type == 'LIGHT' and o.get('c3d_role') == 'light'
+              and o.data.type != 'SUN']
+    front = []
+    for obj in lights:
+        if cast:
+            offset = obj.matrix_world.translation - cast[0]
+            offset.z = 0
+            facing = -offset.normalized().y if offset.length > 1e-6 else 1
+        else:
+            facing = -1 if obj.name.endswith('_2') else 1
+        if facing < -.25:
+            _ROLES[obj.name] = 'rim'
+        else:
+            front.append(obj)
+    for obj in front:
+        _ROLES[obj.name] = 'fill'
+    if front:
+        _ROLES[max(front, key=lambda o: o.data.energy).name] = 'key'
+
+
+def _light_role(obj, cast):
+    return _ROLES.get(obj.name, 'key')
+
+
 def _eye(rig):
     from .gaze import head_frame
     center, orientation = head_frame(rig)
@@ -209,7 +262,7 @@ def _world(sc, cfg, outdoors, worlds):
     palettes = {
         'night': ((.045, .075, .18), (.005, .012, .045), .35),
         'blue_hour': ((.065, .11, .27), (.012, .028, .11), .65),
-        'golden_hour': ((.52, .30, .14), (.09, .20, .38), .35),
+        'golden_hour': ((.95, .60, .28), (.26, .38, .60), .42),
         'sunset': ((.70, .24, .20), (.14, .045, .28), .45),
         'dreamy': ((.62, .43, .42), (.23, .25, .45), .40),
         'misty_morning': ((.50, .58, .62), (.22, .32, .43), .30),
@@ -287,7 +340,7 @@ def _volume(sc, cfg, outdoors, objects, meshes, materials):
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     nodes.remove(nodes.get('Principled BSDF'))
     scatter = nodes.new('ShaderNodeVolumeScatter')
-    scatter.inputs['Color'].default_value = (1, .87, .72, 1) if cfg['preset'] in ('golden_hour', 'sunset') else (.78, .87, 1, 1)
+    scatter.inputs['Color'].default_value = (1, .80, .55, 1) if cfg['preset'] in ('golden_hour', 'sunset') else (.78, .87, 1, 1)
     scatter.inputs['Anisotropy'].default_value = .15 if stage else .25 + .35*cfg['rays']
     value = None
     for rig in [o for o in sc.objects if o.type == 'ARMATURE' and not o.hide_render]:
@@ -450,6 +503,9 @@ def applied_look(sc, camera=None):
             objects.append(obj)
             # This owned temporary light is removed separately from copied data.
             sun.energy = 0
+        cast = _cast(sc)
+        _classify_lights(sc, cast)
+        has_rim = False
         for obj in list(sc.objects):
             if obj.type != 'LIGHT':
                 continue
@@ -483,11 +539,23 @@ def applied_look(sc, camera=None):
                 else:
                     light.energy *= 1-k
             elif obj.get('c3d_role') == 'light':
-                light.energy *= 1 + (((.28 if dark else .58) if outdoors else (.55 if dark else .88))-1)*k
+                # Shape faces: classify subject lights by direction (front key/fill vs
+                # back rim) and set a cinematic key:fill ratio with a motivated rim.
+                role = _light_role(obj, cast)
+                gains = _ROLE_GAINS[_mood(cfg['preset'])][role]
+                base = ((.28 if dark else .58) if outdoors else (.55 if dark else .88))
+                gain = gains[0] if outdoors else 1 + (gains[0]-1)*.5
+                light.energy *= 1 + (base*gain - 1)*k
                 if environment == 'stage' and cfg['preset'] == 'epic':
                     light.energy *= 1-.3*k
-                tint = (.55, .70, 1) if dark else (1, .87, .67)
-                light.color = Vector(original.color).lerp(Vector(tint), (.85 if dark else .4)*k)
+                if dark:
+                    tint, amount = (.55, .70, 1), .85
+                elif role == 'fill':
+                    tint, amount = (.70, .80, 1), .55
+                else:
+                    tint, amount = tuple(cfg['sun_color']), gains[1]
+                light.color = Vector(original.color).lerp(Vector(tint), amount*k)
+                has_rim = has_rim or role == 'rim'
                 if not outdoors and obj.name.endswith('_0'):
                     light.volume_factor = .35*cfg['rays']
             elif obj.get('c3d_role') == 'environment':
@@ -526,6 +594,22 @@ def applied_look(sc, camera=None):
                             light.energy *= 1-.4*k
                 elif dark:
                     light.energy *= 1-.35*k
+        if cast and not has_rim and _mood(cfg['preset']) != 'neutral':
+            # Motivated edge light from the sun/moon side behind the cast.
+            center, height = cast
+            az = math.radians(cfg['azimuth'] if math.cos(math.radians(cfg['azimuth'])) < -.2 else 165)
+            el = math.radians(28)
+            direction = Vector((math.sin(az)*math.cos(el), -math.cos(az)*math.cos(el), math.sin(el)))
+            rim = bpy.data.lights.new('__c3d_look_rim', 'AREA')
+            rim.shape, rim.size = 'DISK', .6*height
+            rim.color = (.55, .70, 1) if dark else tuple(cfg['sun_color'])
+            rim.energy = (260 if dark else 420)*(height/1.75)**2*k
+            rim.volume_factor = 0
+            holder = bpy.data.objects.new('__c3d_look_rim', rim)
+            sc.collection.objects.link(holder)
+            objects.append(holder)
+            holder.location = center + direction*1.9*height
+            holder.rotation_euler = (center - holder.location).to_track_quat('-Z', 'Y').to_euler()
         for camera in ([camera] if camera else [o for o in sc.objects if o.type == 'CAMERA']):
             if cfg['dof'] != 'auto':
                 continue
