@@ -74,6 +74,7 @@ def _tone(path, seconds=0.5, rate=22050):
     import math
     import struct
     import wave
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
@@ -1947,7 +1948,8 @@ async def _script_appearance_checks(call):
                      "beard": True, "accessories": ["glasses", "hat"]}],
                 "beats": [{"say": "Ana", "text": "Halo.", "estimated_frames": [1, 12]},
                           {"say": "Budi", "text": "Ya.", "estimated_frames": [21, 28]}],
-                "estimated_frames": [1, 36], "fps": 24, "seed": 17, "warnings": []}
+                "estimated_frames": [1, 36], "fps": 24, "seed": 17, "warnings": [],
+                "look": None, "recommended_look": "studio_film"}
     for descriptors in (("perempuan, 28, gaun, musim panas", "laki-laki, 35, kasual, brewok, kacamata, topi"),
                         ("female, 28, dress, summer", "male, 35, casual, beard, glasses, hat")):
         script = f"Ana ({descriptors[0]}): Halo.\nBudi ({descriptors[1]}): Ya."
