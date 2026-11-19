@@ -102,9 +102,10 @@ def _skeleton(command_name, params):
 
 
 @command("script_to_scene")
-def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
+def script_to_scene(script, name=None, environment=None, lighting="studio", camera="directed",
                     subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
-                    body_language=True, character_seeds=None, style=None, life=1., music="auto"):
+                    body_language=True, character_seeds=None, style=None, life=1., music="auto",
+                    previous_shot_size=None):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -130,8 +131,8 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
         plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps, look=look, style=style, music=music)
         from ..face_life import intensity as life_intensity
         life = life_intensity(life)
-        if camera not in ("mixed", "singles", "two_shot", "none"):
-            raise ValueError("camera must be mixed, singles, two_shot or none")
+        from ..emocam import mode
+        camera = mode(camera)
         if plan["environment"] and plan["environment"] not in PRESETS:
             raise ValueError(f"unknown environment: {plan['environment']}")
         if lighting not in LIGHTS:
@@ -143,6 +144,8 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     result = {"plan": plan, "characters": characters, "frames": plan["estimated_frames"],
               "shots": shots, "duration_s": round(plan["estimated_frames"][1] / sc.render.fps, 3),
               "warnings": warnings, "timings": timings}
+    if camera == 'directed':
+        result.update(emotion_curve=[], reactions=[])
     if not build:
         timings["total"] = round(time.perf_counter() - started, 4)
         return result
@@ -518,12 +521,20 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     "two_shot_angle": 20.0 if plan["environment"] == "office" else 0.0,
                     "shot": "medium_close" if plan["environment"] == "office" else "medium",
                     "single_angle_bias": 25.0,
-                    "single_angle_limits": [-40.0, 80.0] if plan["environment"] == "office" else None})
+                    "single_angle_limits": [-40.0, 80.0] if plan["environment"] == "office" else None,
+                    "coverage_beats": [dict(b, **({'who': characters[b['who']]['rig']} if b.get('who') in characters else {}))
+                                       for b in plan['beats']], "previous_size": previous_shot_size})
                 shots.extend(coverage.get("shots", []))
+                if camera == 'directed':
+                    result.update(emotion_curve=coverage['emotion_curve'], reactions=coverage['reactions'])
+                    warnings.extend(coverage.get('warnings', []))
             else:
                 # Even camera='none' builds a renderable scene, without editorial cuts.
                 shot = dispatch("camera_shot", {"subject": cast, "shot": "medium_full", "angle": 0,
                     "start_frame": 1, "end_frame": final, "name": prefix + "Wide"})
+                if camera == 'directed':
+                    shot['reason'] = dict(role='establish', emotion='neutral', intensity=.2,
+                                          detail='cast geography without timed speech')
                 shots.append(shot)
 
     def interaction_shots():
@@ -558,6 +569,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 "shot": "full",
                 "angle": angle, "elevation": 6.0, "start_frame": lo, "end_frame": hi,
                 "name": prefix + f"Interact{i:02d}"})
+            if camera == 'directed':
+                shot['reason'] = dict(role='establish', emotion='neutral', intensity=.4,
+                                      detail='interaction geography')
             shots.append(shot)
             back = hi + 1
             if cam is not None and back <= sc.frame_end and not any(m.frame == back for m in sc.timeline_markers):
@@ -614,6 +628,10 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     from .director_cues import cameras as cue_cameras
     with timed('director_cameras'):
         cue_cameras(plan, characters, shots, prefix, warnings)
+        if camera == 'directed':
+            result['reactions'] = [r for r in result.get('reactions', []) if any(
+                s.get('reason', {}).get('role') == 'reaction' and s.get('subject') == r['character']
+                and s['frames'][0] <= r['peak'] <= s['frames'][1] for s in shots)]
     with timed("lighting"):
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
     if world_recipe is not None:

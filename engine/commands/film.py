@@ -53,9 +53,11 @@ def _embed(manifest, index, path):
 
 
 @command('script_to_film')
-def script_to_film(script, name=None, environment=None, lighting='studio', camera='mixed',
+def script_to_film(script, name=None, environment=None, lighting='studio', camera='directed',
                    subtitles=True, language='auto', seed=0, build=True, sound=True,
                    look=None, body_language=True, scene_index=None, _plan=None, style=None, life=1., music='auto'):
+    from ..emocam import mode
+    camera = mode(camera)
     plan = copy.deepcopy(_plan) if _plan else parse_film(script, name, environment, seed,
         bpy.context.scene.render.fps, look, lighting, style, music)
     if not build:
@@ -99,11 +101,16 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
             scene['status'] = 'building'
             _write(path, manifest)
             dispatch('new_scene', {'fps': plan['fps'], 'frame_end': 2})
+            previous = manifest['scenes'][scene['index']-2] if scene['index'] > 1 else {}
+            ending = previous.get('shots', [{}])[-1] if previous.get('shots') else {}
             result = dispatch('script_to_scene', dict(script=scene['plan'], lighting=scene['lighting'],
-                character_seeds=scene['character_seeds'], **options))
+                character_seeds=scene['character_seeds'],
+                previous_shot_size=ending.get('shot_size') or ending.get('info', {}).get('shot_size'), **options))
             scene.update(frames=result['frames'], duration_s=result['duration_s'], characters=result['characters'],
                          shots=result['shots'], warnings=result['warnings'], status='built', timings=result['timings'])
             scene['music'] = result.get('music')
+            scene['emotion_curve'] = result.get('emotion_curve', [])
+            scene['reactions'] = result.get('reactions', [])
             # Store the resolved build parameters as continuity evidence, including exact garments.
             if all(c['realistic'] for c in result['characters'].values()):
                 scene['appearance'] = {ident: char.pop('appearance') for ident, char in result['characters'].items()}

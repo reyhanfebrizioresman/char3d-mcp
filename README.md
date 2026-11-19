@@ -123,6 +123,13 @@ Library murni, parameter dan batasnya: [engine/nature/README.md](engine/nature/R
 Gerak tersimpan dalam `.blend`; angin mengikuti cuaca. Periksa Eevee dengan
 `golden_hour` atau `misty_morning`; `render_options` melaporkan faktor biaya nature.
 
+Kamera naskah/film kini memakai `camera="directed"` (alias `emosi`/`emotional`):
+ukuran shot, gerak dan ritme mengikuti kurva emosi, dengan OTS serta reaksi pendengar
+saat suara pembicara tetap berjalan. Hasil memuat alasan setiap shot dan kurva emosi.
+Cue `[KAMERA: ...]` tetap diutamakan; `dialog` tetap default `mixed`.
+`camera_shot(shot="ots", subject=[tokoh, partner])` membingkai wajah tokoh dengan
+bahu partner di foreground. Timing reaksi bersifat heuristik; periksa wajah dan framing.
+
 ## Suara dialog otomatis
 
 ```bash

@@ -165,7 +165,31 @@ def _focus(sc, camera, objects, actions):
     dof.aperture_fstop = 32 * (stops.get(size, 5.6)/32)**strength
     dof.aperture_blades = 7
     turns = json.loads(camera.get('c3d_focus_turns', '[]'))
-    if len(rigs) == 1 or not turns:
+    incoming = bpy.data.objects.get(camera.get('c3d_focus_from', ''))
+    if len(rigs) == 1 and incoming is not None:
+        # A listener insert keeps the speaker's audio. Its short optical rack
+        # follows the editorial reaction, then stays on the listener's eyes.
+        args = json.loads(camera.get('c3d_shot_args', '{}'))
+        a, b = args.get('start_frame', sc.frame_start), args.get('end_frame', sc.frame_end)
+        saved = sc.frame_current, sc.frame_subframe
+        target = bpy.data.objects.new('__c3d_look_reaction', None)
+        sc.collection.objects.link(target)
+        objects.append(target)
+        from .script_scene import _bones_only
+        try:
+            with _bones_only():
+                for frame in range(a, b+1):
+                    sc.frame_set(frame)
+                    u = min(1., (frame-a)/max(1., .28*sc.render.fps/sc.render.fps_base))
+                    u = u*u*(3-2*u)
+                    target.location = _eye(incoming).lerp(_eye(rigs[0]), u)
+                    target.keyframe_insert('location', frame=frame)
+        finally:
+            if target.animation_data and target.animation_data.action:
+                actions.append(target.animation_data.action)
+            sc.frame_set(saved[0], subframe=saved[1])
+        dof.focus_object = target
+    elif len(rigs) == 1 or not turns:
         rig = rigs[0]
         bone = semantic_map(rig)['head']
         anchor = bpy.data.objects.new('__c3d_look_head', None)

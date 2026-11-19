@@ -211,11 +211,12 @@ def frame_coverage(pos, rot, lens, sensor, meshes, groups):
 
 
 class VisibilityProbe:
-    def __init__(self, targets, shot, height, angle_limits=None, action_line=None, face_limit=75.0):
+    def __init__(self, targets, shot, height, angle_limits=None, action_line=None, face_limit=75.0, foreground=None):
         self.shot, self.height = shot, height
         self.angle_limits = angle_limits
         self.action_line = action_line
         self.face_limit = face_limit
+        self.foreground = foreground
         self.groups = {}
         self.rigs = {_rig(o) for o in targets} - {None}
         ignored = set(targets) | self.rigs
@@ -267,6 +268,7 @@ class VisibilityProbe:
                 if not dynamic:
                     self.cache[obj] = mesh
             if mesh.tree is not None:
+                mesh.foreground = bool(self.foreground and _rig(obj) and _rig(obj).name == self.foreground)
                 solids.append(mesh)
                 if not ignored_sight:
                     meshes.append(mesh)
@@ -337,7 +339,10 @@ class VisibilityProbe:
             # Avoid spending grid rays on candidates that already fail visibility,
             # composition or collision checks. The original always gets a report.
             if adjustment is None or (safe and composed and worst <= 0.05 and angle <= self.face_limit):
-                coverage = max(coverage, frame_coverage(pos, rot, mm, self.sensor, meshes, groups))
+                # Intended OTS foreground is exempt only from the area budget.
+                # It still blocks face/eye rays and remains a camera collision solid.
+                coverage = max(coverage, frame_coverage(pos, rot, mm, self.sensor,
+                    [m for m in meshes if not m.foreground], groups))
             else:
                 return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
                             coverage=1.0, composed=False, screens=screens, sizes=sizes, face_angle=angle)

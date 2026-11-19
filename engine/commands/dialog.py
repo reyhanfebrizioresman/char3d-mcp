@@ -10,6 +10,7 @@ dialog_direct, which layers on top of the lip sync:
   * cameras — an establishing two-shot, then a clean single of each speaker, cut a few
     frames before they start talking, all from the same side (180° rule).
 """
+import json
 import math
 
 import bpy
@@ -27,11 +28,14 @@ def _facing_az(rig):
 
 
 @command("stage_dialog")
-def stage_dialog(characters, layout="angled", distance=1.3, cheat_deg=35.0, center=(0.0, 0.0)):
+def stage_dialog(characters, layout="angled", distance=1.3, cheat_deg=35.0, center=(0.0, 0.0), camera=None):
     """Place 2-4 characters for a conversation, facing each other but opened towards the
     camera side (-Y). layout: angled (TV 'cheat'), face_to_face, side_by_side."""
     if layout not in ("angled", "face_to_face", "side_by_side"):
         raise ValueError("layout must be angled, face_to_face or side_by_side")
+    if camera is not None:
+        from ..emocam import mode
+        camera = mode(camera)
     rigs = [_rig_of(c) for c in characters]
     if not 2 <= len(rigs) <= 4:
         raise ValueError("stage_dialog needs 2 to 4 characters")
@@ -59,7 +63,32 @@ def stage_dialog(characters, layout="angled", distance=1.3, cheat_deg=35.0, cent
         out.append({"character": rig.name, "location": [round(x, 3), round(y, 3)],
                     "facing_deg": round(az, 1)})
     bpy.context.view_layer.update()
-    return {"layout": layout, "characters": out, "fps": bpy.context.scene.render.fps}
+    report = {"layout": layout, "characters": out, "fps": bpy.context.scene.render.fps}
+    if camera is not None:
+        from ..emocam import mode
+        from ..emotion import sentences
+        from .face import _basemesh
+        from .semantic import load_words
+        coverage = mode(camera)
+        if coverage != 'none':
+            sc = bpy.context.scene
+            turns = [dict(speaker=r.name, start=math.floor(group[0][1]), end=math.ceil(group[-1][2]),
+                          text=' '.join(w[0] for w in group))
+                     for r in rigs for group in sentences(load_words(_basemesh(r.name)))]
+            turns.sort(key=lambda t: t['start'])
+            if not turns:
+                from .camera import camera_shot
+                establishing = camera_shot(subject=[r.name for r in rigs], shot='medium_full',
+                    start_frame=sc.frame_start, end_frame=max(sc.frame_start+1, sc.frame_end),
+                    angle=0, name='StageDialogEstablish')
+                establishing['reason'] = dict(role='establish', emotion='neutral', intensity=.2,
+                                               detail='staged cast without timed speech')
+                report['coverage'] = dict(shots=[establishing], emotion_curve=[], reactions=[])
+            else:
+                report['coverage'] = dialog_direct(turns, [r.name for r in rigs], camera=coverage,
+                    expression=None, motion=False, blink=False, gestures=None, idle=False,
+                    frame_start=sc.frame_start, frame_end=sc.frame_end)
+    return report
 
 
 def _merge_turns(turns):
@@ -106,11 +135,13 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                   move="static", lead_frames=4, gestures="presenter", expression="smile",
                   expression_strength=0.3, blink=True, motion=True, idle=True,
                   frame_start=None, frame_end=None, shot_prefix="Dialog", two_shot_angle=0.0,
-                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False, life=1., seed=3):
+                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False, life=1., seed=3,
+                  coverage_beats=None, previous_size=None):
     """Perform lip-synced dialog lines: gaze, listener nods, gestures, blinks and cameras.
 
     turns: [{"speaker": rig name, "start": frame, "end": frame}] (from lip sync).
-    camera: mixed (two-shot first, then singles), singles, two_shot, none.
+    camera: directed (emosi/emotional), mixed (two-shot first, then singles),
+    singles, two_shot, none.
     Positive single_angle_bias covers the speaker from the listener's side;
     the default negative bias opens singles toward the scene front (-Y).
     single_angle_limits optionally clamps that azimuth to a set's clear camera aisle.
@@ -123,8 +154,8 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
 
     from ..face_life import intensity as life_intensity
     life = life_intensity(life)
-    if camera not in ("mixed", "singles", "two_shot", "none"):
-        raise ValueError("camera must be mixed, singles, two_shot or none")
+    from ..emocam import mode
+    camera = mode(camera)
     if not turns:
         raise ValueError("no turns")
     sc = bpy.context.scene
@@ -198,7 +229,15 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
             except ValueError:
                 pass          # this character never speaks
     shots = []
-    if camera != "none":
+    if camera == "directed":
+        from .emocam import plan as emotional_plan, bake, reactions
+        planned = emotional_plan(turns, names, f0, f1, coverage_beats, previous_size)
+        shots, notes = bake(planned, names, turns, shot_prefix, single_angle_limits)
+        notes += reactions(planned['reactions'], names, f0, f1)
+        report.update(shots=shots, emotion_curve=planned['emotion_curve'],
+                      reactions=planned['reactions'], warnings=notes)
+        sc['char3d_emocam'] = json.dumps(planned)
+    elif camera != "none":
         plan = []                     # (start, speaker or None for a two-shot)
         if camera == "two_shot":
             plan = [(f0, None)]
@@ -320,4 +359,4 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
                            gestures=gestures, expression=expression, body_language=body_language, life=life, seed=int(seed)+3) if perform else {
                                "frames": [int(start_frame), turns[-1]["end"]], "shots": []}
     return {**report, "lines": turns, "next_start_frame": max(frame, report["frames"][1] + 1),
-            "warnings": list(dict.fromkeys(warnings))}
+            "warnings": list(dict.fromkeys(warnings + report.get('warnings', [])))}
