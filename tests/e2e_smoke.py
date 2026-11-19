@@ -1931,7 +1931,7 @@ result = angles
         json.dump({"elapsed_s": benchmark, "timings": six["timings"], "head_angles_deg": angles}, f, indent=2)
     # A silent cast member/body-only scene has no word times to drive emotion/captions.
     await call("new_scene")
-    silent = await data("script_to_scene", sound=False, script={"characters": [{"id": "Silent"}],
+    silent = await data("script_to_scene", sound=False, music=None, script={"characters": [{"id": "Silent"}],
                           "beats": [{"do": "pause", "seconds": 0.5}]})
     assert silent["sfx"] == {"strips": [], "counts": {}} and not (await data("list_audio"))["strips"]
     assert silent["frames"] == [1, 12] and len(silent["shots"]) == 1, silent
@@ -3047,7 +3047,9 @@ async def _auto_sfx_checks(call):
     await call("camera_shot", subject=["Foley_rig"], shot="full", angle=10,
                start_frame=1, end_frame=final, name="auto_sfx_office")
     frames = [steps[0]["frame"], 66, seated["transition_end"], stood["transition_end"]]
-    rendered = await call("render_frames", frames=frames, camera="scene", engine_name="eevee", size=512)
+    rendered = await call("render_frames", frames=frames, camera="scene",
+                          engine_name="workbench" if os.environ.get("CHAR3D_AUDIO_CLAY_ONLY") else "eevee",
+                          size=160 if os.environ.get("CHAR3D_AUDIO_CLAY_ONLY") else 512)
     stills = [json.loads(t) for t in text_of(rendered)]
     tiles = []
     for i, item in enumerate(stills):
@@ -3637,8 +3639,10 @@ async def _tts_scene_check(call, backend):
     assert all(c["realistic"] for c in built["characters"].values()), "MPFB needed for real facial checks"
     if backend == "edge":
         assert any("Microsoft" in p for p in built["privacy"])
-    audio_strips = (await data("list_audio"))["strips"]
+    all_audio_strips = (await data("list_audio"))["strips"]
+    audio_strips = [s for s in all_audio_strips if s['kind'] == 'voice']
     assert len(audio_strips) == 2 and all(s["kind"] == "voice" and s["speaker"] for s in audio_strips)
+    assert any(s['kind'] == 'music' for s in all_audio_strips), 'default automatic music missing'
     checked = (await data("run_blender_python", code=f'''
 from engine.commands.semantic import load_words
 from engine.commands.face import _face_meshes, VISEMES
@@ -3702,7 +3706,7 @@ result = {{'words': words, 'peak_counts': {{n: len(p) for n,p in peaks.items()}}
         assert abs(delta) < 1 / 24 and correlation > .75, (delta, correlation)
         assert np.sqrt(np.mean(found ** 2)) > .025
         alignment.append({"character": file["character"], "offset_s": delta, "correlation": correlation})
-    report = {"build": built, "timeline_audio": audio_strips, "checked": checked,
+    report = {"build": built, "timeline_audio": all_audio_strips, "checked": checked,
               "movie": movie, "alignment": alignment,
               "stills": [json.loads(t) for t in text_of(stills)]}
     (workspace / f"tts_{backend}_checks.json").write_text(json.dumps(report, indent=2))
@@ -3837,8 +3841,251 @@ async def _materials_realistic_checks(call):
     await realistic(call, text_of, _mpfb_pack_checks, _check_glb_weights)
 
 
+async def _audio_checks(call, session):
+    s = session
+    # audio: synthetic "speech" (vowels via formant filters, hiss, pauses) -> timeline,
+    # lip sync from audio/text, and a draft video that must carry an AAC track
+    wav = _synthetic_speech(os.path.join(ROOT, "output", "imports", "audio", "e2e_synth.wav"))
+    await call("new_scene")
+    await call("add_primitive", kind="monkey", name="Mic")
+    mp = await s.call_tool("mpfb_assets", {})
+    if not mp.isError:
+        await call("create_realistic_human", name="Vo", gender=0.0, age=30, location=[1, 0, 0])
+        for timing in ("audio", "text"):
+            la = json.loads(text_of(await call(
+                "lip_sync_audio", character="Vo_rig", audio=wav, timing=timing,
+                text="Happy! Sorry. Wow! Afraid.", add_sound=False))[0])
+            assert la["mode"] == timing and la["mouth_shapes"] >= 4, la
+            if timing == "audio":
+                missing = await s.call_tool("auto_expression", {"character": "Vo_rig"})
+                assert missing.isError and "no word times" in str(text_of(missing)), missing
+            else:
+                audio_face = json.loads(text_of(await call(
+                    "auto_expression", character="Vo_rig", intensity=0.5,
+                    base="neutral", base_strength=0, language="en"))[0])
+                assert [e["emotion"] for e in audio_face["sentences"]] == [
+                    "joy", "sad", "surprise", "fear"], audio_face
+                assert audio_face["sentences"][0]["strength"] == 0.375, audio_face
+            assert la["detail"] == ("audio" if timing == "audio" else "phoneme"), la
+        # Whisper-shaped word intervals, without downloading an ASR model for synthetic audio.
+        # Use the same engine command the Whisper MCP path calls, and inspect actual curves.
+        aligned = json.loads(text_of(await call("run_blender_python", code=f'''
+from engine.commands.audio import lip_sync_audio
+from engine.commands.semantic import load_words
+words = [{{"word": "mama", "start": 0.2, "end": 1.0}},
+         {{"word": "buka", "start": 1.4, "end": 2.0}}]
+r = lip_sync_audio("Vo_rig", {wav!r}, start_frame=9, words=words, language="ms", add_sound=False)
+assert r["detail"] == "phoneme" and r["language"] == "ms"
+for e in r["phonemes"]:
+    w = next(w for w in words if w["word"] == e["word"])
+    assert 9 + w["start"] * 24 - 0.001 <= e["start"] < e["end"] <= 9 + w["end"] * 24 + 0.001
+    if e["phoneme"] in ("m", "b", "p") and e["frame"] is not None:
+        bpy.context.scene.frame_set(e["frame"])
+        assert bpy.data.objects["Vo"].data.shape_keys.key_blocks["p_b_m_21"].value > 0.99
+assert len(load_words(bpy.data.objects["Vo"], 9, r["frames"][1])) == 2
+bpy.context.scene.frame_set(38)  # pause between supplied words
+assert all(k.value < 0.001 for k in bpy.data.objects["Vo"].data.shape_keys.key_blocks
+           if k.name in ("p_b_m_21", "aa_02", "w_uw_07"))
+result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
+'''))[0])["result"]
+        assert aligned["bounded"] and aligned["phonemes"] >= 8, aligned
+        old_audio = json.loads(text_of(await call("lip_sync_audio", character="Vo_rig", audio=wav,
+                                                   timing="text", text="mama buka", detail="word",
+                                                   start_frame=90, add_sound=False))[0])
+        assert old_audio["detail"] == "word" and not old_audio["phonemes"], old_audio
+        print("audio phonemes: word boundaries, quiet closure, stored words, legacy OK")
+        print("audio lip sync: audio/text modes OK")
+        print("auto_expression audio: text timing + intensity OK; audio-only needs cues")
+        await call("add_audio", path=wav, start_frame=1)
+        await call("animate", armature="Vo_rig", clip="idle", cycles=1)
+        await call("camera_shot", subject=["Vo_rig"], shot="close_up", start_frame=1,
+                   end_frame=60)
+        tm = json.loads(text_of(await call("talk_motion", character="Vo_rig",
+                                           frame_start=1, frame_end=60))[0])
+        assert tm["driven_by"].startswith("audio:") and tm["saccades"] >= 1, tm
+        rng = tm["head_range_deg"]
+        assert max(abs(v) for pair in rng.values() for v in pair) < 25, rng
+        print("talk_motion:", tm["driven_by"], "emphasis", len(tm["emphasis_frames"]),
+              "saccades", tm["saccades"])
+        tg = json.loads(text_of(await call("talk_gestures", character="Vo_rig",
+                                           frame_start=1, frame_end=60,
+                                           style="energetic"))[0])
+        assert tg["talking_frames"] > 10 and len(tg["arm_bones"]) == 4, tg
+        assert tg["finger_bones"] == 30, tg
+        hp = json.loads(text_of(await call("set_hand_pose", character="Vo_rig", shape="point",
+                                           side="right", frame=70, keyframe=True))[0])
+        assert hp["bones"] == 15 and hp["keyed"], hp
+        print("talk_gestures (MPFB):", [g["type"] for g in tg["gestures"]])
+        # meaning gestures from stored word times (lip_sync text)
+        ls2 = json.loads(text_of(await call(
+            "lip_sync", character="Vo_rig", start_frame=1,
+            text="Saya punya dua ide besar, dan ini tidak sulit."))[0])
+        tgs = json.loads(text_of(await call("talk_gestures", character="Vo_rig",
+                                            frame_start=1, frame_end=ls2["frames"][1]))[0])
+        kinds = [g["type"] for g in tgs["semantic"]]
+        assert tgs["words_known"] >= 9 and "two" in kinds, tgs
+        assert tgs["hand_bones"] == ["hand_l", "hand_r"] and tgs["max_palm_twist_deg"] > 10, tgs
+        print("talk_gestures semantic:", [(g["word"], g["type"]) for g in tgs["semantic"]])
+        # dialog: two characters, an audio line and text lines, staged + covered
+        await call("remove_audio")
+        await call("create_realistic_human", name="Ko", gender=1.0, age=35)
+        dg = json.loads(text_of(await call("dialog", start_frame=200, lines=[
+            {"speaker": "Vo_rig", "text": "Ko, kamu sudah lihat dua hasil render kemarin?"},
+            {"speaker": "Ko_rig", "audio": wav},
+            {"speaker": "Vo_rig", "text": "Bagus, kita lanjutkan besok saja ya."}]))[0])
+        assert [t["speaker"] for t in dg["turns"]] == ["Vo_rig", "Ko_rig", "Vo_rig"], dg
+        assert len(dg["shots"]) == 3 and dg["shots"][0]["subject"] == "two_shot", dg["shots"]
+        assert dg["shots"][1]["subject"] == "Ko_rig" and dg["idle_added"] == ["Ko_rig"], dg
+        assert sum(m["listener_nods"] for m in dg["motion"].values()) >= 1, dg["motion"]
+        assert "dua" in dg["gestures"]["Vo_rig"]["semantic"], dg["gestures"]
+        print("dialog:", [(s_["subject"], s_["frames"]) for s_ in dg["shots"]],
+              "| nods", {k: m["listener_nods"] for k, m in dg["motion"].items()})
+        await call("remove_audio")
+    aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
+    assert aa["seconds"] > 2, aa
+    await call("create_human", name="Mq", style="stylized", location=[-1.2, 0, 0])
+    await call("auto_rig_humanoid", mesh="Mq", rig_type="rigify")
+    tgm = json.loads(text_of(await call("talk_gestures", character="Mq_rig",
+                                        frame_start=1, frame_end=50))[0])
+    assert tgm["talking_frames"] > 10, tgm
+    print("talk_gestures (rigify mannequin):", tgm["arm_bones"])
+    tgc = json.loads(text_of(await call("talk_gestures", character="Mq_rig", frame_start=1,
+                                        frame_end=50, semantic=False,
+                                        cues=[{"frame": 25, "gesture": "stop"}]))[0])
+    assert [g["type"] for g in tgc["semantic"]] == ["stop"], tgc
+    print("talk_gestures cue on mannequin OK")
+    await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
+    await call("add_title", text="Audio + graphics", style="corner", duration_s=2)
+    await call("add_transition", kind="fade_in", duration_s=0.25)
+    v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
+                                      width=256, height=144, frame_start=1,
+                                      frame_end=aa["frames"][1], wait=True))[0])
+    assert v["status"] == "done" and v["has_audio"], v
+    import av
+    with av.open(v["path"]) as c:
+        kinds = sorted(st.type for st in c.streams)
+    assert kinds == ["audio", "video"], kinds
+    assert v["graphics"]["titles"] == 1 and v["graphics"]["transitions"] == 1, v
+    print("audio: strip + AAC video with graphics OK")
+
+    # Music: continuous repeats, fades over the whole track, voice/word ducking.
+    # A brief pause between voices merges; sfx and muted voices never duck music.
+    await call("remove_audio")
+    await call("set_timeline", frame_start=1, frame_end=144, fps=24)
+    tone = _tone(os.path.join(ROOT, "output", "imports", "audio", "e2e_tone.wav"))
+    music = json.loads(text_of(await call("add_audio", path=tone, kind="music", volume=0.6,
+                                          loop=True, fade_in=0.25, fade_out=0.5))[0])
+    other_music = json.loads(text_of(await call("add_audio", path=tone, kind="music",
+                                                volume=0.1))[0])
+    assert music["frames"] == [1, 144] and len(music["strips"]) == 12, music
+    voices = []
+    for frame in (25, 43, 97):
+        voice = json.loads(text_of(await call("add_audio", path=tone, start_frame=frame))[0])
+        assert voice["kind"] == "voice", voice
+        voices.append(voice["strip"])
+    muted = json.loads(text_of(await call("add_audio", path=tone, start_frame=73))[0])
+    await call("add_audio", path=tone, kind="sfx", start_frame=73)
+    setup = f"""
+from engine.commands.audio import _sound_strips
+from engine.commands.semantic import store_words
+for obj in bpy.context.scene.objects:
+    if 'char3d_words' in obj:
+        del obj['char3d_words']
+store_words(bpy.data.objects['Mic'], [('word', 113, 117)], 113, 117)
+for st in _sound_strips(bpy.context.scene):
+    if st.name == {muted['strip']!r}:
+        st.mute = True
+    if st.name == {voices[1]!r}:
+        del st['char3d_audio_kind']  # old projects' untagged strips are voice
+"""
+    await call("run_blender_python", code=setup)
+    duck = json.loads(text_of(await call("duck_music", music_strip=music["strips"][3]))[0])
+    assert set(duck["strips"]) == set(music["strips"]), duck
+    assert duck["speech_ranges"] == [[25.0, 55.0], [97.0, 117]], duck
+    inspect = f"""
+from engine.commands.audio import _sound_strips, _volume_curve
+from engine.commands.talk import _audio_activity
+assert set(_audio_activity(1, 144)[1]) == set({voices!r})
+music = [st for st in _sound_strips(bpy.context.scene) if st.name in {music['strips']!r}]
+assert all(st.get('char3d_audio_kind') == 'music' for st in music)
+spans = sorted((int(st.frame_final_start), int(st.frame_final_end)) for st in music)
+assert spans[0][0] == 1 and spans[-1][1] == 145
+assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
+samples = {{}}
+for frame in [1, 7, 19, 23, 30, 60, 73, 96, 103, 128, 139, 145]:
+    st = next((st for st in music if st.frame_final_start <= frame < st.frame_final_end), music[-1])
+    fc = _volume_curve(st)
+    assert fc and all(k.interpolation == 'LINEAR' and -1e-6 <= k.co.y <= 0.60001
+                      for k in fc.keyframe_points)
+    samples[str(frame)] = fc.evaluate(frame)
+other = next(st for st in _sound_strips(bpy.context.scene) if st.name == {other_music['strip']!r})
+assert _volume_curve(other) is None  # only the selected loop group was changed
+result = samples
+"""
+    samples = json.loads(text_of(await call("run_blender_python", code=inspect))[0])["result"]
+    floor = 0.6 * 10 ** (-12 / 20)
+    assert abs(samples["1"]) < 1e-6 and abs(samples["145"]) < 1e-6, samples
+    for frame in (7, 19, 73, 128):
+        assert abs(samples[str(frame)] - 0.6) < 1e-5, samples
+    for frame in (30, 103):
+        assert abs(samples[str(frame)] - floor) < 1e-5, samples
+    for frame in (23, 60, 96):
+        assert floor < samples[str(frame)] < 0.6, samples
+    assert abs(samples["139"] - 0.3) < 1e-5, samples
+    await call("duck_music", music_strip=music["strip"])
+    repeated = json.loads(text_of(await call("run_blender_python", code=inspect))[0])["result"]
+    assert samples == repeated, (samples, repeated)  # no cumulative attenuation
+    listing = json.loads(text_of(await call("list_audio"))[0])["strips"]
+    assert {st["kind"] for st in listing} == {"music", "voice", "sfx"}, listing
+    await call("camera_shot", shot="medium", start_frame=1, end_frame=144)
+    check = await call("render_frames", frames=[7, 30, 73], camera="scene", size=256)
+    assert [c.type for c in check.content].count("image") == 3
+    await call("save_project", path="e2e_music.blend")
+    mv = json.loads(text_of(await call("render_video", path="e2e_music.mp4", quality="draft",
+                                       width=256, height=144, frame_start=1, frame_end=144,
+                                       wait=True))[0])
+    assert mv["status"] == "done" and mv["has_audio"], mv
+    energy = {"normal": [], "ducked": []}
+    with av.open(mv["path"]) as movie:
+        assert movie.streams.audio[0].codec_context.name == "aac"
+        for frame in movie.decode(audio=0):
+            # These windows contain music only; the second is ducked by word times.
+            for label, a, b in (("normal", 85 / 24, 90 / 24), ("ducked", 110 / 24, 116 / 24)):
+                if a <= frame.time and frame.time + frame.samples / frame.sample_rate <= b:
+                    energy[label].append(float((frame.to_ndarray().astype("float64") ** 2).mean()))
+    normal = (sum(energy["normal"]) / len(energy["normal"])) ** 0.5
+    quiet = (sum(energy["ducked"]) / len(energy["ducked"])) ** 0.5
+    assert normal > 0.001 and 0.15 < quiet / normal < 0.4, (normal, quiet)
+    # Removing speech restores the original volume while keeping the fades.
+    for name in voices:
+        await call("remove_audio", name=name)
+    words_only = json.loads(text_of(await call("duck_music"))[0])
+    assert words_only["speech_ranges"] == [[113, 117]], words_only
+    await call("run_blender_python", code="del bpy.data.objects['Mic']['char3d_words']")
+    reset = json.loads(text_of(await call("duck_music"))[0])
+    assert reset["speech_ranges"] == [] and other_music["strip"] in reset["strips"], reset
+    print("music: 12 continuous loops | fades + -12 dB duck curves OK | rerun stable | AAC draft OK")
+
+
+
+async def _audio2_checks(call):
+    from audio2_scene import run
+    await run(call, text_of)
+
+
+async def _music_checks(call):
+    from music_checks import run
+    await run(call, text_of)
+
+
 async def main():
-    params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
+    server_args = ["-m", "mcp_server.server"]
+    if "--audio-only" in sys.argv and os.environ.get("CHAR3D_AUDIO_NO_ASR"):
+        # Synthetic vowels are not an ASR fixture. Keep this optional low-memory
+        # regression offline; supplied-word/phoneme timing is checked explicitly.
+        server_args = ["-c", "import sys, runpy\nsys.modules['faster_whisper'] = None\n"
+                            "runpy.run_module('mcp_server.server', run_name='__main__')"]
+    params = StdioServerParameters(command=sys.executable, args=server_args,
                                    cwd=ROOT, env=dict(os.environ))
     async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
         init = await s.initialize()
@@ -3866,11 +4113,19 @@ async def main():
             return res
 
         print("status:", text_of(await call("engine_status")))
+        if "--audio-only" in sys.argv:
+            await _audio_checks(call, s)
+            await call("engine_shutdown")
+            print("AUDIO E2E OK", flush=True)
+            return
         for flag, section in (("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),
                               ("--mpfb-only", _materials_realistic_checks),
                               ("--animated-style-only", _animated_style_checks),
                               ("--face-life-only", _face_life_checks),
+                              ("--music-only", _music_checks),
+                              ("--audio2-only", _audio2_checks),
+                              ("--auto-sfx-only", _auto_sfx_checks),
                               ("--film-only", _film_checks),
                               ("--script-only", _script_scene_checks),
                               ("--dialog-only", _dialog_gaze_checks),
@@ -4473,228 +4728,7 @@ result = "phrases, suffixes, negation, questions, id/ms/en OK"
             lex = json.loads(text_of(await call("run_blender_python", code=lexicon))[0])
             print("auto_expression cues/ranges:", lex["result"])
 
-        # audio: synthetic "speech" (vowels via formant filters, hiss, pauses) -> timeline,
-        # lip sync from audio/text, and a draft video that must carry an AAC track
-        wav = _synthetic_speech(os.path.join(ROOT, "output", "imports", "audio", "e2e_synth.wav"))
-        await call("new_scene")
-        await call("add_primitive", kind="monkey", name="Mic")
-        mp = await s.call_tool("mpfb_assets", {})
-        if not mp.isError:
-            await call("create_realistic_human", name="Vo", gender=0.0, age=30, location=[1, 0, 0])
-            for timing in ("audio", "text"):
-                la = json.loads(text_of(await call(
-                    "lip_sync_audio", character="Vo_rig", audio=wav, timing=timing,
-                    text="Happy! Sorry. Wow! Afraid.", add_sound=False))[0])
-                assert la["mode"] == timing and la["mouth_shapes"] >= 4, la
-                if timing == "audio":
-                    missing = await s.call_tool("auto_expression", {"character": "Vo_rig"})
-                    assert missing.isError and "no word times" in str(text_of(missing)), missing
-                else:
-                    audio_face = json.loads(text_of(await call(
-                        "auto_expression", character="Vo_rig", intensity=0.5,
-                        base="neutral", base_strength=0, language="en"))[0])
-                    assert [e["emotion"] for e in audio_face["sentences"]] == [
-                        "joy", "sad", "surprise", "fear"], audio_face
-                    assert audio_face["sentences"][0]["strength"] == 0.375, audio_face
-                assert la["detail"] == ("audio" if timing == "audio" else "phoneme"), la
-            # Whisper-shaped word intervals, without downloading an ASR model for synthetic audio.
-            # Use the same engine command the Whisper MCP path calls, and inspect actual curves.
-            aligned = json.loads(text_of(await call("run_blender_python", code=f'''
-from engine.commands.audio import lip_sync_audio
-from engine.commands.semantic import load_words
-words = [{{"word": "mama", "start": 0.2, "end": 1.0}},
-         {{"word": "buka", "start": 1.4, "end": 2.0}}]
-r = lip_sync_audio("Vo_rig", {wav!r}, start_frame=9, words=words, language="ms", add_sound=False)
-assert r["detail"] == "phoneme" and r["language"] == "ms"
-for e in r["phonemes"]:
-    w = next(w for w in words if w["word"] == e["word"])
-    assert 9 + w["start"] * 24 - 0.001 <= e["start"] < e["end"] <= 9 + w["end"] * 24 + 0.001
-    if e["phoneme"] in ("m", "b", "p") and e["frame"] is not None:
-        bpy.context.scene.frame_set(e["frame"])
-        assert bpy.data.objects["Vo"].data.shape_keys.key_blocks["p_b_m_21"].value > 0.99
-assert len(load_words(bpy.data.objects["Vo"], 9, r["frames"][1])) == 2
-bpy.context.scene.frame_set(38)  # pause between supplied words
-assert all(k.value < 0.001 for k in bpy.data.objects["Vo"].data.shape_keys.key_blocks
-           if k.name in ("p_b_m_21", "aa_02", "w_uw_07"))
-result = {{"phonemes": len(r["phonemes"]), "bounded": True}}
-'''))[0])["result"]
-            assert aligned["bounded"] and aligned["phonemes"] >= 8, aligned
-            old_audio = json.loads(text_of(await call("lip_sync_audio", character="Vo_rig", audio=wav,
-                                                       timing="text", text="mama buka", detail="word",
-                                                       start_frame=90, add_sound=False))[0])
-            assert old_audio["detail"] == "word" and not old_audio["phonemes"], old_audio
-            print("audio phonemes: word boundaries, quiet closure, stored words, legacy OK")
-            print("audio lip sync: audio/text modes OK")
-            print("auto_expression audio: text timing + intensity OK; audio-only needs cues")
-            await call("add_audio", path=wav, start_frame=1)
-            await call("animate", armature="Vo_rig", clip="idle", cycles=1)
-            await call("camera_shot", subject=["Vo_rig"], shot="close_up", start_frame=1,
-                       end_frame=60)
-            tm = json.loads(text_of(await call("talk_motion", character="Vo_rig",
-                                               frame_start=1, frame_end=60))[0])
-            assert tm["driven_by"].startswith("audio:") and tm["saccades"] >= 1, tm
-            rng = tm["head_range_deg"]
-            assert max(abs(v) for pair in rng.values() for v in pair) < 25, rng
-            print("talk_motion:", tm["driven_by"], "emphasis", len(tm["emphasis_frames"]),
-                  "saccades", tm["saccades"])
-            tg = json.loads(text_of(await call("talk_gestures", character="Vo_rig",
-                                               frame_start=1, frame_end=60,
-                                               style="energetic"))[0])
-            assert tg["talking_frames"] > 10 and len(tg["arm_bones"]) == 4, tg
-            assert tg["finger_bones"] == 30, tg
-            hp = json.loads(text_of(await call("set_hand_pose", character="Vo_rig", shape="point",
-                                               side="right", frame=70, keyframe=True))[0])
-            assert hp["bones"] == 15 and hp["keyed"], hp
-            print("talk_gestures (MPFB):", [g["type"] for g in tg["gestures"]])
-            # meaning gestures from stored word times (lip_sync text)
-            ls2 = json.loads(text_of(await call(
-                "lip_sync", character="Vo_rig", start_frame=1,
-                text="Saya punya dua ide besar, dan ini tidak sulit."))[0])
-            tgs = json.loads(text_of(await call("talk_gestures", character="Vo_rig",
-                                                frame_start=1, frame_end=ls2["frames"][1]))[0])
-            kinds = [g["type"] for g in tgs["semantic"]]
-            assert tgs["words_known"] >= 9 and "two" in kinds, tgs
-            assert tgs["hand_bones"] == ["hand_l", "hand_r"] and tgs["max_palm_twist_deg"] > 10, tgs
-            print("talk_gestures semantic:", [(g["word"], g["type"]) for g in tgs["semantic"]])
-            # dialog: two characters, an audio line and text lines, staged + covered
-            await call("remove_audio")
-            await call("create_realistic_human", name="Ko", gender=1.0, age=35)
-            dg = json.loads(text_of(await call("dialog", start_frame=200, lines=[
-                {"speaker": "Vo_rig", "text": "Ko, kamu sudah lihat dua hasil render kemarin?"},
-                {"speaker": "Ko_rig", "audio": wav},
-                {"speaker": "Vo_rig", "text": "Bagus, kita lanjutkan besok saja ya."}]))[0])
-            assert [t["speaker"] for t in dg["turns"]] == ["Vo_rig", "Ko_rig", "Vo_rig"], dg
-            assert len(dg["shots"]) == 3 and dg["shots"][0]["subject"] == "two_shot", dg["shots"]
-            assert dg["shots"][1]["subject"] == "Ko_rig" and dg["idle_added"] == ["Ko_rig"], dg
-            assert sum(m["listener_nods"] for m in dg["motion"].values()) >= 1, dg["motion"]
-            assert "dua" in dg["gestures"]["Vo_rig"]["semantic"], dg["gestures"]
-            print("dialog:", [(s_["subject"], s_["frames"]) for s_ in dg["shots"]],
-                  "| nods", {k: m["listener_nods"] for k, m in dg["motion"].items()})
-            await call("remove_audio")
-        aa = json.loads(text_of(await call("add_audio", path=wav, start_frame=1))[0])
-        assert aa["seconds"] > 2, aa
-        await call("create_human", name="Mq", style="stylized", location=[-1.2, 0, 0])
-        await call("auto_rig_humanoid", mesh="Mq", rig_type="rigify")
-        tgm = json.loads(text_of(await call("talk_gestures", character="Mq_rig",
-                                            frame_start=1, frame_end=50))[0])
-        assert tgm["talking_frames"] > 10, tgm
-        print("talk_gestures (rigify mannequin):", tgm["arm_bones"])
-        tgc = json.loads(text_of(await call("talk_gestures", character="Mq_rig", frame_start=1,
-                                            frame_end=50, semantic=False,
-                                            cues=[{"frame": 25, "gesture": "stop"}]))[0])
-        assert [g["type"] for g in tgc["semantic"]] == ["stop"], tgc
-        print("talk_gestures cue on mannequin OK")
-        await call("camera_shot", shot="medium", start_frame=1, end_frame=aa["frames"][1])
-        await call("add_title", text="Audio + graphics", style="corner", duration_s=2)
-        await call("add_transition", kind="fade_in", duration_s=0.25)
-        v = json.loads(text_of(await call("render_video", path="e2e_audio.mp4", quality="draft",
-                                          width=256, height=144, frame_start=1,
-                                          frame_end=aa["frames"][1], wait=True))[0])
-        assert v["status"] == "done" and v["has_audio"], v
-        import av
-        with av.open(v["path"]) as c:
-            kinds = sorted(st.type for st in c.streams)
-        assert kinds == ["audio", "video"], kinds
-        assert v["graphics"]["titles"] == 1 and v["graphics"]["transitions"] == 1, v
-        print("audio: strip + AAC video with graphics OK")
-
-        # Music: continuous repeats, fades over the whole track, voice/word ducking.
-        # A brief pause between voices merges; sfx and muted voices never duck music.
-        await call("remove_audio")
-        await call("set_timeline", frame_start=1, frame_end=144, fps=24)
-        tone = _tone(os.path.join(ROOT, "output", "imports", "audio", "e2e_tone.wav"))
-        music = json.loads(text_of(await call("add_audio", path=tone, kind="music", volume=0.6,
-                                              loop=True, fade_in=0.25, fade_out=0.5))[0])
-        other_music = json.loads(text_of(await call("add_audio", path=tone, kind="music",
-                                                    volume=0.1))[0])
-        assert music["frames"] == [1, 144] and len(music["strips"]) == 12, music
-        voices = []
-        for frame in (25, 43, 97):
-            voice = json.loads(text_of(await call("add_audio", path=tone, start_frame=frame))[0])
-            assert voice["kind"] == "voice", voice
-            voices.append(voice["strip"])
-        muted = json.loads(text_of(await call("add_audio", path=tone, start_frame=73))[0])
-        await call("add_audio", path=tone, kind="sfx", start_frame=73)
-        setup = f"""
-from engine.commands.audio import _sound_strips
-from engine.commands.semantic import store_words
-for obj in bpy.context.scene.objects:
-    if 'char3d_words' in obj:
-        del obj['char3d_words']
-store_words(bpy.data.objects['Mic'], [('word', 113, 117)], 113, 117)
-for st in _sound_strips(bpy.context.scene):
-    if st.name == {muted['strip']!r}:
-        st.mute = True
-    if st.name == {voices[1]!r}:
-        del st['char3d_audio_kind']  # old projects' untagged strips are voice
-"""
-        await call("run_blender_python", code=setup)
-        duck = json.loads(text_of(await call("duck_music", music_strip=music["strips"][3]))[0])
-        assert set(duck["strips"]) == set(music["strips"]), duck
-        assert duck["speech_ranges"] == [[25.0, 55.0], [97.0, 117]], duck
-        inspect = f"""
-from engine.commands.audio import _sound_strips, _volume_curve
-from engine.commands.talk import _audio_activity
-assert set(_audio_activity(1, 144)[1]) == set({voices!r})
-music = [st for st in _sound_strips(bpy.context.scene) if st.name in {music['strips']!r}]
-assert all(st.get('char3d_audio_kind') == 'music' for st in music)
-spans = sorted((int(st.frame_final_start), int(st.frame_final_end)) for st in music)
-assert spans[0][0] == 1 and spans[-1][1] == 145
-assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
-samples = {{}}
-for frame in [1, 7, 19, 23, 30, 60, 73, 96, 103, 128, 139, 145]:
-    st = next((st for st in music if st.frame_final_start <= frame < st.frame_final_end), music[-1])
-    fc = _volume_curve(st)
-    assert fc and all(k.interpolation == 'LINEAR' and -1e-6 <= k.co.y <= 0.60001
-                      for k in fc.keyframe_points)
-    samples[str(frame)] = fc.evaluate(frame)
-other = next(st for st in _sound_strips(bpy.context.scene) if st.name == {other_music['strip']!r})
-assert _volume_curve(other) is None  # only the selected loop group was changed
-result = samples
-"""
-        samples = json.loads(text_of(await call("run_blender_python", code=inspect))[0])["result"]
-        floor = 0.6 * 10 ** (-12 / 20)
-        assert abs(samples["1"]) < 1e-6 and abs(samples["145"]) < 1e-6, samples
-        for frame in (7, 19, 73, 128):
-            assert abs(samples[str(frame)] - 0.6) < 1e-5, samples
-        for frame in (30, 103):
-            assert abs(samples[str(frame)] - floor) < 1e-5, samples
-        for frame in (23, 60, 96):
-            assert floor < samples[str(frame)] < 0.6, samples
-        assert abs(samples["139"] - 0.3) < 1e-5, samples
-        await call("duck_music", music_strip=music["strip"])
-        repeated = json.loads(text_of(await call("run_blender_python", code=inspect))[0])["result"]
-        assert samples == repeated, (samples, repeated)  # no cumulative attenuation
-        listing = json.loads(text_of(await call("list_audio"))[0])["strips"]
-        assert {st["kind"] for st in listing} == {"music", "voice", "sfx"}, listing
-        await call("camera_shot", shot="medium", start_frame=1, end_frame=144)
-        check = await call("render_frames", frames=[7, 30, 73], camera="scene", size=256)
-        assert [c.type for c in check.content].count("image") == 3
-        await call("save_project", path="e2e_music.blend")
-        mv = json.loads(text_of(await call("render_video", path="e2e_music.mp4", quality="draft",
-                                           width=256, height=144, frame_start=1, frame_end=144,
-                                           wait=True))[0])
-        assert mv["status"] == "done" and mv["has_audio"], mv
-        energy = {"normal": [], "ducked": []}
-        with av.open(mv["path"]) as movie:
-            assert movie.streams.audio[0].codec_context.name == "aac"
-            for frame in movie.decode(audio=0):
-                # These windows contain music only; the second is ducked by word times.
-                for label, a, b in (("normal", 85 / 24, 90 / 24), ("ducked", 110 / 24, 116 / 24)):
-                    if a <= frame.time and frame.time + frame.samples / frame.sample_rate <= b:
-                        energy[label].append(float((frame.to_ndarray().astype("float64") ** 2).mean()))
-        normal = (sum(energy["normal"]) / len(energy["normal"])) ** 0.5
-        quiet = (sum(energy["ducked"]) / len(energy["ducked"])) ** 0.5
-        assert normal > 0.001 and 0.15 < quiet / normal < 0.4, (normal, quiet)
-        # Removing speech restores the original volume while keeping the fades.
-        for name in voices:
-            await call("remove_audio", name=name)
-        words_only = json.loads(text_of(await call("duck_music"))[0])
-        assert words_only["speech_ranges"] == [[113, 117]], words_only
-        await call("run_blender_python", code="del bpy.data.objects['Mic']['char3d_words']")
-        reset = json.loads(text_of(await call("duck_music"))[0])
-        assert reset["speech_ranges"] == [] and other_music["strip"] in reset["strips"], reset
-        print("music: 12 continuous loops | fades + -12 dB duck curves OK | rerun stable | AAC draft OK")
+        await _audio_checks(call, s)
 
         guide = await s.read_resource("char3d://guide")
         assert "Working loop" in guide.contents[0].text

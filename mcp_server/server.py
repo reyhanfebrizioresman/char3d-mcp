@@ -1085,14 +1085,16 @@ async def list_voices(language: str | None = None, engine: str | None = None) ->
     Default catalog is offline; engine='edge' explicitly refreshes Microsoft's voice
     list (static fallback on network error). No models are downloaded. Piper is local;
     Edge and Chatterbox are online/explicit only. F5 needs a registered reference clip
-    and transcript: use only your own voice or one you have permission to use."""
+    and transcript, or a built-in synthetic Piper reference: use only your own voice
+    or one you have permission to use. The catalog never generates references."""
     return await anyio.to_thread.run_sync(lambda: tts.catalog(language, engine))
 
 
 @mcp.tool()
 async def text_to_speech(text: str, voice: str | None = None, engine: str = "piper",
                          language: str = "id", rate: float = 1.0, pitch: float = 0.0,
-                         gender: float | None = None, output: str | None = None) -> dict:
+                         gender: float | None = None, output: str | None = None,
+                         voice_reference: str | None = None, reference_text: str | None = None) -> dict:
     """Generate cached 48 kHz mono PCM WAV; path is relative to imports/, ready for
     lip_sync_audio/add_audio. voice='piper:id_ID-news_tts-medium',
     'edge:id-ID-GadisNeural', 'f5:<registered-name>' or 'chatterbox:ms'.
@@ -1100,9 +1102,19 @@ async def text_to_speech(text: str, voice: str | None = None, engine: str = "pip
     Default Piper is offline. Explicit Edge sends text to Microsoft (unofficial API);
     Chatterbox sends text to a quota-limited HF Space (no Indonesian). No fallback to
     online engines. F5 references require the user's own voice or permission to use it.
+    F5 voice_reference (WAV, relative to imports or absolute) requires exact
+    reference_text; built-in f5:female_adult/male_adult/elder/child use synthetic Piper.
     Returns path, duration_s, engine, voice, cached and privacy for online engines."""
     return await anyio.to_thread.run_sync(lambda: tts.synthesize(
-        text, voice, engine, language, rate, pitch, gender, output))
+        text, voice, engine, language, rate, pitch, gender, output, voice_reference, reference_text))
+
+
+@mcp.tool()
+async def cancel_tts() -> dict:
+    """Cancel an active F5 inference and release its CPU worker/model RAM.
+    The next F5 request starts a fresh worker. Cached WAVs remain available."""
+    await anyio.to_thread.run_sync(tts.close)
+    return {"stopped": True, "engine": "f5"}
 
 
 @mcp.tool()
@@ -1138,6 +1150,34 @@ async def auto_sfx(characters: list[str] | None = None, kinds: list[str] | None 
     return await run("auto_sfx", characters=characters, kinds=kinds, surface=surface,
                      volume=volume, seed=seed, frame_start=frame_start,
                      frame_end=frame_end, clear=clear)
+
+
+@mcp.tool()
+async def auto_music(mood: str = "auto", duration: float | None = None,
+                     tempo: float | None = None, key: str | None = None,
+                     intensity: float = .6, seed: int = 0, volume: float = .35,
+                     follow_cuts: bool = True, follow_emotion: bool = True,
+                     sections: list[dict] | None = None, fade_in: float = 1.,
+                     fade_out: float = 2., clear: bool = False,
+                     backend: Literal["auto", "soundfont", "synth"] = "auto") -> dict:
+    """Compose original offline music, place it and duck -12 dB under dialog.
+    Moods: happy/ceria, warm/hangat, sad/haru/sedih, romantic/romantis,
+    tense/tegang, mysterious/misterius, epic/epik, calm/tenang, playful/lucu,
+    nostalgic/nostalgia, dreamy, nusantara. Auto reads emotions, look, weather,
+    location. Cuts/titles receive tonal accents; emotion peaks shape dynamics.
+    duration defaults to scene range (seconds, max 600); tempo 40..180 BPM;
+    key e.g. D minor. sections=[{frame, name?, intensity?}] adds dynamic cues.
+    backend=auto uses a local GM SoundFont when installed, otherwise numpy synth.
+    No downloads/network. Stereo 48 kHz 16-bit WAV,
+    about -16 LUFS/-1 dBTP before volume/fades/ducking. Content-hash cache in
+    imports/audio/music/generated. Reruns replace only owned scores; clear removes
+    those scores. Returns mood/key/tempo, frames, sections, accents, path/hash,
+    measured loudness and timings. Rule-based scoring, approximate LUFS/true peak.
+    """
+    return await run("auto_music", mood=mood, duration=duration, tempo=tempo, key=key,
+        intensity=intensity, seed=seed, volume=volume, follow_cuts=follow_cuts,
+        follow_emotion=follow_emotion, sections=sections, fade_in=fade_in, fade_out=fade_out, clear=clear,
+        backend=backend)
 
 
 @mcp.tool()
@@ -1375,7 +1415,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           tts_engine: str = "piper", voices: dict | None = None,
                           look: str | dict | None = None,
                           body_language: bool = True, style: str | None = None,
-                          life: float = 1.0) -> dict:
+                          life: float = 1.0, music: str | None = "auto") -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     style="animated_film" or GAYA:/STYLE: animasi unifies the render look.
@@ -1403,6 +1443,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     own voice or used with permission. Existing audio always takes precedence.
     sound=True adds procedural footsteps, sit/stand and ambience after animation;
     sound=False disables generation. Results include sfx strip counts and paths.
+    music='auto' adds an original offline score; MUSIC:/MUSIK: sets its mood or
+    none/tanpa. music=None disables it independently of Foley. Plans report key/tempo.
     Outfit: casual/formal/sport/summer/winter (explicit clothes overrides it).
     Beard: catalog name or True for a seeded installed choice. Text also recognizes
     gaun/dress/rok/skirt, jenggot/beard/kumis/moustache, kacamata/glasses and topi/hat;
@@ -1422,7 +1464,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     import time
     from engine.script_plan import parse_script
     started = time.perf_counter()
-    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look, style=style)
+    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look, style=style, music=music)
     parse_warnings = list(prepared["warnings"])
     casting = tts.cast(prepared["characters"], tts_engine, language, seed, voices) if voice else {}
     report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
@@ -1445,7 +1487,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
                   language=language, seed=seed, build=build, sound=sound, look=look,
-                  body_language=body_language, style=style, life=life)
+                  body_language=body_language, style=style, life=life, music=music)
     r["plan"]["warnings"] = list(dict.fromkeys(parse_warnings + r["plan"].get("warnings", [])))
     r["voices"] = casting
     r["generated_files"] = report["generated_files"]
@@ -1467,7 +1509,7 @@ async def script_to_film(script: dict | str, name: str | None = None,
                          tts_engine: str = "piper", voices: dict | None = None,
                          look: str | dict | None = None, body_language: bool = True,
                          scene_index: int | None = None, style: str | None = None,
-                         life: float = 1.0) -> dict:
+                         life: float = 1.0, music: str | None = "auto") -> dict:
     """Build a film from ADEGAN/SCENE headers or {title, characters, scenes:[...]}.
 
     Each scene has name, environment, look, weather, lighting, card, transition_in,
@@ -1483,12 +1525,15 @@ async def script_to_film(script: dict | str, name: str | None = None,
     This replaces the current editor scene; save existing work first. Inspect each
     scene with open_film_scene and Eevee. Then film_render_options + render_film.
     Voice/privacy and component limitations match script_to_scene.
+    MUSIC:/MUSIK: selects each scene's score (auto by default); music=None disables
+    all generated scores. Film renders join compatible moods and crossfade changes,
+    scoring cards/cuts and ducking speech on the final timeline.
     """
     from engine.face_life import intensity as life_intensity
     life = life_intensity(life)
     from engine.film_plan import parse_film
     import copy
-    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting, style=style)
+    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting, style=style, music=music)
     casting = tts.cast(plan["characters"], tts_engine, language, seed, voices) if voice else {}
     plan["voices"] = casting
     if not build:
@@ -1516,7 +1561,7 @@ async def script_to_film(script: dict | str, name: str | None = None,
     prepared["warnings"] = list(dict.fromkeys(prepared["warnings"] + [w for r in reports for w in r["warnings"]]))
     result = await run("script_to_film", script=script, name=plan["name"], lighting=lighting,
         camera=camera, subtitles=subtitles, language=language, seed=seed, build=True,
-        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared, style=style, life=life)
+        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared, style=style, life=life, music=music)
     result["voices"] = casting
     result["generated_files"] = [f for r in reports for f in r["generated_files"]]
     result["cache_hits"] = sum(r["cache_hits"] for r in reports)
@@ -1773,6 +1818,7 @@ if os.environ.get("CHAR3D_ALLOW_PYTHON") == "1":
 async def engine_shutdown() -> str:
     """Stop the Blender engine started by this server (it restarts on the next call)."""
     await anyio.to_thread.run_sync(engine.stop)
+    await anyio.to_thread.run_sync(tts.close)
     return "stopped"
 
 

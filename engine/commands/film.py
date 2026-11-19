@@ -55,9 +55,9 @@ def _embed(manifest, index, path):
 @command('script_to_film')
 def script_to_film(script, name=None, environment=None, lighting='studio', camera='mixed',
                    subtitles=True, language='auto', seed=0, build=True, sound=True,
-                   look=None, body_language=True, scene_index=None, _plan=None, style=None, life=1.):
+                   look=None, body_language=True, scene_index=None, _plan=None, style=None, life=1., music='auto'):
     plan = copy.deepcopy(_plan) if _plan else parse_film(script, name, environment, seed,
-        bpy.context.scene.render.fps, look, lighting, style)
+        bpy.context.scene.render.fps, look, lighting, style, music)
     if not build:
         return {'plan': plan, 'kind': 'film', 'built': False, 'frames': plan['estimated_frames'],
                 'duration_s': plan['duration_s'], 'warnings': plan['warnings']}
@@ -65,7 +65,7 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
         raise ValueError('Wait for or cancel the current film render before rebuilding')
     path = manifest_path(plan['name'])
     options = dict(camera=camera, subtitles=subtitles, language=language, seed=seed,
-                   sound=sound, body_language=body_language, life=life)
+                   sound=sound, body_language=body_language, life=life, music=music)
     # Validate every scene through the original pipeline before clearing the editor.
     for scene in plan['scenes']:
         dispatch('script_to_scene', dict(script=scene['plan'], lighting=scene['lighting'], build=False, **options))
@@ -103,6 +103,7 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
                 character_seeds=scene['character_seeds'], **options))
             scene.update(frames=result['frames'], duration_s=result['duration_s'], characters=result['characters'],
                          shots=result['shots'], warnings=result['warnings'], status='built', timings=result['timings'])
+            scene['music'] = result.get('music')
             # Store the resolved build parameters as continuity evidence, including exact garments.
             if all(c['realistic'] for c in result['characters'].values()):
                 scene['appearance'] = {ident: char.pop('appearance') for ident, char in result['characters'].items()}
@@ -267,7 +268,19 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
             if job['size'] and job['size'] != pixels:
                 raise ValueError('Scene dimensions differ; choose a common film resolution')
             job['size'] = pixels
-            key = content_hash(scene['project'], dict(settings, renderer_version=1))
+            from .music import PROP as MUSIC_PROP, scene_context
+            from .audio import _sound_strips, _speech_ranges
+            scene['score'] = json.loads(sc.get(MUSIC_PROP, 'null'))
+            if not any(s.get(MUSIC_PROP) and not s.mute for s in _sound_strips(sc)):
+                scene['score'] = None
+            _mood, scene['score_cuts'], scene['score_emotions'] = scene_context(sc)
+            scene['speech'] = _speech_ranges(sc)
+            # The film gets one independent score covering cards and cuts. Mute
+            # only owned preview music in temporary worker snapshots.
+            for strip in _sound_strips(sc):
+                if strip.get(MUSIC_PROP):
+                    strip.mute = True
+            key = content_hash(scene['project'], dict(settings, renderer_version=2))
             cache = context.resolve(f'film_cache/{key}.mp4', 'renders')
             reuse = bool(resume and os.path.isfile(cache) and os.path.getsize(cache))
             entry = dict(index=scene['index'], name=scene['name'], path=cache, hash=key,
@@ -300,6 +313,9 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
                 png = os.path.join(directory, f'card{scene["index"]}.png')
                 draw_title(png, *pixels, card)
                 scene['card_png'] = png
+        from ..music.film import score_film
+        job['music'] = score_film(manifest['scenes'], manifest['fps'], job['frames'][1],
+                                 context.resolve('audio/music/generated', 'imports'))
         if job['chunks']:
             srt = os.path.splitext(output)[0]+'.srt'
             count = subs.write_srt(srt, sorted(job['chunks'], key=lambda c: c['start']), manifest['fps'], 1, job['frames'][1])
@@ -327,6 +343,7 @@ def _compose(job):
     fps = job['manifest']['fps']
     spec = dict(width=job['size'][0], height=job['size'][1], fps=fps, frames=job['frames'][1],
                 out_base=os.path.join(job['directory'], 'composed_'), overlays=job['overlays'],
+                music=job.get('music'),
                 scenes=[dict(s, movie=e['path']) for s, e in zip(job['manifest']['scenes'], job['scenes'])])
     path = os.path.join(job['directory'], 'compose.json')
     _write(path, spec)
@@ -417,7 +434,7 @@ def report(job):
         path=job['path'], stage=job['stage'], quality=job['quality'], size=job['size'], frames=job['frames'],
         progress=f'{done}/{total}', progress_unit='stages', scenes=job['scenes'], elapsed_s=round(elapsed, 1),
         eta_s=round(eta, 1), estimate=job['estimate'],
-        bytes=job.get('bytes'), subtitles=job.get('subtitles'), has_audio=job.get('status') == 'done',
+        bytes=job.get('bytes'), subtitles=job.get('subtitles'), music=job.get('music'), has_audio=job.get('status') == 'done',
         error=job.get('error')).items() if v is not None}
 
 

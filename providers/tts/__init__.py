@@ -83,6 +83,7 @@ class TTS:
         self.workspace = Path(workspace).resolve()
         self.root = Path(model_dir or os.environ.get("CHAR3D_TTS_DIR", "~/.local/share/char3d/tts")).expanduser()
         self.backends = {name: factory(self.root) for name, factory in REGISTRY.items()}
+        self.backends['f5'].reference_dir = self.workspace/'imports/audio/tts/f5_references'
         self._lock = threading.Lock()
 
     def catalog(self, language=None, engine=None):
@@ -121,9 +122,14 @@ class TTS:
             candidates = backend.voices(lang)
             if not name:
                 matching = [v for v in candidates if v["gender"] == ("female" if gender < .5 else "male")]
+                if chosen == 'f5' and age < 16:
+                    matching = [v for v in candidates if float(v.get('age', 30)) < 16] or matching
                 options = matching or candidates
                 installed = [v for v in options if v.get("installed")]
                 options = installed or options
+                if chosen == 'f5':
+                    # Age-tagged references already carry the intended pitch.
+                    options = sorted(options, key=lambda v: abs(float(v.get('age', 30))-age))
                 if options:
                     name = options[0]["id"].split(":", 1)[1]
             rng = random.Random(hashlib.sha256(f"{seed}:{ident}:{gender}:{age}".encode()).digest())
@@ -133,6 +139,8 @@ class TTS:
                 base_f0 = backend.base_f0(name) if name and hasattr(backend, "base_f0") else 210.
                 base = 12 * math.log2(target_f0(gender, age) / base_f0)
                 pitch = round(max(-12., min(12., base + rng.uniform(-.6, .6))), 2)
+            elif chosen == 'f5':
+                pitch = round(rng.uniform(-.25, .25), 2)
             else:
                 base = 2.0 if age < 16 else -.8 if age > 55 else 0
                 pitch = round(base + rng.uniform(-.45, .45), 2)
@@ -158,13 +166,19 @@ class TTS:
         return result
 
     def synthesize(self, text, voice=None, engine="piper", language="id", rate=1., pitch=0.,
-                   gender=None, output=None):
+                   gender=None, output=None, voice_reference=None, reference_text=None):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("TTS text must not be empty")
         rate, pitch = controls(rate, pitch)
         engine, name = parse_voice(voice, engine)
         backend = self.backends[engine]
         lang = "id" if language in (None, "auto") else language
+        reference = None
+        if voice_reference is not None or reference_text is not None:
+            if engine != 'f5':
+                raise ValueError('voice_reference/reference_text are supported only by engine=f5')
+            reference = backend.reference_config(voice_reference or '', reference_text or '', self.workspace/'imports')
+            name = 'custom_reference'
         if name is None:
             profile = self.cast([{"id": "speaker", "gender": gender if gender is not None else .5}],
                                 engine, lang)["speaker"]
@@ -173,12 +187,16 @@ class TTS:
             _, name = parse_voice(profile["voice"], engine)
         if not backend.available():
             raise RuntimeError(f"{engine} TTS is unavailable. Run: {backend.install_hint()}")
+        if engine == 'f5' and reference is None:
+            # Materialize a synthetic reference only on actual synthesis, before
+            # hashing, so replacing its WAV also invalidates the speech cache.
+            reference = backend._reference(backend.config(name))
         try:
             version = importlib.metadata.version(PACKAGES.get(engine, engine))
         except importlib.metadata.PackageNotFoundError:
             version = "unknown"
         if hasattr(backend, "fingerprint"):
-            version += ":" + backend.fingerprint(name)
+            version += ":" + (backend.fingerprint(name, reference) if reference else backend.fingerprint(name))
         key = cache_key(engine, name, text, lang, rate, pitch, version)
         imports = self.workspace / "imports"
         folder = imports / "audio" / "tts"
@@ -201,11 +219,14 @@ class TTS:
             if not cached:
                 with tempfile.TemporaryDirectory(dir=folder) as tmp:
                     raw = Path(tmp) / "raw.wav"
-                    backend.synthesize(text, name, lang, rate, pitch, raw)
+                    backend_result = (backend.synthesize(text, name, lang, rate, pitch, raw, config=reference)
+                                      if reference else backend.synthesize(text, name, lang, rate, pitch, raw))
                     samples, sr = audio.read(raw)
                     normalized = Path(tmp) / "normalized.wav"
                     audio.write(normalized, audio.normalize(samples, sr), sr)
                     os.replace(normalized, path)
+                    if engine == 'f5':
+                        path.with_suffix('.json').write_text(json.dumps(backend_result, indent=2)+'\n')
             with wave.open(str(path), "rb") as wav:
                 duration = wav.getnframes() / wav.getframerate()
             if target and target != path:
@@ -217,7 +238,18 @@ class TTS:
                   "rate": rate, "pitch": pitch, "cached": cached}
         if backend.online:
             result["privacy"] = backend.privacy
+        if engine == 'f5':
+            metadata = folder/(key+'.json')
+            if metadata.is_file():
+                try:
+                    result['inference'] = json.loads(metadata.read_text())
+                except (OSError, ValueError):
+                    pass  # A valid cached WAV is usable without timing metadata.
         return result
+
+    def close(self):
+        """Stop the session's F5 worker, also safe while inference is in flight."""
+        self.backends['f5'].close()
 
     def prepare(self, lines, casting, language="id"):
         """Copy/prepare script beats or dialog lines. Existing recordings always win.

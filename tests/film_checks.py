@@ -16,11 +16,17 @@ async def run(call, text_of):
     import numpy as np
     (ROOT/'output').mkdir(exist_ok=True)
     (ROOT/'output/film_script.txt').write_text(SCRIPT)
+    clay_only = os.environ.get('CHAR3D_AUDIO_CLAY_ONLY') == '1'
+    draft_size = dict(width=320 if clay_only else 640, height=180 if clay_only else 360)
 
     async def data(tool, **args):
         return json.loads(text_of(await call(tool, **args))[0])
 
     await data('scene_info')
+    # Configure writable MPFB test data/logs through the shared new_scene hook,
+    # then initialize its services before the film's internal factory resets.
+    await call('new_scene', frame_end=2)
+    await data('mpfb_assets')
     initial = await data('scene_info')
     parsed = await data('script_to_film', script=SCRIPT, name='film_acceptance', build=False, language='id', seed=7)
     assert parsed == await data('script_to_film', script=SCRIPT, name='film_acceptance', build=False, language='id', seed=7)
@@ -52,8 +58,11 @@ async def run(call, text_of):
         await data('run_blender_python', code="bpy.context.scene.render.threads_mode='FIXED'\nbpy.context.scene.render.threads=4\nbpy.context.scene.eevee.taa_render_samples=8\nresult=True")
         quick = await data('render_frames', frames=[8], camera='scene', engine_name='workbench', size=256)
         assert Path(quick['path']).is_file()
-        target = ROOT / 'output' / f'film_scene_{s["index"]:02d}_eevee.png'
-        if not ((os.environ.get('CHAR3D_FILM_RESUME') == '1' or os.environ.get('CHAR3D_FILM_SKIP_STILLS') == '1') and target.exists()):
+        suffix = 'clay' if clay_only else 'eevee'
+        target = ROOT / 'output' / f'film_scene_{s["index"]:02d}_{suffix}.png'
+        if clay_only:
+            shutil.copyfile(quick['path'], target)
+        elif not ((os.environ.get('CHAR3D_FILM_RESUME') == '1' or os.environ.get('CHAR3D_FILM_SKIP_STILLS') == '1') and target.exists()):
             rendered = await data('render_frames', frames=[8], camera='scene', engine_name='eevee', size=384)
             shutil.copyfile(rendered['path'], target)
         stills.append(target)
@@ -65,7 +74,7 @@ async def run(call, text_of):
     assert len(opts['scenes']) == 3 and len(opts['options']) == 6
     assert all(opts['options'][i]['total_s'] <= opts['options'][i+1]['total_s'] for i in range(5))
     movie = await data('render_film', name=manifest['name'], path='film_acceptance.mp4',
-                       quality='draft', width=640, height=360)
+                       quality='draft', **draft_size)
     for _ in range(600):
         movie = await data('render_status', job_id=movie['job_id'])
         if movie['status'] != 'running':
@@ -99,10 +108,10 @@ async def run(call, text_of):
         assert scene['film_frames'][0]/24-.05 <= seconds[2*i] <= (scene['film_frames'][0]+12)/24
     # Unchanged scenes are reused; composition still runs with global captions.
     reuse = await data('render_film', name=manifest['name'], path='film_acceptance_resume.mp4',
-                       quality='draft', width=640, height=360, wait=True)
+                       quality='draft', **draft_size, wait=True)
     assert reuse['status'] == 'done' and all(s['reused'] for s in reuse['scenes'])
     cancel = await data('render_film', name=manifest['name'], path='film_cancelled.mp4',
-                        quality='draft', width=640, height=360, resume=False)
+                        quality='draft', **draft_size, resume=False)
     cancelled = await data('cancel_render', job_id=cancel['job_id'])
     assert cancelled['status'] == 'cancelled'
     assert all(s['status'] != 'done' for s in cancelled['scenes'])
@@ -114,7 +123,7 @@ async def run(call, text_of):
     assert untouched == [hashlib.sha256(Path(s['project']).read_bytes()).hexdigest() for s in (a,b)]
     # Save an edited project: only that blend's content hash becomes invalid.
     from engine.film_plan import content_hash
-    settings = dict(quality='draft', resolution=None, width=640, height=360, vertical=False, renderer_version=1)
+    settings = dict(quality='draft', resolution=None, **draft_size, vertical=False, renderer_version=2)
     old_hash = content_hash(c['project'], settings)
     await data('open_film_scene', name=manifest['name'], index=3)
     await data('add_title', text='Sampai besok', style='corner', duration_s=.5, name='FilmEdit')
@@ -125,7 +134,7 @@ async def run(call, text_of):
     await data('remove_graphics', name='FilmEdit')
     await data('save_project', path=c['project'])
     movie = await data('render_film', name=manifest['name'], path='film_acceptance.mp4',
-                       quality='draft', width=640, height=360, wait=True)
+                       quality='draft', **draft_size, wait=True)
     assert movie['status'] == 'done' and [s['reused'] for s in movie['scenes']] == [True, True, False]
     manifest = await data('film_info', name=manifest['name'])
     rows = []
