@@ -106,7 +106,7 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                   move="static", lead_frames=4, gestures="presenter", expression="smile",
                   expression_strength=0.3, blink=True, motion=True, idle=True,
                   frame_start=None, frame_end=None, shot_prefix="Dialog", two_shot_angle=0.0,
-                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False):
+                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False, life=1., seed=3):
     """Perform lip-synced dialog lines: gaze, listener nods, gestures, blinks and cameras.
 
     turns: [{"speaker": rig name, "start": frame, "end": frame}] (from lip sync).
@@ -121,6 +121,8 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
     from .gesture import talk_gestures
     from .talk import talk_motion
 
+    from ..face_life import intensity as life_intensity
+    life = life_intensity(life)
     if camera not in ("mixed", "singles", "two_shot", "none"):
         raise ValueError("camera must be mixed, singles, two_shot or none")
     if not turns:
@@ -155,26 +157,41 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
             except (ValueError, RuntimeError):
                 pass      # no face shapes (mannequin)
 
+    if life and motion and expression:
+        from .face import auto_expression, EXPRESSIONS
+        from ..script_plan import EMOTIONS
+        for n in names:
+            try:
+                cues = []
+                for t in turns:
+                    mood = EMOTIONS.get(t.get('emotion'), t.get('emotion'))
+                    if t['speaker'] == n and mood in EXPRESSIONS:
+                        cues.append(dict(frame=t['start'], expression=mood, strength=.65))
+                auto_expression(n, f0, f1, base=expression or 'neutral',
+                                base_strength=float(expression_strength), cues=cues)
+            except (ValueError, RuntimeError):
+                pass  # silent listener or mannequin
+
     if body_language:
         from .motion import dialog_body
         report["body_language"] = dialog_body(turns, names)
 
     for i, (n, rig) in enumerate(rigs.items()):
         others = [m for m in names if m != n]
-        if blink:
+        if blink and not life:
             try:
-                auto_blink(n, f0, f1, seed=7 + 13 * i)
+                auto_blink(n, f0, f1, seed=int(seed) + 4 + 13 * i)
             except (ValueError, RuntimeError):
                 pass
         if motion:
             sched = _look_schedule(n, turns, others, f0, f1)
-            r = talk_motion(n, f0, f1, look_at=sched, look_at_camera=False, seed=3 + 11 * i,
-                            listen_to=others[0] if len(others) == 1 else None)
+            r = talk_motion(n, f0, f1, look_at=sched, look_at_camera=False, seed=int(seed) + 11 * i,
+                            listen_to=others, life=life, _defer_life=True)
             report.setdefault("motion", {})[n] = {"listener_nods": len(r.get("listener_nods", [])),
                                                   "emphasis": len(r.get("emphasis_frames", []))}
         if gestures:
             try:
-                g = talk_gestures(n, f0, f1, style=gestures, seed=5 + 17 * i)
+                g = talk_gestures(n, f0, f1, style=gestures, seed=int(seed) + 2 + 17 * i)
                 report.setdefault("gestures", {})[n] = {
                     "beats": len(g.get("gestures", [])),
                     "semantic": [s["word"] for s in g.get("semantic", [])]}
@@ -218,6 +235,17 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                           "angle": round(angle, 1), "occlusion": r["occlusion"]})
         report["shots"] = shots
 
+    if motion:
+        from .face_life import face_life
+        for i, n in enumerate(names):
+            try:
+                report.setdefault('face_life', {})[n] = face_life(n, f0, f1, intensity=life,
+                    seed=int(seed)+11*i, listen_to=[m for m in names if m != n], blink=blink)
+            except (ValueError, RuntimeError) as exc:
+                # Missing face targets are expected for mannequins, other failures
+                # should remain visible to the caller.
+                if 'no ARKit' not in str(exc) and 'faceunits01' not in str(exc):
+                    raise
     sc.frame_set(f0)
     return report
 
@@ -237,7 +265,7 @@ def line_frames(line, fps):
 @command("dialog")
 def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
            start_frame=1, gap_s=0.35, camera="mixed", shot="medium",
-           gestures="presenter", expression="smile", language=None, perform=True, body_language=False):
+           gestures="presenter", expression="smile", language=None, perform=True, body_language=False, life=1., seed=0):
     """In-process dialog for scene orchestration. Audio accepts pre-transcribed `words`.
 
     perform=False authors only speech, leaving performance/cameras for a later pass.
@@ -289,7 +317,7 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
         frame = b + 1 + round(float(ln.get("pause_s", gap_s)) * fps)
     sc.frame_end = max(sc.frame_end, turns[-1]["end"])
     report = dialog_direct(turns, characters=cast, camera=camera, shot=shot,
-                           gestures=gestures, expression=expression, body_language=body_language) if perform else {
+                           gestures=gestures, expression=expression, body_language=body_language, life=life, seed=int(seed)+3) if perform else {
                                "frames": [int(start_frame), turns[-1]["end"]], "shots": []}
     return {**report, "lines": turns, "next_start_frame": max(frame, report["frames"][1] + 1),
             "warnings": list(dict.fromkeys(warnings))}

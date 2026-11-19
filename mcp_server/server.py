@@ -760,13 +760,17 @@ async def cinematic_look(preset: str = "golden_hour", intensity: float = 1.0,
 
 
 @mcp.tool()
-async def render_style(style: Literal['none', 'anime', 'toon', 'clay', 'film', 'noir', 'vintage'] = 'none',
+async def render_style(style: Literal['none', 'anime', 'toon', 'clay', 'film', 'noir', 'vintage', 'animated_film', 'film_animasi', 'animasi'] = 'none',
                        strength: float = 1.0, outline: bool | None = None,
                        grade: dict | None = None, letterbox: bool | float | None = None) -> dict:
     """Set a non-destructive scene look, saved in .blend and used by lit stills/videos.
 
     none restores today's output; draft/workbench always keeps its existing look.
     anime/toon uses texture-preserving cel shading and opaque silhouette outlines;
+    animated_film (film_animasi/animasi) uses four softened light masses, colored
+    shadows and form gradients across humans/worlds, filtered color detail, warm
+    skin, crisp eyes and stronger rims. Palettes follow cinematic looks. Original
+    materials, alpha masks and practical emission survive.
     clay is uniform matte clay; film uses AgX, glow, vignette and grain; noir is high
     contrast monochrome; vintage is warm and faded. Alpha hair/eyes stay readable.
     strength: 0..1. outline: anime default True, False disables silhouettes.
@@ -774,7 +778,8 @@ async def render_style(style: Literal['none', 'anime', 'toon', 'clay', 'film', '
     temperature/tint (-1..1), teal_orange (bool). letterbox=True adds 2.39:1 bars,
     or provide an aspect 1..4. Captions/titles stay above the grade and bars.
     render_options includes the style's render cost. Custom non-Principled shaders
-    keep their shading; Cycles uses Toon BSDF rather than Eevee's light ramp."""
+    keep their shading. Anime uses Toon BSDF in Cycles; animated_film uses physical
+    material/softbox/palette changes there instead of Eevee's light masses."""
     return await run('render_style', style=style, strength=strength, outline=outline,
                      grade=grade, letterbox=letterbox)
 
@@ -1210,8 +1215,10 @@ async def lip_sync_audio(character: str, audio: str, start_frame: int = 1,
 async def talk_motion(character: str, frame_start: int | None = None, frame_end: int | None = None,
                       intensity: float = 1.0, head: bool = True, eyes: bool = True,
                       brows: bool = True, look_at_camera: bool = True, seed: int = 3,
-                      look_at: str | None = None, listen_to: str | None = None) -> dict:
+                      look_at: str | None = None, listen_to: str | list[str] | None = None, life: float = 1.0) -> dict:
     """Make a speaking character feel alive: speech-driven head nods on stressed words,
+    life=1 adds seeded micro-expressions, blink variation, micro-saccades and breathing
+    in independent morphs; life=0 disables that layer (range 0..2).
     gentle head drift and phrase tilts, brow flashes, and eye saccades with occasional
     'thinking' glances. Rhythm comes from timeline voice audio (or the lip-sync keys).
     Layered on top: neck/head and brow/eye-gaze keys follow live posed head targets.
@@ -1225,7 +1232,24 @@ async def talk_motion(character: str, frame_start: int | None = None, frame_end:
     return await run("talk_motion", character=character, frame_start=frame_start,
                      frame_end=frame_end, intensity=intensity, head=head, eyes=eyes, brows=brows,
                      look_at_camera=look_at_camera, seed=seed, look_at=look_at,
-                     listen_to=listen_to)
+                     listen_to=listen_to, life=life)
+
+
+@mcp.tool()
+async def face_life(character: str, frame_start: int | None = None, frame_end: int | None = None,
+                    intensity: float = 1.0, seed: int = 3,
+                    listen_to: str | list[str] | None = None, clear: bool = False) -> dict:
+    """Bake seeded micro-expressions, held gaze/micro-saccades, varied emotion/cut
+    blinks, listener reactions and breathing as independent additive morphs.
+    Run after expressions/lip sync/gaze/cameras. Original viseme/body/arm keys stay
+    intact; m/b/p closures gate mouth motion. intensity 0..2; 0/clear removes only
+    this layer in range. Repeating the same seed replaces it deterministically.
+    Eyelids follow vertical gaze. Authored pupil morphs are optional; eyeballs are
+    never scaled. Wordless lip sync uses voice/viseme phrase timing.
+    Saved native morph animation also works in video snapshots."""
+    return await run('face_life', character=character, frame_start=frame_start,
+                     frame_end=frame_end, intensity=intensity, seed=seed,
+                     listen_to=listen_to, clear=clear)
 
 
 @mcp.tool()
@@ -1350,9 +1374,12 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           build: bool = True, sound: bool = True, voice: bool = True,
                           tts_engine: str = "piper", voices: dict | None = None,
                           look: str | dict | None = None,
-                          body_language: bool = True) -> dict:
+                          body_language: bool = True, style: str | None = None,
+                          life: float = 1.0) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
+    style="animated_film" or GAYA:/STYLE: animasi unifies the render look.
+    life=1 enables seeded additive face life; 0 disables it (range 0..2).
     Optional look="golden_hour" or SUASANA:/LOOK:/MOOD: senja selects atmosphere.
     look=None with no header keeps existing output/cost; plan recommends a look.
     Text: JUDUL/TITLE: ..., LOKASI/LOCATION: podcast_studio, then
@@ -1390,10 +1417,12 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     without facial animation. Returns plan, character rig/mesh map, frames, shots,
     duration_s, warnings and per-stage timings. Nothing is saved automatically.
     """
+    from engine.face_life import intensity as life_intensity
+    life = life_intensity(life)
     import time
     from engine.script_plan import parse_script
     started = time.perf_counter()
-    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look)
+    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look, style=style)
     parse_warnings = list(prepared["warnings"])
     casting = tts.cast(prepared["characters"], tts_engine, language, seed, voices) if voice else {}
     report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
@@ -1416,7 +1445,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
                   language=language, seed=seed, build=build, sound=sound, look=look,
-                  body_language=body_language)
+                  body_language=body_language, style=style, life=life)
     r["plan"]["warnings"] = list(dict.fromkeys(parse_warnings + r["plan"].get("warnings", [])))
     r["voices"] = casting
     r["generated_files"] = report["generated_files"]
@@ -1437,7 +1466,8 @@ async def script_to_film(script: dict | str, name: str | None = None,
                          build: bool = True, sound: bool = True, voice: bool = True,
                          tts_engine: str = "piper", voices: dict | None = None,
                          look: str | dict | None = None, body_language: bool = True,
-                         scene_index: int | None = None) -> dict:
+                         scene_index: int | None = None, style: str | None = None,
+                         life: float = 1.0) -> dict:
     """Build a film from ADEGAN/SCENE headers or {title, characters, scenes:[...]}.
 
     Each scene has name, environment, look, weather, lighting, card, transition_in,
@@ -1454,9 +1484,11 @@ async def script_to_film(script: dict | str, name: str | None = None,
     scene with open_film_scene and Eevee. Then film_render_options + render_film.
     Voice/privacy and component limitations match script_to_scene.
     """
+    from engine.face_life import intensity as life_intensity
+    life = life_intensity(life)
     from engine.film_plan import parse_film
     import copy
-    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting)
+    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting, style=style)
     casting = tts.cast(plan["characters"], tts_engine, language, seed, voices) if voice else {}
     plan["voices"] = casting
     if not build:
@@ -1484,7 +1516,7 @@ async def script_to_film(script: dict | str, name: str | None = None,
     prepared["warnings"] = list(dict.fromkeys(prepared["warnings"] + [w for r in reports for w in r["warnings"]]))
     result = await run("script_to_film", script=script, name=plan["name"], lighting=lighting,
         camera=camera, subtitles=subtitles, language=language, seed=seed, build=True,
-        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared)
+        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared, style=style, life=life)
     result["voices"] = casting
     result["generated_files"] = [f for r in reports for f in r["generated_files"]]
     result["cache_hits"] = sum(r["cache_hits"] for r in reports)
@@ -1554,7 +1586,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
                  gestures: Literal["calm", "presenter", "energetic"] | None = "presenter",
                  expression: Expression | None = "smile", language: str | None = None,
                  voice: bool = False, tts_engine: str = "piper",
-                 voices: dict | None = None, seed: int = 0, body_language: bool = False) -> dict:
+                 voices: dict | None = None, seed: int = 0, body_language: bool = False, life: float = 1.0) -> dict:
     """A conversation between 2-4 characters (realistic humans with faces work best), in one
     call. lines = [{"speaker": "Ana_rig", "audio": "audio/ana1.wav"},
                    {"speaker": "Budi_rig", "text": "Wah, ide yang bagus!"}, ...]
@@ -1576,6 +1608,8 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     add_subtitles afterwards for captions. body_language=True optionally layers explicit
     line emotion or locally inferred body emotion; its default is False.
     Returns turns, shots, next_start_frame."""
+    from engine.face_life import intensity as life_intensity
+    life = life_intensity(life)
     import time
     started = time.perf_counter()
     if not lines or any(not ln.get("speaker") or not (ln.get("audio") or ln.get("text")) for ln in lines):
@@ -1597,7 +1631,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     d = await run("dialog", lines=prepared, characters=characters or speakers, stage=stage,
                   layout=layout, distance=distance, start_frame=start_frame, gap_s=gap_s,
                   camera=camera, shot=shot, gestures=gestures, expression=expression, language=language,
-                  body_language=body_language)
+                  body_language=body_language, life=life, seed=seed)
     d.update(voices=casting, generated_files=report["generated_files"], cache_hits=report["cache_hits"])
     d["warnings"] = list(dict.fromkeys(d.get("warnings", []) + report["warnings"]))
     d["timings"] = {"tts": report["tts_seconds"], "total": round(time.perf_counter() - started, 4)}

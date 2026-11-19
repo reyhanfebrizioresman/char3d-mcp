@@ -63,7 +63,7 @@ def compositor_config(sc, style):
                     grade[key] = 0
     style_name = style['style'] if style else 'cinematic'
     weight = style['strength'] if style else 0
-    effects = dict(bloom=max(cfg['bloom']*k, .08*weight if style_name == 'film' else 0),
+    effects = dict(bloom=max(cfg['bloom']*k, {'film': .08, 'animated_film': .08}.get(style_name, 0)*weight),
         vignette=max(grade.pop('vignette', .09*k), {'film': .17, 'noir': .24, 'vintage': .11}.get(style_name, 0)*weight),
         grain=max(grade.pop('grain', 0), (.008 if style_name == 'noir' else .004 if style_name in ('film', 'vintage') else 0)*weight),
         lifted_blacks=max(grade.pop('lifted_blacks', 0), .025*weight if style_name == 'vintage' else 0),

@@ -17,7 +17,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 from . import command
 from .anim import _key_rot, semantic_map
-from .face import _basemesh, _ensure_face, _face_meshes, _set
+from .face import _basemesh, _ensure_face, _face_meshes, _set, VISEMES, MOUTH_UNITS
 from .gaze import head_frame
 from .util import obj_or_raise
 
@@ -40,13 +40,24 @@ def _fcurves(action):
     return list(action.fcurves)
 
 
+def _data_curves(data):
+    """Only this ID's slot; imported animations can share one multi-slot Action."""
+    ad = data.animation_data if data else None
+    action = ad.action if ad else None
+    if action is not None and hasattr(action, 'layers'):
+        slot = ad.action_slot
+        if slot is None:
+            return []
+        bags = [strip.channelbag(slot) for layer in action.layers for strip in layer.strips]
+        return [fc for bag in bags if bag is not None for fc in bag.fcurves]
+    return _fcurves(action)
+
+
 def _viseme_activity(base, f0, f1):
     """Per-frame sum of mouth shape-key values from the lip-sync animation."""
     sk = base.data.shape_keys
-    act = sk.animation_data.action if sk and sk.animation_data else None
-    curves = [fc for fc in _fcurves(act)
-              if fc.data_path.startswith('key_blocks["') and not fc.data_path.startswith('key_blocks["eye')
-              and not fc.data_path.startswith('key_blocks["brow')]
+    paths = {f'key_blocks["{name}"].value' for name in (*VISEMES, *MOUTH_UNITS)}
+    curves = [fc for fc in _data_curves(sk) if fc.data_path in paths]
     frames = np.arange(f0, f1 + 1)
     if not curves:
         return np.zeros(len(frames))
@@ -195,7 +206,8 @@ def _speech_env(rig, base, f0, f1):
 
 @command("talk_motion")
 def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head=True, eyes=True,
-                brows=True, look_at_camera=True, seed=3, look_at=None, listen_to=None):
+                brows=True, look_at_camera=True, seed=3, look_at=None, listen_to=None, life=1.0,
+                _defer_life=False):
     """Add speech-driven head nods/turns, brow flashes and eye saccades over a range.
 
     look_at: None = the shot camera (when look_at_camera), or a character/object name, or a
@@ -203,6 +215,8 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     listen_to: another character — while they talk and this one is silent, add small
     listener nods on their stressed words.
     """
+    from ..face_life import intensity as life_intensity
+    life = life_intensity(life)
     rig = _rig_of(character)
     sc = bpy.context.scene
     fps = sc.render.fps
@@ -211,6 +225,8 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     if f1 <= f0:
         raise ValueError("frame_end must be after frame_start")
     k = float(intensity)
+    if not math.isfinite(k) or k < 0:
+        raise ValueError('intensity must be finite and non-negative')
     rng = random.Random(seed)
 
     base = None
@@ -221,7 +237,7 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
         base = None                     # rigs without a face still get head motion
 
     if look_at is None:
-        look_at = listen_to or ("camera" if look_at_camera else None)
+        look_at = (listen_to if isinstance(listen_to, str) else (listen_to[0] if listen_to else None)) or ("camera" if look_at_camera else None)
     env, sources = _speech_env(rig, base, f0, f1)
     source = "audio:" + ",".join(sources) if sources else None
     if env.max() <= 1e-6 and base is not None:
@@ -234,8 +250,9 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
     peaks = _peaks(env, fps)
     phrases = _phrases(env, fps)
     listen_peaks = []
-    if listen_to:
-        other = _rig_of(listen_to)
+    peers = [listen_to] if isinstance(listen_to, str) else listen_to or []
+    for peer in peers:
+        other = _rig_of(peer)
         try:
             other_base = _basemesh(other.name)
         except (ValueError, RuntimeError):
@@ -243,8 +260,9 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
         oenv, _src = _speech_env(other, other_base, f0, f1)
         if oenv.max() > 1e-6:
             oenv = _smooth(oenv / oenv.max(), 7)
-            listen_peaks = [p for p in _peaks(oenv, fps, min_gap_s=1.2)
-                            if (env[p] if env.max() > 0 else 0) < 0.15 and rng.random() < 0.6]
+            listen_peaks.extend(p for p in _peaks(oenv, fps, min_gap_s=1.2)
+                                if env[p] < 0.15 and rng.random() < 0.6)
+    listen_peaks = sorted(set(listen_peaks))
 
     # ---------------------------------------------------------------- head offsets per frame
     nod = np.zeros(n)
@@ -365,7 +383,7 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
 
     if base is not None:
         meshes = _face_meshes(base)
-        if brows and peaks:
+        if brows and peaks and life == 0:
             strongest = sorted(peaks, key=lambda p: -env[p])[:max(1, len(peaks) // 2)]
             for p in strongest:
                 f = f0 + p
@@ -426,5 +444,12 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
                 _set(meshes, g, f + 1)
                 prev_g = g
             result["saccades"] = len(saccades)
+        from .face_life import face_life
+        peers = listen_to or (list(dict.fromkeys(s['target'] for s in look_at
+                             if s.get('target') not in (None, 'camera', rig.name)))
+                              if isinstance(look_at, (list, tuple)) else None)
+        if not _defer_life:
+            result['life'] = face_life(rig.name, f0, f1, intensity=min(2., life*k), seed=seed,
+                                       listen_to=peers, eyes=eyes, brows=brows)
     sc.frame_set(f0)
     return result

@@ -2739,6 +2739,16 @@ async def _cinematic_checks(call):
     print('CINEMATIC E2E OK: exact clear/settings/pixels | live head DOF | future shots | failure cleanup | save/open | video snapshot | look=None | weather',flush=True)
 
 
+async def _animated_style_checks(call):
+    from filmstyle_checks import animated
+    await animated(call, text_of)
+
+
+async def _face_life_checks(call):
+    from filmstyle_checks import life
+    await life(call, text_of)
+
+
 async def _render_style_checks(call):
     """Real lit frames, lossless reset, persisted look and background styled MP4s."""
     import av
@@ -3835,7 +3845,7 @@ async def main():
         assert "char3d" in (init.instructions or ""), "server instructions missing"
         tools = {t.name for t in (await s.list_tools()).tools}
         print("tools:", sorted(tools))
-        assert "auto_expression" in tools
+        assert {"auto_expression", "face_life"} <= tools
 
         async def call(tool, **args):
             if tool == 'render_video' and '--serial-video' in sys.argv:
@@ -3859,6 +3869,8 @@ async def main():
         for flag, section in (("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),
                               ("--mpfb-only", _materials_realistic_checks),
+                              ("--animated-style-only", _animated_style_checks),
+                              ("--face-life-only", _face_life_checks),
                               ("--film-only", _film_checks),
                               ("--script-only", _script_scene_checks),
                               ("--dialog-only", _dialog_gaze_checks),
@@ -3919,6 +3931,8 @@ async def main():
         assert "script_to_scene" in tools
         await _rotated_rig_checks(call)
         await _render_style_checks(call)
+        await _animated_style_checks(call)
+        await _face_life_checks(call)
         assert "cinematic_look" in tools
         await _cinematic_checks(call)
         await _script_scene_checks(call)

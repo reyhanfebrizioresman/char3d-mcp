@@ -36,7 +36,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Look: `cinematic_look`, `render_style`, `render_preview`, `render_views` (`engine_name="eevee"` for textures)
 - Realistic humans (MPFB): `mpfb_assets` (categories + installed packs),
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
-- Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
+- Face: `list_expressions`, `set_expression`, `auto_expression`, `face_life`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `auto_sfx`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `list_voices`, `text_to_speech`, `lip_sync_audio`, `talk_motion`, `talk_gestures`,
   `ai_text_to_speech` (legacy free HF Space)
@@ -347,8 +347,29 @@ blendshapes (e.g. VRoid/AI models). Pass the armature (`Dan_rig`) or the body me
   This is a small lexicon, with local negation only; sarcasm/context are not understood.
   Example: `lip_sync(rig, "Senang sekali! Sayang sekali. Wah, ternyata hebat!")` →
   `auto_expression(rig)` → `auto_blink(rig)` → close-up Eevee `render_frames`.
-- `auto_blink(character)`: natural blinks over the scene range — always add it to any
-  shot where the face is visible for more than ~2 s.
+- `face_life(character, frame_start=None, frame_end=None, intensity=1, seed=3,
+  listen_to=None, clear=False)` adds deterministic micro-expressions, held gaze and
+  micro-saccades, varied full/half blinks, eyelid follow, listener smiles/brows and
+  subtle chest/shoulder breathing. Run after expressions, speech, gaze and cameras;
+  rerun after editing these layers. `listen_to` is a rig name or list. Saved sentence
+  emotions from `auto_expression`, phrase rhythm and camera cuts inform the score.
+  Without word times, its own voice/viseme envelope supplies phrase rhythm; this
+  creates no transcript or subtitle words.
+  `talk_motion(..., life=1)` enables it; dialog/script/film builds enable it by default.
+  Pass `life=0` to opt out, or `face_life(..., intensity=0)`/`clear=True` to remove just
+  this layer in the requested range. Intensity is 0..2. Seeded reruns replace keys.
+  Owned `__c3d_life_` relative morphs preserve original viseme, face, body and arm
+  curves. Shared multi-slot Actions are scoped to each mesh's own slot.
+  Mouth micro-motion is suppressed during words and active articulation,
+  including m/b/p closures. Linear samples avoid overshoot. Breathing is a tiny
+  rest-space morph on body/clothes, carried by existing skinning, not bone edits.
+  Native morph animation survives save/open and video snapshots. Optional authored
+  `pupilDilate`/`pupilSmall` targets receive slight light adaptation; stock MPFB has
+  neither, so eyeball scale stays intact. Reactions are local heuristics, not a
+  psychological model; custom NLA/driven face controls can require manual blending.
+- `auto_blink(character)`: natural blinks over the scene range. Use it or `face_life`
+  whenever the face is visible for more than ~2 s. New builds use one life schedule;
+  manual scenes retain authored blinks, with a one-second refractory gap for added blinks.
 - Check faces with `camera_shot(shot="close_up" or "extreme_close_up")` +
   `render_preview(camera="scene", engine_name="eevee")` — workbench can't show skin.
 - Expressions and lip sync are shape keys: they export to glTF as morph targets.
@@ -1568,6 +1589,28 @@ cycles videos apply temporary overrides, restored in `finally` even on render fa
   every texture edge; this favors predictable cost and readable faces. Thin/open
   meshes can show seams; outline width is 1.2 mm before object scaling at strength 1.
   Cycles uses Toon BSDF instead of Eevee's Shader-to-RGB ramp.
+- `animated_film` (aliases `film_animasi`, `animasi`): a cohesive original animated
+  feature direction over humans, nature, procedural heroes and indoor sets. At default
+  strength the same dominant painterly response covers photographic and procedural
+  materials: four softly eased light masses, HDR highlight compression, a continuous
+  form gradient, and colored shadows. Per-look key/shadow palettes harmonize materials,
+  softboxes and sky; midtones gain color, fill becomes cooler and rims stronger.
+  Temporary low-resolution color samplers suppress skin pores, hair strands and fabric
+  grain while preserving original UVs, alpha masks and normal/data maps. Broad normals
+  and specular lobes simplify surfaces; water/metals retain more physical reflection.
+  Skin gets warm bounce and subtle head-following cheek blush. Iris textures stay sharp
+  and richer; glossy corneas keep their authored optics. Short-range AO reinforces
+  contacts/creases. Color samplers used for opacity/emission, including through group
+  inputs, stay unfiltered. Alpha, practical emission and nested material graphs
+  survive. Scene/look/weather still motivate lighting; no extra volume, render pass
+  or render-sample increase is used.
+  Outlines default off; `outline=True` opts into the existing silhouette hulls.
+  Cycles uses the filtered albedo, softened normals, blush, physical material and
+  softbox/palette changes, without Eevee's Shader-to-RGB light masses.
+  `script_to_scene`/`script_to_film(..., style="animated_film")` and `GAYA:`/`STYLE:`
+  headers accept these styles. Explicit arguments override headers; omitted style
+  preserves the current scene configuration. Parse-only mode reports `plan.style`.
+  Base MPFB materials are never edited, including enhanced skin/eye/hair/fabric graphs.
 - `clay`: uniform warm, rough clay with the scene's soft lighting/shadows; alpha masks
   remain active. Custom shaders without a Principled node keep their shading.
 - `film`: AgX with contrast, subtle fog glow, vignette and animated deterministic grain.
@@ -1605,6 +1648,26 @@ shader compilation is excluded; relative costs vary with scene/shader complexity
 Estimates conservatively retain overhead for the looks that happened to be cheaper
 in this scene. Anime without outlines uses 1.05×; explicitly enabling outlines on
 another look adds 0.20 to its factor. Draft always uses 1.00×.
+
+`animated_film` was measured separately at 512×288 / 16 samples, golden_hour,
+two clothed MPFB humans, llvmpipe and 8 render threads. Three none / three styled /
+three none stills bookend shared CPU load; discard the first of each triplet and
+average the remaining baseline trials. Wall timings include override setup/restoration,
+the MCP call and PNG output. CPU timings measure all Blender threads across the same
+calls. Load varied substantially, so wall ratios below one do not establish a speedup.
+The cost estimate retains a conservative 1.25× factor; outlines were off.
+
+| scene | none, seconds/frame | animated_film | wall ratio | CPU ratio | estimate factor |
+|---|---:|---:|---:|---:|---:|
+| podcast_studio | 53.56 | 40.86 | 0.76× | 1.07× | 1.25× |
+| park, density 0.6 | 45.71 | 47.02 | 1.03× | 1.03× | 1.25× |
+
+Reproduce with `CHAR3D_PORT=9972 FILMSTYLE_OUTPUT=output/filmstyle_v2 .venv/bin/python
+tests/filmstyle_visuals.py --sheets`, then `--bench --only podcast_studio` and
+`--bench --only park` (same environment prefix). The guarded harness uses only port
+9972 and the worktree's `output/`; `output/filmstyle_v2/benchmark.json` retains all
+wall/CPU trials. The four-set sheets include park, rice_terraces, an offline lantern
+lake world and podcast_studio, each in golden_hour plus night/misty, wide/medium/close.
 
 ## AI generation (external services)
 - **Only use `ai_*` generation tools when the user explicitly asks for AI generation** —

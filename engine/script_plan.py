@@ -184,7 +184,7 @@ def _direction(text, warnings):
     return beat
 
 
-def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None):
+def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None, style=None):
     """Normalize dict or bilingual text. Estimated frames never read files or mutate a scene."""
     from .film_plan import is_film
     if is_film(script):
@@ -197,9 +197,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
             line = line.strip()
             if not line:
                 continue
-            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD|DUNIA|WORLD)\s*:\s*(.*)$", line, re.I)
+            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD|DUNIA|WORLD|GAYA|STYLE)\s*:\s*(.*)$", line, re.I)
             if header:
-                key = ("title" if header[1].upper() in ("JUDUL", "TITLE") else
+                key = ("style" if header[1].upper() in ("GAYA", "STYLE") else
+                       "title" if header[1].upper() in ("JUDUL", "TITLE") else
                        "world" if header[1].upper() in ("DUNIA", "WORLD") else
                        "weather" if header[1].upper() in ("CUACA", "WEATHER") else
                        "look" if header[1].upper() in ("SUASANA", "LOOK", "MOOD") else "environment")
@@ -401,6 +402,9 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
         if weather not in ("clear", "rain", "snow", "fog", "wind"):
             raise ValueError("weather must be clear/rain/snow/fog/wind or Indonesian aliases")
         extra["weather"] = weather
+    if style is not None or raw.get('style') is not None:
+        from .filmstyle import style_name
+        extra['style'] = style_name(style if style is not None else raw['style'])
     from .cinematic import look_spec
     extra['look'] = look_spec(look if look is not None else raw.get('look'))
     extra['recommended_look'] = 'golden_hour' if location in ('park', 'beach', 'cafe_terrace', 'city_street', *NATURE_PRESETS) else 'studio_film'

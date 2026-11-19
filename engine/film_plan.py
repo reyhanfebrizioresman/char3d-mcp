@@ -5,8 +5,8 @@ import json
 import re
 
 SCENE = re.compile(r'^(?:ADEGAN|SCENE)\s*(?:\d+\s*)?:\s*(.*)$', re.I)
-HEADER = re.compile(r'^(JUDUL|TITLE|LOKASI|LOCATION|SUASANA|LOOK|MOOD|CUACA|WEATHER|LIGHTING|PENCAHAYAAN|KARTU|CARD)\s*:\s*(.*)$', re.I)
-FIELDS = {'judul': 'title', 'title': 'title', 'lokasi': 'environment', 'location': 'environment',
+HEADER = re.compile(r'^(JUDUL|TITLE|LOKASI|LOCATION|SUASANA|LOOK|MOOD|CUACA|WEATHER|LIGHTING|PENCAHAYAAN|KARTU|CARD|GAYA|STYLE)\s*:\s*(.*)$', re.I)
+FIELDS = {'gaya': 'style', 'style': 'style', 'judul': 'title', 'title': 'title', 'lokasi': 'environment', 'location': 'environment',
           'suasana': 'look', 'look': 'look', 'mood': 'look', 'cuaca': 'weather', 'weather': 'weather',
           'lighting': 'lighting', 'pencahayaan': 'lighting', 'kartu': 'card', 'card': 'card'}
 CHANGE = re.compile(r'(.+?)\s+(?:berganti\s+(?:baju|pakaian)|changes?\s+into)\s+(.+)', re.I)
@@ -125,11 +125,11 @@ def layout(scenes, fps=24, estimated=False):
     return [1, cursor - 1]
 
 
-def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, lighting='studio'):
+def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, lighting='studio', style=None):
     from .script_plan import parse_script, _descriptors, _number
     warnings = []
     if not is_film(script):
-        p = parse_script(script, name=name, environment=environment, seed=seed, fps=fps, look=look)
+        p = parse_script(script, name=name, environment=environment, seed=seed, fps=fps, look=look, style=style)
         raw = {'title': p['title'], 'characters': p['characters'], 'scenes': [{'name': p['name'], **p}]}
     elif isinstance(script, str):
         raw, warnings = _text(script)
@@ -180,11 +180,11 @@ def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, l
         if not used:
             used.update(chars)  # silent establishing scene
         scene_chars = [copy.deepcopy(c) for ident, c in chars.items() if ident in used]
-        scene_raw = {k: copy.deepcopy(source.get(k, raw.get(k))) for k in ('environment', 'look', 'weather')
+        scene_raw = {k: copy.deepcopy(source.get(k, raw.get(k))) for k in ('environment', 'look', 'weather', 'style')
                      if source.get(k, raw.get(k)) is not None}
         p = parse_script({**scene_raw, 'characters': scene_chars, 'beats': beats},
                          name=source.get('name') or f'Adegan {i+1}', environment=environment,
-                         seed=seed, fps=fps, look=look)
+                         seed=seed, fps=fps, look=look, style=style)
         card = source.get('card')
         if card is not None:
             card = {'text': card, 'duration_s': 2} if isinstance(card, str) else copy.deepcopy(card)
