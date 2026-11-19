@@ -322,6 +322,10 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             cam_data.dof.keyframe_insert("focus_distance", frame=f)
     occlusion["seconds"] = round(occlusion["seconds"] + time.perf_counter()-adjustment_started, 4)
     cam["c3d_occlusion"] = json.dumps(occlusion)
+    cam['c3d_shot_args'] = json.dumps(dict(subject=subject, shot=used_size, move=move,
+        start_frame=start, end_frame=end, angle=angle, elevation=elevation, intensity=intensity,
+        ease=ease, lens=lens, handheld=handheld, roll=roll, depth_of_field=depth_of_field,
+        f_stop=f_stop, name=name, action_line=action_line))
 
     # timeline: cut to this camera at its start frame
     replaced = []

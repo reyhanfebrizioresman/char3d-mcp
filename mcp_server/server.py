@@ -467,7 +467,8 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                       lens: float | None = None, handheld: float = 0.0, roll: float = 0.0,
                       depth_of_field: bool | None = None, f_stop: float = 2.8,
                       name: str | None = None,
-                      avoid_occlusion: Literal["auto"] | bool = "auto") -> dict:
+                      avoid_occlusion: Literal["auto"] | bool = "auto",
+                      action_line: list[str] | None = None, require_composition: bool = False) -> dict:
     """Create a cinematic shot camera for frames start..end, framed on `subject` (mesh or
     armature names; default = everything) even while it moves. angle: 0 = in front,
     90 = subject's left, 180 = behind. elevation: degrees (negative = low angle, heroic).
@@ -491,7 +492,8 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                      start_frame=start_frame, end_frame=end_frame, angle=angle,
                      elevation=elevation, intensity=intensity, ease=ease, lens=lens,
                      handheld=handheld, roll=roll, depth_of_field=depth_of_field,
-                     f_stop=f_stop, name=name, avoid_occlusion=avoid_occlusion)
+                     f_stop=f_stop, name=name, avoid_occlusion=avoid_occlusion,
+                     action_line=action_line, require_composition=require_composition)
 
 
 @mcp.tool()
@@ -805,7 +807,7 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
                        resolution: Resolution | None = None, vertical: bool = False,
                        width: int | None = None, height: int | None = None,
                        fps: int | None = None, wait: bool = False,
-                       subtitles: bool | None = None) -> dict:
+                       subtitles: bool | None = None, credits: bool = True) -> dict:
     """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id
     and an `estimate` of the render time.
     draft = clay workbench, half res (~0.1 s/frame) for checking timing/cameras;
@@ -822,7 +824,7 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
     Crossfades render extra outgoing-camera frames; duration and audio timing stay fixed."""
     return await run("render_video", path=path, frame_start=frame_start, frame_end=frame_end,
                      quality=quality, resolution=resolution, vertical=vertical, width=width,
-                     height=height, fps=fps, wait=wait, subtitles=subtitles)
+                     height=height, fps=fps, wait=wait, subtitles=subtitles, credits=credits)
 
 
 SubtitleStyle = Literal["tiktok", "karaoke", "classic"]
@@ -836,7 +838,9 @@ async def add_subtitles(style: SubtitleStyle = "tiktok",
                         highlight: bool | None = None, uppercase: bool | None = None,
                         max_words: int | None = None, lines: list[dict] | None = None,
                         audio: str | None = None, language: str | None = None,
-                        start_frame: int = 1, font: str | None = None) -> dict:
+                        start_frame: int = 1, font: str | None = None,
+                        min_hold: float | None = None, hold: float | None = None,
+                        max_cps: float | None = None) -> dict:
     """Captions burned into render_video (and shown by render_frames(camera="scene")).
     Words come from lip_sync / lip_sync_audio word times automatically (all speakers).
     style: "tiktok" = 1-3 big bold words at a time, the spoken word highlighted, pop-in
@@ -850,12 +854,12 @@ async def add_subtitles(style: SubtitleStyle = "tiktok",
     words = None
     if audio:
         path = _workspace_path(audio)
-        tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+        tr = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(path, language))
         words = tr["words"]
     return await run("add_subtitles", style=style, position=position, size=size, color=color,
                      highlight_color=highlight_color, highlight=highlight, uppercase=uppercase,
                      max_words=max_words, lines=lines, words=words, start_frame=start_frame,
-                     font=font)
+                     font=font, min_hold=min_hold, hold=hold, max_cps=max_cps)
 
 
 @mcp.tool()
@@ -916,6 +920,97 @@ async def remove_graphics(name: str | None = None, all: bool = False) -> dict:
     """Remove a named title/transition, or all graphics with all=True / name='all'.
     Captions have their own remove_subtitles tool."""
     return await run("remove_graphics", name=name, all=all)
+
+
+async def _review_asr(report):
+    """Optional local round-trip, outside Blender; never used by default review."""
+    from engine.review import wer, issue, score, report_text
+    import time
+    started = time.perf_counter()
+    from pathlib import Path
+    segments = report.get('asr_segments', [])
+    for scene in report.get('scenes', []):
+        segments.extend(scene.get('asr_segments', []))
+    results = []
+    if not segments:
+        report['asr_note'] = 'No stored voice-line references; round-trip WER is unavailable.'
+    for segment in segments:
+        try:
+            tr = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(segment['path'], None))
+            error = wer(segment['text'], tr['text'])
+            results.append(dict(segment, transcript=tr['text'], wer=round(error, 4)))
+            if error > .25:
+                report['issues'].append(issue('asr_words', 'sound', 'warn',
+                    'Whisper differs from the stored voice line.', dict(wer=round(error, 4), transcript=tr['text'], reference=segment['text']),
+                    frame=segment.get('frame'), character=segment.get('character')))
+        except (RuntimeError, ValueError, OSError) as exc:
+            results.append(dict(segment, unavailable=str(exc)))
+    elapsed = time.perf_counter()-started
+    report.setdefault('timings', {})['asr'] = round(elapsed, 4)
+    report['timings']['total'] = round(report['timings'].get('total', 0)+elapsed, 4)
+    if 'total_with_fix' in report['timings']:
+        report['timings']['total_with_fix'] = round(report['timings']['total_with_fix']+elapsed, 4)
+    report['asr'] = results
+    if report.get('fix_rounds'):
+        report['remaining'] = report['issues']
+    report['score'], report['scores'] = score(report['issues'])
+    if report.get('report_md'):
+        Path(report['report_md']).write_text(report_text(report), encoding='utf-8')
+        Path(report['report_md']).with_suffix('.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return report
+
+
+@mcp.tool()
+async def review_scene(level: Literal['quick', 'standard', 'full'] = 'standard', fix: bool = False,
+                       sheet: bool = True, engine: Literal['workbench', 'eevee', 'cycles'] = 'workbench',
+                       size: int = 384, asr: bool = False, frames: list[int] | None = None) -> dict:
+    """Review sound, rhythm, camera, performance, continuity and readability with measured
+    evidence and concrete tool suggestions. Low-resolution workbench stills, no ASR by
+    default. sheet=True writes labelled contact/action PNGs and a Markdown report.
+    fix=True applies exactly one safe deterministic fix round, then rechecks once;
+    never changes story, script, cast or voices. size 64..512. Metrics are sampled
+    proxies; Workbench exposure is provisional. asr=True adds local Whisper WER."""
+    report = await run('review_scene', level=level, fix=fix, sheet=sheet, engine=engine,
+                       size=size, asr=asr, frames=frames)
+    return await _review_asr(report) if asr else report
+
+
+@mcp.tool()
+async def review_film(name: str | None = None, level: Literal['quick', 'standard', 'full'] = 'standard',
+                      fix: bool = False, sheet: bool = True,
+                      engine: Literal['workbench', 'eevee', 'cycles'] = 'workbench',
+                      size: int = 384, asr: bool = False, frames: list[int] | None = None) -> dict:
+    """Review every saved film scene and continuity/transition/card timing. Restores
+    unsaved editor state afterwards. fix=True saves one safe fix round per scene.
+    Writes a combined contact sheet and report under the film project folder."""
+    report = await run('review_film', name=name, level=level, fix=fix, sheet=sheet,
+                       engine=engine, size=size, asr=asr, frames=frames)
+    return await _review_asr(report) if asr else report
+
+
+@mcp.tool()
+async def review_video(path: str, asr: bool = False) -> dict:
+    """Inspect a rendered MP4 offline with PyAV/numpy, without starting Blender.
+    Measures LUFS/true peak, clipping, near-black/frozen intervals, audio gaps and
+    audio/video duration. Optional Whisper compares stored rendered voice lines."""
+    from engine.review_media import review_video as inspect
+    from pathlib import Path
+    output = Path(path).expanduser()
+    if not output.is_absolute():
+        output = Path(engine.workspace)/'renders'/output
+    sidecar = output.with_suffix('.review_lines.json')
+    lines = json.loads(sidecar.read_text()) if asr and sidecar.is_file() else None
+    report = await anyio.to_thread.run_sync(lambda: inspect(str(output), lines))
+    return await _review_asr(report) if asr else report
+
+
+@mcp.tool()
+async def credits(path: str | None = None, card: bool = False, name: str | None = None) -> dict:
+    """Write CREDITS.txt for assets actually referenced by this scene, or saved film
+    name. Returns asset/licence/provenance JSON, including unknown user imports.
+    card=True adds a three-second end card (saved final scene for a named film). Render tools
+    write credits next to MP4 automatically; credits=False opts out."""
+    return await run('credits', path=path, card=card, name=name)
 
 
 @mcp.tool()
@@ -1206,12 +1301,37 @@ async def remove_audio(name: str | None = None) -> dict:
     return await run("remove_audio", name=name)
 
 
+def _transcribe_recorded(path, language=None):
+    """Keep only model/source provenance under the workspace, never extra transcripts."""
+    result = speech.transcribe(path, language)
+    from pathlib import Path
+    # Whisper itself serializes model inference. Registry writes are atomic too.
+    lock = _transcribe_recorded.lock
+    with lock:
+        registry = Path(engine.workspace)/'imports/audio/asr_provenance.json'
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            records = json.loads(registry.read_text())
+        except (OSError, ValueError):
+            records = {}
+        records[str(Path(path).resolve())] = os.environ.get('CHAR3D_WHISPER_MODEL', 'tiny')
+        temporary = registry.with_suffix('.tmp')
+        temporary.write_text(json.dumps(records), encoding='utf-8')
+        temporary.replace(registry)
+    return result
+
+
+import threading as _threading
+_transcribe_recorded.lock = _threading.Lock()
+
+
 @mcp.tool()
 async def transcribe_audio(audio: str, language: str | None = None) -> dict:
     """Speech-to-text with word timestamps, fully local (Whisper). language e.g. "en", "id";
     None = auto-detect. First use downloads the model once (~75 MB)."""
     path = _workspace_path(audio)
-    return await anyio.to_thread.run_sync(lambda: speech.transcribe(path, language))
+    result = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(path, language))
+    return result
 
 
 @mcp.tool()
@@ -1239,7 +1359,7 @@ async def lip_sync_audio(character: str, audio: str, start_frame: int = 1,
     if use_whisper:
         from engine.phonemes import choose_language
         asr_language = choose_language("", language) if language and language.lower() != "auto" else None
-        tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(path, asr_language))
+        tr = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(path, asr_language))
         words, transcript = tr["words"], tr["text"]
     r = await run("lip_sync_audio", character=character, audio=path, start_frame=start_frame,
                   words=words, text=None if timing == "audio" or words else text,
@@ -1399,7 +1519,7 @@ async def direct_scene(idea: str, generator: str = "auto", language: str = "id",
     claude_cli uses Claude Code subscription quota. Both send the idea/options to
     Anthropic and require consent=True. auto prefers CLI, then API ONLY with consent;
     otherwise offline with a note. Failure returns offline with an explicit warning.
-    Includes parse-only plan, manual camera/music limits, usage and API cost estimate.
+    Includes structured treatment and cue map, parse-only plan, usage and API cost estimate.
     Edit the script then call script_to_scene to preview/build it."""
     from providers.director import direct
     return await anyio.to_thread.run_sync(lambda: direct(
@@ -1415,7 +1535,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           tts_engine: str = "piper", voices: dict | None = None,
                           look: str | dict | None = None,
                           body_language: bool = True, style: str | None = None,
-                          life: float = 1.0, music: str | None = "auto") -> dict:
+                          life: float = 1.0, music: str | None = "auto",
+                          treatment: dict | None = None) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     style="animated_film" or GAYA:/STYLE: animasi unifies the render look.
@@ -1465,6 +1586,9 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     from engine.script_plan import parse_script
     started = time.perf_counter()
     prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look, style=style, music=music)
+    if treatment is not None:
+        from providers.director.treatment import validate_treatment
+        prepared['treatment'] = validate_treatment(treatment)
     parse_warnings = list(prepared["warnings"])
     casting = tts.cast(prepared["characters"], tts_engine, language, seed, voices) if voice else {}
     report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
@@ -1480,7 +1604,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                 # without ASR downloads or transcription errors.
                 if not beat.pop("tts_generated", False) and speech.available():
                     asr_language = None if language == "auto" else language
-                    tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(beat["audio"], asr_language))
+                    tr = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(beat["audio"], asr_language))
                     beat["words"] = tr["words"]
                     beat["text"] = tr["text"] or beat.get("text", "")
     audio_seconds = time.perf_counter() - audio_started
@@ -1509,7 +1633,8 @@ async def script_to_film(script: dict | str, name: str | None = None,
                          tts_engine: str = "piper", voices: dict | None = None,
                          look: str | dict | None = None, body_language: bool = True,
                          scene_index: int | None = None, style: str | None = None,
-                         life: float = 1.0, music: str | None = "auto") -> dict:
+                         life: float = 1.0, music: str | None = "auto",
+                          treatment: dict | None = None) -> dict:
     """Build a film from ADEGAN/SCENE headers or {title, characters, scenes:[...]}.
 
     Each scene has name, environment, look, weather, lighting, card, transition_in,
@@ -1534,6 +1659,11 @@ async def script_to_film(script: dict | str, name: str | None = None,
     from engine.film_plan import parse_film
     import copy
     plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting, style=style, music=music)
+    if treatment is not None:
+        from providers.director.treatment import validate_treatment
+        plan['treatment'] = validate_treatment(treatment)
+        for scene in plan['scenes']:
+            scene['plan']['treatment'] = treatment
     casting = tts.cast(plan["characters"], tts_engine, language, seed, voices) if voice else {}
     plan["voices"] = casting
     if not build:
@@ -1552,7 +1682,7 @@ async def script_to_film(script: dict | str, name: str | None = None,
             if beat.get("audio") and "say" in beat:
                 beat["audio"] = _workspace_path(beat["audio"])
                 if not beat.pop("tts_generated", False) and speech.available():
-                    tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(
+                    tr = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(
                         beat["audio"], None if language == "auto" else language))
                     beat["words"] = tr["words"]
                     beat["text"] = tr["text"] or beat.get("text", "")
@@ -1598,7 +1728,8 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
                        quality: Literal["draft", "preview", "final", "cycles"] = "draft",
                        resolution: str | None = None, width: int | None = None,
                        height: int | None = None, vertical: bool = False,
-                       subtitles: bool = True, wait: bool = False, resume: bool = True) -> dict:
+                       subtitles: bool = True, wait: bool = False, resume: bool = True,
+                       credits: bool = True) -> dict:
     """Render saved scenes serially then compose one H.264/AAC MP4 with Blender VSE.
     Choose resolution with film_render_options first for preview/final. Scene MP4s
     include voice/music/Foley; transitions fade audio, cards have a continuous silent
@@ -1608,7 +1739,7 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
     Preserves the editor scene; only one render queue can run at a time.
     """
     return await run("render_film", name=name, path=path, quality=quality, resolution=resolution,
-        width=width, height=height, vertical=vertical, subtitles=subtitles, wait=wait, resume=resume)
+        width=width, height=height, vertical=vertical, subtitles=subtitles, wait=wait, resume=resume, credits=credits)
 
 
 @mcp.tool()
@@ -1669,7 +1800,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
         if ln.get("audio"):
             ln["audio"] = _workspace_path(ln["audio"])
             if not ln.pop("tts_generated", False) and speech.available():
-                tr = await anyio.to_thread.run_sync(lambda: speech.transcribe(
+                tr = await anyio.to_thread.run_sync(lambda: _transcribe_recorded(
                     ln["audio"], None if language == "auto" else language))
                 ln["words"] = tr["words"]
                 ln["text"] = tr["text"] or ln.get("text", "")

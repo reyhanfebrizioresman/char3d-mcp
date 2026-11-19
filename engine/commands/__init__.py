@@ -29,3 +29,5 @@ from . import film  # noqa: E402,F401
 from . import materials  # noqa: E402,F401
 from . import face_life  # noqa: E402,F401
 from . import music  # noqa: E402,F401
+
+from . import credits, review  # noqa: E402,F401

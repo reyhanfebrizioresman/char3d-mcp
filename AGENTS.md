@@ -789,6 +789,7 @@ Use `voice=False` for silent text animation. `sound=True` separately adds proced
 effects and ambience. See **Voices (TTS)** for casting, per-character overrides and privacy.
 Without word times, captions are disabled with a warning; silent cast members keep
 their base expression and listener motion without requiring their own speech.
+Camera/music/silence cues are documented in **Directing method** and reported in parse-only plans.
 Other dict beats: `stand`, `hold` (`prop`, `hand`), `gesture`/`pose` (`name` from the
 clip/pose library), `look` (`at` character/object/camera or XY/XYZ), `pause` (`seconds`),
 and `{"title": "Later", "subtitle": "...", "seconds": 2}`.
@@ -889,12 +890,97 @@ Verify: `.venv/bin/python tests/test_film.py` prints `FILM UNIT OK`; isolated
 `CHAR3D_PORT=9996 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/e2e_smoke.py
 --film-only` checks MPFB/Piper, offsets, AAC continuity, transitions, cache and cancel.
 
+## Directing method
+
+Judge the assembled film in this order: sound, rhythm, camera, performance; then
+check continuity and text readability. Write a treatment before building: compare
+three possible structures and choose one with a reason; specify a logline,
+setup/turn/ending, an opening event within three seconds, a returning opening detail
+at the ending, one peak shot, motivated shot list, beat sheet, music/cut grid,
+section sound table and subtitle design. `direct_scene` returns this as `treatment`
+JSON and Markdown inside `brief`; offline/API/CLI use the same closed contract.
+No external directing documents or prompts are included.
+
+Execute decisions with bracket cues or dict beats:
+- `[KAMERA: close-up Ana, push in]`, `[CAMERA: wide, drone reveal]`,
+  `[CAMERA: medium two-shot, orbit left]`; `[KAMERA: otomatis]` / `[CAMERA: auto]`
+  resumes dialog coverage. Dict `{do:"camera",shot:"close_up",subject:"Ana",move:"push_in"}`.
+  Subjects must be declared characters. A cue overrides cuts until the next cue.
+  Dict `deliberate:true` exempts an intentional sub-0.8-second shot from the rhythm warning.
+  Small default move intensity and current dialog-line side constrain camera travel;
+  an unsafe crossing is reduced to static with a warning. Visibility/composition
+  checks still run. Check the actual shot after changing animation.
+- `[MUSIK: tegang]` / `[MUSIC: warm]` changes the generated mood at the next
+  four-beat bar. `[MUSIK: berhenti]` / `[MUSIC: stop]` stops the score at that bar.
+  Dict `{do:"music",mood:"tense"}` or `mood:null`. `music=None` disables all
+  generated music, including cues. Original offline instruments/installed SoundFont
+  are used; manual music is preserved.
+- `[HENING 1 detik]` / `[SILENCE 1 second]`, dict `{do:"silence",seconds:1}`,
+  holds the timeline and dips music/ambience by 30 dB with short shoulders. Foley
+  stays audible. Saved volume automation survives snapshots; rerunning ducking
+  preserves the silence envelope.
+- Film `[TRANSISI: dissolve 0.5 detik, J-cut 0.4]` or `L-cut` adds audio handles.
+  Dict transition `{kind:"crossfade",duration_s:.5,audio:"j_cut",audio_s:.4}`.
+  J-cuts reserve incoming picture head frames; L-cuts reserve outgoing picture
+  tail frames. Audio and the visible source picture remain aligned. Film duration
+  shortens by those handles in addition to dissolves. Handles must fit adjacent
+  scenes. Default transitions retain the previous frame arithmetic.
+
+Review once, make one safe fix round, recheck once, then inspect the images and
+final MP4. `review_scene(level="standard",fix=False,sheet=True,engine="workbench",
+size=384,asr=False,frames=None)` returns score/category scores, stable issue IDs,
+severity, frame/shot/character, numeric evidence, suggested `{tool,args}` calls,
+auto-fix eligibility, labelled contact sheet, action strips, Markdown/JSON reports
+and timings. `quick` samples every two seconds; standard every 1.5 seconds; both
+include shot middles. Full uses the denser geometry path. Stills remain <=512 px.
+`frames` selects extra/explicit stills; it never limits timeline sound checks.
+
+Checks include offline sequencer mix LUFS/estimated true peak/clipping, measured
+music attenuation and speech balance, audio/lip coverage, contact Foley, ambience
+and a quiet turn; shot length/variation/mid-word cuts; projected scale, face/eye
+position, visibility, jump cuts and dialog side; subtitle hold/CPS/face overlap,
+title duration, sampled luminance/contrast; blink/articulation/expression/motion,
+sole/torso/held-grip proxies. `fix=True` runs at most one call per tool/target for
+safe blink, ducking, missing Foley/ambience, subtitle grouping/hold, one-size wider
+camera or title hold fixes, and reviews once. It never edits the script, cast or
+voices. Insufficient subtitle space and artistic edits remain suggestions.
+`add_subtitles(min_hold=1.8,hold=.6,max_cps=17)` supplies reading-time targets;
+subsequent captions and the scene end can still constrain them.
+
+`review_film(name,...)` opens each saved project, reviews it, checks wardrobe,
+cards and transitions, and restores the unsaved editor snapshot in `finally`.
+Reports/sheets are combined under the film folder; fixes save changed scenes.
+`review_video(path,asr=False)` runs PyAV/numpy without starting Blender, measuring
+encoded audio, A/V durations, near-black/frozen intervals and audio gaps. ASR is
+optional local Whisper round-trip WER against stored lines, never default.
+No story comprehension, exact mesh collision solver or certified loudness meter
+is implied. Static holds/fades/quiet audio can be intentional. Workbench exposure
+is provisional; use Eevee or encoded-file review for delivery. Subject hair and held
+props are excluded from the existing visibility rays and still need visual review. Custom sequencer
+DSP/spatialization is outside the offline volume/trim mix model.
+
+`credits(path=None,card=False,name=None)` writes `CREDITS.txt` and returns used
+MPFB assets/pack names (CC0), SoundFont/licence file, TTS voice/runtime/privacy
+notes, ASR model when recorded, actual fonts, user imports and original generators.
+Unknown provenance is labelled; the inventory grants no permissions. `name` selects
+a saved film. `card=True` adds a three-second end card; for a named film it saves
+the final scene and restores the editor. Repeated calls reuse the same card. `render_video` and
+`render_film` automatically write credits beside MP4; `credits=False` opts out.
+Keep TTS voice limitations from **Voices (TTS)**; runtime licences do not grant
+voice-model or recording permissions. Deliver MP4, SRT, treatment and CREDITS.
+
+Verification for this feature uses only **9973**, workspace `$PWD/output`, one
+Blender at a time. `tests/test_review.py` prints `REVIEW UNIT OK`;
+`tests/e2e_smoke.py --review-only --serial-video` supplies deliberate faults and
+before/after evidence. Keep `--script-only`, `--film-only` and director E2E passing.
+Do not install packages into the shared `.venv`.
+
 ## Sutradara AI (idea → script)
 `director_status()` reports offline/API/Claude Code availability, configured yes/no,
 model, privacy and billing, without a request or Blender. `direct_scene(idea,
 generator="auto", language="id", duration_s=30, characters=None, style=None,
 look=None, location=None, seed=0, consent=False)` returns a detailed Markdown
-`brief`, editable text `script`, character metadata, parse-only `plan`, warnings
+`brief`, structured `treatment`, executable text `script`, character metadata, parse-only `plan`, warnings
 and suggested `build_options`. It never builds, renders or starts Blender.
 **Agents should prefer writing scripts themselves**; this tool is for the web UI
 and quick drafts. Then edit → `script_to_scene(..., build=False)` → build as usual.
@@ -938,12 +1024,11 @@ repair round; unresolved errors produce a valid offline draft, unresolved parser
 warnings remain visible. Network/subprocess work stays in `providers/director/`,
 with a small registry like TTS. No network code goes in `engine/`.
 
-The brief includes logline, mood, look/palette/light, weather/dressing, cast/outfit/
-voice, blocking, timed shot suggestions, pacing and sound/music mood. Text builds
-only supported headers, dialogue and directions. Detailed shot moves, costume
-colors, extra dressing and music remain manual art direction; scripts use standard
-mixed coverage, local Piper voice hints and installed seeded outfits. Runtime is
-approximate. Cinematic look, collision and TTS limits above still apply.
+The brief includes the structured treatment as Markdown alongside look/palette/light,
+weather/dressing, cast/outfit/voice and blocking. The script executes camera, music
+and silence cues described in **Directing method**. `build_options.treatment`
+preserves its JSON in built projects. Wardrobe colours and bespoke dressing still
+need manual art direction. TTS/action timing remains approximate; inspect renders.
 
 Studio's **Sutradara AI** panel above the script editor offers examples/options,
 explicit Anthropic consent with API estimate or subscription quota, progress,

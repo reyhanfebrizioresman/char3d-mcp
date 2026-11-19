@@ -73,9 +73,12 @@ def direct(idea, generator='auto', language='id', duration_s=30, characters=None
         generator = 'offline'
         payload = offline.Backend().generate(opts)
         plan = validate(payload, opts)
+    from .treatment import markdown
+    if '## Treatment' not in payload['brief']:
+        payload['brief'] += '\n\n' + markdown(payload['treatment'])
     result = {**payload, 'generator': generator, 'plan': plan,
               'build_options': {'language': language, 'lighting': LIGHTING[(plan.get('look') or {}).get('preset', 'none')],
-                                'camera': 'mixed', 'seed': seed,
+                                'camera': 'mixed', 'seed': seed, 'treatment': payload['treatment'],
                                 **({'tool': 'script_to_film'} if plan.get('scenes') else {})},
               'warnings': list(dict.fromkeys(notes + payload['warnings'] + plan['warnings']))}
     if factory.online:

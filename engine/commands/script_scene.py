@@ -355,7 +355,10 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 end = start + beat["estimated_frames"][1] - beat["estimated_frames"][0]
                 titles.append(beat)
                 frame = end + 1
-            elif beat["do"] == "pause":
+            elif beat["do"] in ("camera", "music"):
+                # Editorial cues consume no action time and govern subsequent beats.
+                end = start - 1
+            elif beat["do"] in ("pause", "silence"):
                 end = start + max(1, round(beat["seconds"] * fps)) - 1
                 frame = end + 1
             else:
@@ -608,6 +611,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
         if camera != "none":
             with timed("cameras"):
                 interaction_shots()
+    from .director_cues import cameras as cue_cameras
+    with timed('director_cameras'):
+        cue_cameras(plan, characters, shots, prefix, warnings)
     with timed("lighting"):
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
     if world_recipe is not None:
@@ -663,13 +669,12 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     else:
         result["sfx"] = {"strips": [], "counts": {}}
     sc["char3d_music_beats"] = json.dumps(plan["beats"])
-    if plan["music"]:
-        with timed("music"):
-            cfg = plan["music"]
-            result["music"] = dispatch("auto_music", {"mood": cfg["mood"], "tempo": cfg["tempo"],
-                "key": cfg["key"], "seed": seed})
-    else:
-        result["music"] = dispatch("auto_music", {"clear": True})
+    with timed('music'):
+        from .director_cues import audio as cue_audio
+        cue_audio(plan, result)
+    sc['char3d_script_plan'] = json.dumps(plan)
+    sc['char3d_script_characters'] = json.dumps(characters)
+    sc['char3d_script_lines'] = json.dumps(turns)
     sc.frame_set(1)
     warnings[:] = list(dict.fromkeys(warnings))
     timings["total"] = round(time.perf_counter() - started, 4)

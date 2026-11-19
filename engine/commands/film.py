@@ -228,7 +228,7 @@ def _restore_editor(origin):
 
 @command('render_film')
 def render_film(name=None, path='film.mp4', quality='draft', resolution=None, width=None,
-                height=None, vertical=False, subtitles=True, wait=False, resume=True):
+                height=None, vertical=False, subtitles=True, wait=False, resume=True, credits=True):
     from . import video, subtitles as subs
     if quality not in video.QUALITY:
         raise ValueError('Unknown render quality')
@@ -251,6 +251,7 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
     job = dict(kind='film', id=ident, name=name, path=output, status='running', stage='prepare',
                started=time.time(), quality=quality, scenes=[], manifest=manifest, directory=directory,
                frames=manifest['frames'], overlays=[], chunks=[], children=[], size=None)
+    inventories = []
     origin = _snapshot_editor()
     try:
         for scene in manifest['scenes']:
@@ -268,26 +269,33 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
             if job['size'] and job['size'] != pixels:
                 raise ValueError('Scene dimensions differ; choose a common film resolution')
             job['size'] = pixels
+            if credits:
+                from .credits import evidence
+                inventories.append(evidence(card=bool(scene.get('card'))))
             from .music import PROP as MUSIC_PROP, scene_context
             from .audio import _sound_strips, _speech_ranges
             scene['score'] = json.loads(sc.get(MUSIC_PROP, 'null'))
+            local_cues = bool((scene['score'] or {}).get('cue_sections') or json.loads(sc.get('char3d_director_silences', '[]')))
+            if local_cues:
+                scene['score'] = None  # Keep executable local score/silence in the child clip.
             if not any(s.get(MUSIC_PROP) and not s.mute for s in _sound_strips(sc)):
                 scene['score'] = None
             _mood, scene['score_cuts'], scene['score_emotions'] = scene_context(sc)
             scene['speech'] = _speech_ranges(sc)
+            scene['review_lines'] = json.loads(sc.get('char3d_script_lines', '[]'))
             # The film gets one independent score covering cards and cuts. Mute
             # only owned preview music in temporary worker snapshots.
             for strip in _sound_strips(sc):
-                if strip.get(MUSIC_PROP):
+                if strip.get(MUSIC_PROP) and not local_cues:
                     strip.mute = True
-            key = content_hash(scene['project'], dict(settings, renderer_version=2))
+            key = content_hash(scene['project'], dict(settings, renderer_version=3))
             cache = context.resolve(f'film_cache/{key}.mp4', 'renders')
             reuse = bool(resume and os.path.isfile(cache) and os.path.getsize(cache))
             entry = dict(index=scene['index'], name=scene['name'], path=cache, hash=key,
                          status='reused' if reuse else 'pending', reused=reuse)
             job['scenes'].append(entry)
             if not reuse:
-                child = dispatch('render_video', dict(path=cache, subtitles=False, _defer=True, **settings))
+                child = dispatch('render_video', dict(path=cache, subtitles=False, _defer=True, credits=False, **settings))
                 entry['job_id'] = child['job_id']
                 job['children'].append(child['job_id'])
             if subtitles and subs.get_config(sc):
@@ -303,8 +311,8 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
                 job['overlays'].extend(overlays)
                 for shifted in offset_captions(chunks, offset-sc.frame_start+1):
                     # Subtitle chunks hold individual scene-frame word times.
-                    shifted['start'] = max(scene['film_frames'][0], shifted['start'])
-                    shifted['end'] = min(scene['film_frames'][1]+1, shifted['end'])
+                    shifted['start'] = max(1, scene['film_frames'][0]-scene.get('source_in_frames', 0), shifted['start'])
+                    shifted['end'] = min(job['frames'][1]+1, scene['film_frames'][1]+1+scene.get('source_out_frames', 0), shifted['end'])
                     job['chunks'].append(shifted)
             if scene.get('card'):
                 from .graphics import draw_title
@@ -313,6 +321,15 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
                 png = os.path.join(directory, f'card{scene["index"]}.png')
                 draw_title(png, *pixels, card)
                 scene['card_png'] = png
+        job['treatment'] = video.write_treatment(output, manifest.get('treatment'))
+        lines = [dict(line, start=line['start']+s['subtitle_offset_frames']-s['frames'][0]+1, end=line['end']+s['subtitle_offset_frames']-s['frames'][0]+1)
+                 for s in manifest['scenes'] for line in s.get('review_lines', [])]
+        if lines:
+            from pathlib import Path
+            Path(output).with_suffix('.review_lines.json').write_text(json.dumps(lines), encoding='utf-8')
+        if credits:
+            from .credits import write
+            job['credits'] = write(os.path.join(os.path.dirname(output), 'CREDITS.txt'), inventories)
         from ..music.film import score_film
         job['music'] = score_film(manifest['scenes'], manifest['fps'], job['frames'][1],
                                  context.resolve('audio/music/generated', 'imports'))
@@ -434,7 +451,7 @@ def report(job):
         path=job['path'], stage=job['stage'], quality=job['quality'], size=job['size'], frames=job['frames'],
         progress=f'{done}/{total}', progress_unit='stages', scenes=job['scenes'], elapsed_s=round(elapsed, 1),
         eta_s=round(eta, 1), estimate=job['estimate'],
-        bytes=job.get('bytes'), subtitles=job.get('subtitles'), music=job.get('music'), has_audio=job.get('status') == 'done',
+        bytes=job.get('bytes'), credits=job.get('credits'), treatment=job.get('treatment'), subtitles=job.get('subtitles'), music=job.get('music'), has_audio=job.get('status') == 'done',
         error=job.get('error')).items() if v is not None}
 
 

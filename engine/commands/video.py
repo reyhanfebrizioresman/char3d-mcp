@@ -411,6 +411,10 @@ def _report(job):
         out["has_audio"] = job.get("audio", False)
         if job.get("learned_speed"):
             out["learned_speed"] = job["learned_speed"]
+    if job.get("treatment"):
+        out["treatment"] = job["treatment"]
+    if job.get("credits"):
+        out["credits"] = job["credits"]
     if job.get("subtitles"):
         out["subtitles"] = job["subtitles"]
     if job.get("graphics"):
@@ -424,10 +428,27 @@ def _report(job):
     return out
 
 
+def write_treatment(path, treatment):
+    if not treatment:
+        return None
+    from pathlib import Path
+    from ..treatment import markdown
+    root=Path(path).with_suffix('')
+    data=str(root)+'.treatment.json'; brief=str(root)+'.treatment.md'
+    Path(data).write_text(json.dumps(treatment, ensure_ascii=False, indent=2), encoding='utf-8')
+    Path(brief).write_text(markdown(treatment)+'\n', encoding='utf-8')
+    return dict(json=data,markdown=brief)
+
+
+def dispatch_credits(path):
+    from .credits import evidence, write
+    return write(os.path.join(os.path.dirname(path), 'CREDITS.txt'), [evidence()])
+
+
 @command("render_video")
 def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="preview",
                  width=None, height=None, fps=None, wait=False, resolution=None, vertical=False,
-                 subtitles=None, _defer=False):
+                 subtitles=None, _defer=False, credits=True):
     """Render the scene camera / shot timeline to MP4 (H.264) in a background process.
 
     subtitles: None = burn in captions when add_subtitles is set up, False = never,
@@ -452,6 +473,14 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     if subtitles and not subs.get_config(sc):
         raise RuntimeError("no subtitles set up: call add_subtitles first")
     want_subs = bool(subs.get_config(sc)) if subtitles is None else bool(subtitles)
+    credits_info = dispatch_credits(path) if credits else None
+    treatment_info = write_treatment(path, json.loads(sc.get('char3d_script_plan', '{}')).get('treatment'))
+    lines = [dict(line,start=line['start']-start+1,end=line['end']-start+1)
+             for line in json.loads(sc.get('char3d_script_lines', '[]'))
+             if line['start']>=start and line['end']<=end]
+    if lines:
+        from pathlib import Path
+        Path(path).with_suffix('.review_lines.json').write_text(json.dumps(lines), encoding='utf-8')
     job_id = f"job{len(JOBS) + 1}_{time.strftime('%H%M%S')}"
     jobs_dir = os.path.join(context.WORKSPACE, "jobs")
     os.makedirs(jobs_dir, exist_ok=True)
@@ -522,7 +551,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
         render_cmd += ["-a"]
     from .audio import _sound_strips
     job = {"id": job_id, "proc": None, "render_cmd": render_cmd, "path": path, "base": base, "blend": blend, "log": log,
-           "audio": bool(_sound_strips(sc)),
+           "audio": bool(_sound_strips(sc)), "credits": credits_info, "treatment": treatment_info,
            "quality": quality, "frames": [start, end], "status": "running",
            "started": time.time(),
            "size": [out_w, out_h],

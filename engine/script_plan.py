@@ -142,6 +142,10 @@ def _descriptors(text, char, warnings):
 
 
 def _direction(text, warnings):
+    from .director_cues import direction
+    cue = direction(text)
+    if cue is not None:
+        return cue
     # Match full phrases first so e.g. "duduk di lantai" is not a chair sit.
     for clip, words in DIRECTIONS.items():
         auxiliary = r"(?:(?:is|feels|looks)\s+)?" if clip in BASES or clip == "surprised" else ""
@@ -310,6 +314,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
             duration = max(4, round(len(beat.get("text", "")) / 14 * fps) + 3)
         elif "title" in beat:
             duration = max(2, round(_number(beat.get("seconds", 2), "title seconds", 0.1, 60) * fps))
+        elif beat.get("do") in ("camera", "music", "silence"):
+            from .director_cues import normalize
+            normalize(beat, ids)
+            duration = max(1, round(beat["seconds"] * fps)) if beat['do'] == 'silence' else 0
         elif beat.get("do") in ("walk", "sit", "stand", "hold", "gesture", "pose", "look", "pause", "interact"):
             action = beat["do"]
             for key in {"walk": ["to"], "hold": ["prop"], "look": ["at"], "gesture": ["name"], "pose": ["name"]}.get(action, []):
@@ -356,7 +364,7 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
         else:
             warnings.append(f"Unknown beat ignored: {source}")
             continue
-        who_key = "say" if "say" in beat else "who" if beat.get("do") != "pause" and "title" not in beat else None
+        who_key = "say" if "say" in beat else "who" if beat.get("do") not in ("pause", "camera", "music", "silence") and "title" not in beat else None
         if who_key:
             ident = str(beat.get(who_key, "")).strip()
             if ident.casefold() not in ids:
@@ -389,6 +397,8 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
     location = resolve_alias(location)
     weather = raw.get("weather")
     extra = {}
+    if raw.get('treatment') is not None:
+        extra['treatment'] = copy.deepcopy(raw['treatment'])
     if raw.get('world') is not None:
         world = raw['world']
         if isinstance(world, dict):
@@ -411,6 +421,8 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
     from .music import script_settings
     extra['music'] = script_settings(raw.get('music', 'auto') if music == 'auto' else music,
                                     seed, beats, extra['look'], weather, location)
+    if extra.get('music') and raw.get('treatment'):
+        extra['music']['tempo'] = _number(raw['treatment']['cue_map']['tempo'], 'treatment tempo', 40, 180)
     extra['recommended_look'] = 'golden_hour' if location in ('park', 'beach', 'cafe_terrace', 'city_street', *NATURE_PRESETS) else 'studio_film'
     return {"name": name or raw.get("title") or "ScriptScene", "title": raw.get("title"),
             "environment": location, **extra,

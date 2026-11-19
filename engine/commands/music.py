@@ -63,7 +63,11 @@ def auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=.6, s
                         [e for e in emotions if first <= e["frame"] < first+duration*fps] if follow_emotion else (),
                         sections, fps, first)
         parsed = time.perf_counter()
-        samples = render(score, backend=backend)
+        if any('mood' in section for section in (sections or [])):
+            from ..music.cues import render_cues
+            samples = render_cues(score, sections, backend)
+        else:
+            samples = render(score, backend=backend)
         path, digest = write_cached(samples, context.resolve("audio/music/generated", "imports"))
         measured = metrics(samples, score)
         rendered = time.perf_counter()
@@ -96,7 +100,7 @@ def auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=.6, s
         result.update(path=path, hash=digest, backend=backend, renderer=score['renderer'], frames=[first, end-1], duration_s=duration,
                       sample_rate=48000, channels=2, loudness=measured, strips=[strip.name], removed=removed,
                       volume=volume, intensity=intensity, fade_in=fade_in, fade_out=fade_out,
-                      follow_cuts=follow_cuts, follow_emotion=follow_emotion, custom_sections=sections or [])
+                      follow_cuts=follow_cuts, follow_emotion=follow_emotion, custom_sections=sections or [], cue_sections=score.get("cue_sections", []))
         result["ducking"] = duck_music(strip.name)
         result["timings"] = dict(compose=round(parsed-started, 4), render=round(rendered-parsed, 4),
                                  total=round(time.perf_counter()-started, 4))

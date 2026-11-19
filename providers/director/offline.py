@@ -251,102 +251,20 @@ class Backend:
             elif genre == 'comedy':
                 lines.append(f"[{chars[0]['id']} melambai]")
         script = '\n'.join(lines)
-        plan = parse_script(script, seed=opts['seed'])
-        estimated = round(plan['estimated_frames'][1] / 24, 1)
-        warnings = ['Draf offline berbasis aturan dan templat; periksa detail ide serta dialog sebelum membangun.',
-                    'Daftar shot, warna kostum, dressing khusus dan musik adalah arahan manual; naskah membangun coverage campuran standar.']
-        if abs(estimated - opts['duration_s']) > max(5, opts['duration_s'] * .25):
-            warnings.append(f"Target {opts['duration_s']:g} detik; estimasi parser {estimated:g} detik. Sesuaikan panjang dialog atau jeda.")
+        metadata = [dict(id=c['id'], appearance=f"{c['age']} tahun, rambut {c['hair']}",
+                         outfit=c['outfit'], voice='Piper lokal, casting gender/usia otomatis',
+                         relationship=c['relationship']) for c in chars]
+        from .film import arrange
+        from .treatment import template_pass, markdown
+        script, treatment = template_pass(arrange(script, opts), opts, genre, chars)
+        palette = PALETTES[look]
+        brief = f"# {title}\n\n{genre}; {location}, {weather}. Look {look}; lighting {LIGHTING[look]}. "
+        brief += f"Palette {', '.join(palette)}. Soft face key, light fill and separated background.\n\n"
+        brief += DRESSING[location] + '\n\n' + markdown(treatment)
+        warnings = ['Draf offline memakai skenario lokal; periksa dialog dan timing TTS sebelum membangun.',
+                    'Cue kamera, musik dan hening dapat dijalankan; warna kostum dan dressing khusus perlu penataan.']
         if opts['language'] == 'ms':
             warnings.append('Offline memakai templat Indonesia; sesuaikan kosakata Melayu sebelum membangun.')
         if en:
-            warnings.append('Pilih model Piper English lokal pada panel Suara; draf menunjuk model Indonesia yang tersedia sebagai default.')
-        if re.search(r'dapur|bedroom|kitchen|gunung|mountain|kereta|train|fantasy|fantasi', text):
-            warnings.append(f'Lokasi khusus diadaptasi menjadi set bawaan {location}; properti tambahan perlu penataan manual.')
-        metadata = [dict(id=c['id'], appearance=f"{c['age']} tahun, {'perempuan' if c['gender'] == 0 else 'laki-laki'}, rambut {c['hair']}",
-                         outfit=c['outfit'], voice='Piper lokal, casting gender/usia otomatis', relationship=c['relationship']) for c in chars]
-        palette = PALETTES[look]
-        shots = []
-        sizes = ['wide', 'medium', 'close_up', 'medium_close', 'full'] if len(chars) > 1 else ['medium_full', 'medium', 'medium_close']
-        n = min(len(sizes), max(2, int(opts['duration_s'] // 6)))
-        for i in range(n):
-            start, end = round(i * opts['duration_s'] / n, 1), round((i + 1) * opts['duration_s'] / n, 1)
-            subject = ' + '.join(c['id'] for c in chars) if i in (0, n - 1) else chars[(i - 1) % len(chars)]['id']
-            shots.append(f"- {start:g}–{end:g} dtk · {sizes[i]} · {'push_in' if i == n - 2 else 'static'} · {subject}. " +
-                         ('Kenalkan ruang dan jarak antartokoh.' if i == 0 else 'Dekatkan perhatian saat respons berubah; jaga arah tatapan dan garis 180°.' if i < n - 1 else 'Tahan reaksi akhir, sisakan ruang untuk hening.'))
-        cast_brief = '\n'.join(f"- **{c['id']}** — {m['appearance']}; outfit {m['outfit']}, palet netral. Hubungan: {m['relationship']}. Tujuan: {'membuka percakapan' if i == 0 else 'memberi respons dan ruang'}. Suara: {m['voice']}." for i, (c, m) in enumerate(zip(chars, metadata)))
-        mood = 'tertahan → terbuka → lega' if genre in ('reunion', 'confession', 'farewell') else 'ingin tahu → pertukaran → keputusan kecil'
-        idea_line = opts['idea'].rstrip(' .!?')
-        brief = f'''# {title}
-
-## Logline
-{idea_line} — {chars[0]['id']} membuka percakapan; {'lawan bicaranya memberi tanggapan hingga jarak emosional berubah' if len(chars) > 1 else 'satu gagasan kecil menjadi ajakan yang dapat dicoba'}.
-
-## Mood dan ritme
-Genre **{GENRE_LABELS.get(opts['style'] or genre, opts['style'])}**, nada **{emotion}**; kurva emosi {mood}. Target **{opts['duration_s']:g} detik**, estimasi parser {estimated:g} detik. Kalimat pendek, beri jeda satu detik setelah sapaan. Jangan buru-buru memotong reaksi terakhir.
-
-## Look, palet, pencahayaan
-Preset **{look}**, lighting **{LIGHTING[look]}**. Palet {palette[0]} untuk latar/bayangan, {palette[1]} aksen praktikal atau rim, {palette[2]} highlight dan kostum netral. Key lembut dari samping depan sekitar 45°, fill lemah menjaga kedua mata terbaca; rim memisahkan rambut dari latar. Hindari highlight kulit berlebihan. Warna kostum adalah arahan manual.
-
-## Lokasi, cuaca, dressing
-Set **{location}**, cuaca **{weather}**. {DRESSING[location]} Gunakan benda bawaan sebagai penanda tempat; dressing tambahan perlu dibuat manual, tanpa mengasumsikan aset baru.
-
-## Tokoh dan suara
-{cast_brief}
-
-## Blocking
-{'Tempatkan tokoh pertama di kiri dan pasangan di kanan, keduanya terbuka ke kamera depan. Tokoh lain mengisi setengah lingkaran tanpa menutupi wajah.' if len(chars) > 1 else 'Presenter berdiri di area depan, badan sedikit menyudut dan wajah ke kamera.'} Awali dengan sapaan, lanjutkan tatapan yang tertulis di naskah, lalu jeda. {'Salam akhir menandai penerimaan.' if genre in ('reunion', 'celebration', 'farewell') and len(chars) > 1 else 'Biarkan gestur berbasis dialog mengikuti penekanan kata.'} Jaga jalur dan tangan bebas dari meja atau kursi; tidak ada solver tabrakan dinamis.
-
-## Daftar shot · arahan manual
-{chr(10).join(shots)}
-Shot rinci di atas adalah saran untuk camera_shot. Teks menghasilkan mixed coverage bawaan: pembuka bersama, lalu single pembicara, serta full two-shot bila ada kontak. Durasi dan cut sesungguhnya mengikuti TTS/aksi.
-
-## Suara dan musik
-Dialog Piper lokal menjadi pusat. Aktifkan Foley/ambience bawaan {location}; {'angin dan cuaca tetap tipis di bawah dialog' if weather != 'clear' else 'ruang atau alam memberi lapisan latar tenang'}. Musik {'piano jarang, nada hangat dan sustain pendek' if genre in ('reunion', 'confession', 'farewell') else 'ritme ringan tanpa vokal'}, masuk setelah sapaan dan beri hening sebelum respons akhir. Musik belum ditambahkan otomatis: gunakan file lokal dengan add_audio lalu duck_music.
-
-## Yang dibangun dan penyesuaian manual
-Naskah membangun set, tokoh, outfit seeded dari katalog terpasang, look, cuaca, dialog, aksi dan coverage standar. Kamera rinci, palet kostum, dressing khusus dan musik perlu penyesuaian manual. Durasi {opts['duration_s']:g} detik adalah target; TTS dan gerak menentukan hasil akhir. Dialog offline adalah templat yang dapat diedit. Periksa frame Eevee pada tiap pembicara dan kontak sebelum video akhir.
-'''
-        if en:
-            # A local English treatment, using the same concrete scene decisions.
-            cast_en = '\n'.join(f"- **{c['id']}**: age {c['age']}, {'woman' if c['gender'] == 0 else 'man'}, {c['outfit']} outfit; local Piper voice cast by age/gender. {'Opens the conversation' if i == 0 else 'Listens and responds'}." for i, c in enumerate(chars))
-            shot_en = '\n'.join(f"- {round(i * opts['duration_s'] / n, 1):g}–{round((i + 1) * opts['duration_s'] / n, 1):g}s · {sizes[i]} · {'push_in' if i == n - 2 else 'static'} · {chars[i % len(chars)]['id']}. {'Establish the space' if i == 0 else 'Hold the response; preserve the eyeline'} ." for i in range(n))
-            brief = f'''# {title}
-
-## Logline
-{opts['idea']}. A small exchange moves from hesitation toward a shared understanding.
-
-## Mood and pacing
-{genre}; target {opts['duration_s']:g}s, parser estimate {estimated:g}s. Short lines, one quiet pause after the greeting, hold the final reaction.
-
-## Look, palette and lighting
-**{look}**; lighting **{LIGHTING[look]}**. Palette: {palette[0]} background/shadows, {palette[1]} practical accent, {palette[2]} highlights. Soft key 45° from front, gentle fill for readable eyes, subtle rim separation. Specific wardrobe colors need manual adjustment.
-
-## Location, weather and dressing
-**{location}**, **{weather}**. Use existing procedural furniture/scenery as context, leave the front camera lane open. Additional dressing is manual.
-
-## Characters and voices
-{cast_en}
-
-## Blocking
-First speaker on the left, partners on the right, faces open toward the camera. Solo presenters face the lens. Use the scripted glance and pause, keep hands clear of furniture. No dynamic collision solver.
-
-## Shot list · manual treatment
-{shot_en}
-These camera suggestions need camera_shot adjustments. The script builds standard mixed coverage and full contact shots. Actual cuts follow speech/action timing.
-
-## Sound and music
-Local speech over quiet room/nature ambience and procedural Foley. Suggest sparse piano, no vocals, silence before the last response. Music needs a local file, add_audio and duck_music; it is not generated automatically.
-
-## Build scope and manual adjustments
-Script builds cast, installed seeded outfits, set, look, weather, speech and supported actions. Custom shots, palette, music and extra dressing need manual work. Timing is approximate. Select a local English Piper model in Voices; the draft names the installed Indonesian default. Review Eevee frames before a final movie.
-'''
-        from .film import arrange
-        arranged = arrange(script, opts)
-        if arranged != script:
-            script = arranged
-            from engine.film_plan import parse_film
-            film = parse_film(script, seed=opts['seed'])
-            brief += '\n## Adegan film\n' + '\n'.join(f"- {s['index']}. {s['name']}: {s['environment']}, {(s['look'] or {}).get('preset', 'none')}; transisi {s['transition_in']['kind']}." for s in film['scenes'])
-            warnings.append('Draf film memakai beberapa proyek adegan; bangun dengan script_to_film. Detail kamera tetap manual.')
-        return dict(brief=brief.strip(), script=script, characters=metadata, warnings=warnings)
+            warnings.append('Select an installed English Piper model for English dialogue.')
+        return dict(brief=brief, script=script, treatment=treatment, characters=metadata, warnings=warnings)

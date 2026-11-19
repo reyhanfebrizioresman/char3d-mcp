@@ -48,8 +48,9 @@ def main(path):
         # Adjacent scenes alternate channels; transition windows cannot overlap.
         channel = 2+i%2*3
         a, b = scene['film_frames']
-        mov = strips.new_movie(f'Scene {i+1}', scene['movie'], channel=channel+1, frame_start=a)
-        mov.frame_final_duration = b-a+1
+        mov = strips.new_movie(f'Scene {i+1}', scene['movie'], channel=channel+1, frame_start=a-scene.get('source_in_frames', 0))
+        mov.frame_final_start = a
+        mov.frame_final_end = b+1
         mov.blend_type = 'ALPHA_OVER'
         segment = [mov]
         if scene['card_frames']:
@@ -64,8 +65,8 @@ def main(path):
             segment.extend([card, title])
         pictures.append(segment)
         try:
-            sound = strips.new_sound(f'Audio {i+1}', scene['movie'], channel=8+i%2, frame_start=a)
-            sound.frame_final_duration = b-a+1
+            sound = strips.new_sound(f'Audio {i+1}', scene['movie'], channel=8+i%2, frame_start=a-scene.get('source_in_frames', 0))
+            sound.frame_final_end = b+1+scene.get('source_out_frames', 0)
         except RuntimeError:
             sound = None  # A scene without sound is intentional silence.
         sounds.append(sound)
@@ -82,9 +83,9 @@ def main(path):
             values = [(start, 0), (end, 1)] if high == i else [(start, 1), (end, 0)]
             for pic in pictures[high]:
                 keys(pic, 'blend_alpha', values)
-            if sounds[i-1]:
+            if sounds[i-1] and not scene['transition_in'].get('audio'):
                 keys(sounds[i-1], 'volume', [(start, 1), (end, 0)])
-            if sounds[i]:
+            if sounds[i] and not scene['transition_in'].get('audio'):
                 keys(sounds[i], 'volume', [(start, 0), (end, 1)])
         else:
             lo, hi = start-n//2, start-n//2+n-1
@@ -93,10 +94,18 @@ def main(path):
             fade.color = (1, 1, 1) if kind == 'fade_white' else (0, 0, 0)
             fade.blend_type = 'ALPHA_OVER'
             opacity_keys(fade, [[lo, 0], [start, 1], [hi, 0]])
-            if sounds[i-1]:
+            if sounds[i-1] and not scene['transition_in'].get('audio'):
                 keys(sounds[i-1], 'volume', [(lo, 1), (start, 0)])
-            if sounds[i]:
+            if sounds[i] and not scene['transition_in'].get('audio'):
                 keys(sounds[i], 'volume', [(start, 0), (hi, 1)])
+    for i, scene in enumerate(spec['scenes']):
+        edit = scene['transition_in'].get('audio')
+        if edit == 'j_cut' and sounds[i]:
+            at = scene['film_frames'][0]-scene.get('source_in_frames', 0)
+            keys(sounds[i], 'volume', [(at, 0), (at+max(1, round(.04*spec['fps'])), 1)])
+        if edit == 'l_cut' and i and sounds[i-1]:
+            end = spec['scenes'][i-1]['film_frames'][1]+1+spec['scenes'][i-1].get('source_out_frames', 0)
+            keys(sounds[i-1], 'volume', [(end-max(1, round(.04*spec['fps'])), 1), (end, 0)])
     placed = []
     for i, ov in enumerate(spec['overlays']):
         ch = max([10]+[c for a, b, c in placed if a <= ov['end'] and b >= ov['start']])+1

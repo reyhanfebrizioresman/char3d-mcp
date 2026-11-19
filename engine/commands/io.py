@@ -43,6 +43,8 @@ def import_model(path):
     before = set(bpy.data.objects)
     IMPORTERS[ext](path)
     new = [o for o in bpy.data.objects if o not in before]
+    for obj in new:
+        obj["c3d_import_source"] = path
     return {
         "path": path,
         "imported": [{"name": o.name, "type": o.type,

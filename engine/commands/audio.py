@@ -9,6 +9,7 @@ Lip sync modes (picked automatically from what is provided):
 In every mode the loudness envelope scales how wide the mouth opens.
 """
 import math
+import json
 import os
 import uuid
 
@@ -217,6 +218,13 @@ def _key_volume(strip, ranges=(), amount_db=-12, attack=0.15, release=0.4):
         gain *= np.clip((frames - strip["char3d_audio_start"]) / (fade_in * fps), 0, 1)
     if fade_out:
         gain *= np.clip((strip["char3d_audio_end"] - frames) / (fade_out * fps), 0, 1)
+    if strip.get('char3d_audio_kind') == 'music' or strip.get('char3d_sfx_kind') == 'ambience':
+        for silence in json.loads(sc.get('char3d_director_silences', '[]')):
+            # 80 ms shoulders preserve continuity; the held interior is -30 dB.
+            a, b = silence['start'], silence['end']
+            edge = max(1., .08*fps)
+            depth = np.minimum(np.clip((frames-a)/edge, 0, 1), np.clip((b-frames)/edge, 0, 1))
+            gain *= 1-depth*(1-10**(silence.get('db', -30)/20))
     volume = strip.get("char3d_volume", strip.volume)
     strip["char3d_volume"] = volume
     # Dense samples preserve overlapping fades/ramps exactly at each video frame.

@@ -15,12 +15,13 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
-if os.environ.get('CHAR3D_PORT') != '9989':
-    raise SystemExit('Set CHAR3D_PORT=9989; never use 9876.')
+if os.environ.get('CHAR3D_PORT') not in ('9989', '9973'):
+    raise SystemExit('Set CHAR3D_PORT=9989 or 9973; never use 9876.')
 
 
 async def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--serial-video', action='store_true')
     parser.add_argument('--resume', action='store_true', help='Reuse saved verified build after an interrupted render')
     args = parser.parse_args()
     work = Path(os.environ.get('CHAR3D_WORKSPACE', ROOT / 'output'))
@@ -31,7 +32,11 @@ async def main():
         await session.initialize()
         async def call(name, args=None, label=None):
             start = time.monotonic()
-            result = await session.call_tool(name, args or {})
+            if name == 'render_video' and '--serial-video' in sys.argv:
+                from serial_video import render
+                result = await render(session, args or {})
+            else:
+                result = await session.call_tool(name, args or {})
             assert not result.isError, result
             data = []
             for block in result.content:

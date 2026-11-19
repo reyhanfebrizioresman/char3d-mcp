@@ -274,14 +274,42 @@ tanpa berpindah diam-diam ke API berbayar. Tidak ada panggilan online saat memer
 status. Model tidak diberi akses file, tools atau engine.
 
 MCP: `director_status()` dan `direct_scene(idea, generator="offline", seed=0)`
-menghasilkan `brief`, `script`, `characters`, `plan`, `build_options`, `warnings`.
+menghasilkan `brief`, `treatment`, `script`, `characters`, `plan`, `build_options`, `warnings`.
 Keluaran API juga berisi `usage` dan `cost_usd_estimate`; CLI menyebut kuota
 langganan. Tidak membangun adegan atau memulai Blender. Semua naskah diperiksa parser;
-Claude mendapat maksimal satu perbaikan. Arahan shot rinci, musik, warna kostum dan
-dressing khusus dalam treatment perlu penataan manual; naskah membangun fitur teks
-yang didukung dan coverage kamera standar. Durasi perkiraan, pakaian mengikuti aset
+Claude mendapat maksimal satu perbaikan. Cue shot, musik dan hening dijalankan
+oleh naskah; warna kostum dan dressing khusus tetap perlu penataan manual. Durasi perkiraan, pakaian mengikuti aset
 terpasang; periksa frame Eevee sebelum render akhir. Agen sebaiknya menulis naskah
 sendiri; generator ini terutama untuk UI dan draf cepat.
+
+## Metode penyutradaraan dan review film
+
+`direct_scene` kini menghasilkan `treatment` JSON serta Markdown: tiga pilihan
+struktur, logline, pembuka–perubahan–akhir, hook tiga detik, pengulangan detail
+pembuka di akhir, shot puncak, alasan tiap shot, beat sheet, cue map musik dan
+tabel ambience/Foley/musik. Generator offline tetap deterministik; API/CLI tetap
+memerlukan persetujuan dan memakai satu kesempatan perbaikan hasil terstruktur.
+
+Naskah menjalankan `[KAMERA: close-up Ana, push in]`, `[CAMERA: medium two-shot, orbit left]`, `[KAMERA: otomatis]`, `[MUSIK: tegang]`, `[MUSIC: stop]`, dan
+`[HENING 1 detik]` / `[SILENCE 1 second]`. Kamera berlaku sampai cue berikutnya;
+mood musik pindah pada bar berikutnya. Hening menurunkan musik/ambience 30 dB,
+Foley tetap terdengar. Transisi film menerima `J-cut 0.4` / `L-cut 0.4`: handle
+memangkas gambar sambil mempertahankan sinkron bibir/audio dan offset subtitle.
+
+Panggil `review_scene()` atau `review_film("Nama")`: urutan penilaian suara,
+ritme, kamera, performa, lalu kontinuitas/keterbacaan. Hasil berisi angka bukti,
+saran tool, contact sheet berlabel, strip aksi dan laporan Markdown/JSON.
+`fix=True` menjalankan tepat satu putaran perbaikan aman lalu memeriksa ulang;
+cerita, cast dan suara tidak diganti. `review_video("draft.mp4")` memeriksa hasil
+MP4 melalui PyAV tanpa Blender. Default workbench kecil, tanpa ASR;
+`asr=True` menambah Whisper lokal dan WER. Skor adalah heuristik, pengukuran
+geometri berupa proxy; exposure workbench perlu dicek lagi dengan Eevee/MP4.
+
+`credits()` menulis aset yang benar-benar dirujuk beserta lisensi/catatan asal.
+Render otomatis menulis `CREDITS.txt` di samping MP4 (`credits=False` untuk
+menonaktifkan); `credits(card=True)` menambah kartu akhir tiga detik. Pengiriman:
+MP4, SRT, treatment, CREDITS. Izin model suara dan aset impor tetap mengikuti
+sumbernya. Lihat [panduan lengkap](AGENTS.md#directing-method).
 
 ## Dari naskah menjadi adegan
 

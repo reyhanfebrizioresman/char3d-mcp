@@ -22,10 +22,18 @@ def transition(value=None):
     if value is None:
         return {'kind': 'cut', 'duration_s': 0.0}
     if isinstance(value, str):
-        m = re.fullmatch(r'([\w-]+)(?:\s+(\d+(?:\.\d+)?)(?:\s*(?:detik|seconds?|s))?)?', value.strip(), re.I)
+        parts = value.split(',')
+        if len(parts) > 2:
+            raise ValueError('transition accepts one audio lead or tail')
+        m = re.fullmatch(r'([\w-]+)(?:\s+(\d+(?:\.\d+)?)(?:\s*(?:detik|seconds?|s))?)?', parts[0].strip(), re.I)
         if not m:
             raise ValueError(f'Invalid transition: {value}')
         value = {'kind': m[1], 'duration_s': float(m[2]) if m[2] else .5}
+        if len(parts) == 2:
+            audio = re.fullmatch(r'([JL])[ -]cut\s+(\d+(?:\.\d+)?)(?:\s*(?:detik|seconds?|s))?', parts[1].strip(), re.I)
+            if not audio:
+                raise ValueError('audio transition needs J-cut or L-cut and seconds')
+            value.update(audio=audio[1].lower()+'_cut', audio_s=float(audio[2]))
     if not isinstance(value, dict):
         raise ValueError('transition_in must be a kind or dict')
     kind = str(value.get('kind', 'cut')).lower()
@@ -33,7 +41,12 @@ def transition(value=None):
     if kind not in ('cut', 'crossfade', 'fade_black', 'fade_white'):
         raise ValueError('transition must be cut/dissolve/crossfade/fade_black/dip_black/fade_white')
     seconds = _number(value.get('duration_s', .5), 'transition duration_s', .05, 10) if kind != 'cut' else 0.0
-    return {'kind': kind, 'duration_s': seconds}
+    result = {'kind': kind, 'duration_s': seconds}
+    if value.get('audio') is not None:
+        if value['audio'] not in ('j_cut', 'l_cut'):
+            raise ValueError('audio must be j_cut/l_cut or null')
+        result.update(audio=value['audio'], audio_s=_number(value.get('audio_s', .4), 'audio_s', .01, 10))
+    return result
 
 
 def _text(script):
@@ -102,6 +115,14 @@ def layout(scenes, fps=24, estimated=False):
     for i, scene in enumerate(scenes):
         count = (scene.get('estimated_frames') if estimated else scene.get('frames')) or scene['plan']['estimated_frames']
         count = count[1] - count[0] + 1
+        source_count = count
+        audio_in = scene['transition_in']
+        source_in = round(audio_in.get('audio_s', 0)*fps) if i and audio_in.get('audio') == 'j_cut' else 0
+        following = scenes[i+1]['transition_in'] if i+1 < len(scenes) else {}
+        source_out = round(following.get('audio_s', 0)*fps) if following.get('audio') == 'l_cut' else 0
+        count -= source_in+source_out
+        if count < 2:
+            raise ValueError('Audio handles leave fewer than two picture frames')
         card_frames = round(scene['card']['duration_s'] * fps) if scene.get('card') else 0
         t = scene['transition_in']
         minimum = 3 if t['kind'] in ('fade_black', 'fade_white') else 2
@@ -117,10 +138,13 @@ def layout(scenes, fps=24, estimated=False):
             if any(a <= d and b >= c for c, d in windows):
                 raise ValueError('Film transitions must not overlap')
             windows.append((a, b))
+        if i and t.get('audio') and round(t['audio_s']*fps) >= min(previous['segment_frames'], count):
+            raise ValueError('Audio transition exceeds adjacent scene duration')
         scene.update(segment_start=start, segment_frames=card_frames + count,
                      card_frames=card_frames, film_frames=[start + card_frames, end],
-                     audio_offset_frames=start + card_frames - 1,
-                     subtitle_offset_frames=start + card_frames - 1,
+                     audio_offset_frames=start + card_frames - 1 - source_in,
+                     subtitle_offset_frames=start + card_frames - 1 - source_in,
+                     source_in_frames=source_in, source_out_frames=source_out, source_frames=source_count,
                      transition_frames=n, overlap_frames=overlap)
         previous, cursor = scene, end + 1
     return [1, cursor - 1]
@@ -167,7 +191,10 @@ def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, l
                 used.add(ident)
                 continue
             beats.append(copy.deepcopy(beat))
-            for key in ('say', 'who', 'with', 'at', 'to'):
+            for subject in beat.get('subject', []) if isinstance(beat.get('subject'), list) else []:
+                if subject.casefold() in ids:
+                    used.add(ids[subject.casefold()])
+            for key in ('say', 'who', 'with', 'at', 'to', 'subject'):
                 if isinstance(beat.get(key), str):
                     value = ids.get(beat[key].casefold())
                     if value:
@@ -181,7 +208,7 @@ def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, l
         if not used:
             used.update(chars)  # silent establishing scene
         scene_chars = [copy.deepcopy(c) for ident, c in chars.items() if ident in used]
-        scene_raw = {k: copy.deepcopy(source.get(k, raw.get(k))) for k in ('environment', 'look', 'weather', 'style', 'music')
+        scene_raw = {k: copy.deepcopy(source.get(k, raw.get(k))) for k in ('environment', 'look', 'weather', 'style', 'music', 'treatment')
                      if source.get(k, raw.get(k)) is not None}
         if 'music' in source or 'music' in raw:
             scene_raw['music'] = copy.deepcopy(source.get('music', raw.get('music')))
@@ -206,6 +233,8 @@ def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, l
     result = dict(version=1, kind='film', name=name or raw.get('title') or 'Film', title=raw.get('title'),
                 characters=base['characters'], scenes=scenes, seed=seed, fps=fps, estimated_frames=frames,
                 duration_s=round(frames[1]/fps, 3), warnings=list(dict.fromkeys(warnings)))
+    if raw.get('treatment') is not None:
+        result['treatment'] = copy.deepcopy(raw['treatment'])
     return json.loads(json.dumps(result))
 
 

@@ -387,6 +387,22 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     basemesh["c3d_source"] = "mpfb"
     basemesh["c3d_age"] = float(age)
     basemesh["c3d_skin"] = skin_name or ""
+    basemesh['c3d_asset_provenance'] = json.dumps(dict(assets=list(filter(None,
+        [skin_name, hair, beard, eyes, eyebrows, eyelashes, 'teeth_base' if face else None,
+         'tongue01' if face else None, *chosen]))))
+    provenance = json.loads(basemesh['c3d_asset_provenance'])
+    pack_names = {}
+    pack_dir = os.path.join(_data_dir(), 'packs')
+    if os.path.isdir(pack_dir):
+        for filename in sorted(os.listdir(pack_dir)):
+            if filename.endswith('.json'):
+                with open(os.path.join(pack_dir, filename), encoding='utf-8') as stream:
+                    for asset in json.load(stream):
+                        pack_names[asset] = filename[:-5]
+    provenance['records'] = [dict(name=asset, pack=pack_names.get(asset, 'system'),
+        path=next((assets[asset] for assets in cat.values() if asset in assets), None))
+        for asset in provenance['assets']]
+    basemesh['c3d_asset_provenance'] = json.dumps(provenance)
     # Persist asset categories: names alone cannot identify every pack hair proxy.
     for obj in new:
         if obj.type != "MESH" or obj is basemesh:

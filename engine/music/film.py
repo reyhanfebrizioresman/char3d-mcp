@@ -34,7 +34,7 @@ def score_film(scenes, fps, total_frames, directory):
     speech, cuts, emotions, custom = [], [], [], []
     for scene in scenes:
         cfg = scene.get("score")
-        offset = scene["film_frames"][0]-scene["frames"][0]
+        offset = scene["film_frames"][0]-scene.get("source_in_frames", 0)-scene["frames"][0]
         speech.extend([[a+offset, b+offset] for a, b in scene.get("speech", [])])
         if cfg and cfg.get('follow_cuts', True):
             cuts.extend([f+offset for f in scene.get("score_cuts", [])])

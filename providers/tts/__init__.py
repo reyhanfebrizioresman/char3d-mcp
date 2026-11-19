@@ -245,6 +245,8 @@ class TTS:
                     result['inference'] = json.loads(metadata.read_text())
                 except (OSError, ValueError):
                     pass  # A valid cached WAV is usable without timing metadata.
+        path.with_suffix('.credits.json').write_text(json.dumps({k: result[k] for k in
+            ('engine', 'voice', 'privacy') if k in result}, ensure_ascii=False)+'\n')
         return result
 
     def close(self):

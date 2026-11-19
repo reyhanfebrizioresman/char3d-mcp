@@ -14,17 +14,29 @@ LOCATION_ALIASES = {'taman': 'park', 'pantai': 'beach', 'kantor': 'office',
 LIGHTING = {'golden_hour': 'sunset', 'sunset': 'sunset', 'misty_morning': 'overcast',
             'blue_hour': 'night', 'night': 'night', 'overcast_soft': 'overcast',
             'dreamy': 'soft', 'epic': 'dramatic', 'studio_film': 'studio', 'none': 'studio'}
+from .treatment import TREATMENT_SCHEMA, validate_treatment
+
+def wire_schema(value):
+    """Provider transports keep closed shapes/types; local validation enforces bounds."""
+    if isinstance(value, dict):
+        return {k: wire_schema(v) for k, v in value.items() if k not in
+                ('minimum', 'maximum', 'exclusiveMinimum', 'minLength', 'minItems', 'maxItems')}
+    if isinstance(value, list):
+        return [wire_schema(v) for v in value]
+    return value
+
+
 CHARACTER_FIELDS = ('id', 'appearance', 'outfit', 'voice', 'relationship')
 SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'properties': {
-        'brief': {'type': 'string'}, 'script': {'type': 'string'},
+        'brief': {'type': 'string'}, 'script': {'type': 'string'}, 'treatment': wire_schema(TREATMENT_SCHEMA),
         'characters': {'type': 'array', 'items': {
             'type': 'object', 'additionalProperties': False,
             'properties': {k: {'type': 'string'} for k in CHARACTER_FIELDS},
             'required': list(CHARACTER_FIELDS)}},
         'warnings': {'type': 'array', 'items': {'type': 'string'}},
-    }, 'required': ['brief', 'script', 'characters', 'warnings'],
+    }, 'required': ['brief', 'script', 'characters', 'warnings', 'treatment'],
 }
 PRIVACY = 'Ide dan opsi dikirim ke Anthropic hanya dengan persetujuan Anda.'
 SUBSCRIPTION = 'Memakai kuota langganan Claude; tidak ada tagihan USD per panggilan dari char3d.'
@@ -76,9 +88,18 @@ def user_prompt(opts, previous=None, feedback=None):
     return text
 
 
+def validate_cues(plan, treatment):
+    plans = [s['plan'] for s in plan['scenes']] if plan.get('scenes') else [plan]
+    actions = {b.get('do') for p in plans for b in p['beats']}
+    required = {'camera', 'music'} | ({'silence'} if treatment['cue_map']['silences'] else set())
+    if not required <= actions:
+        raise ValueError('Naskah harus menjalankan treatment melalui cue kamera, musik dan hening.')
+
+
 def validate(payload, opts, _scene_plan=None):
     if not isinstance(payload, dict) or set(payload) != set(SCHEMA['required']):
-        raise ValueError('Hasil harus berisi brief, script, characters, warnings saja.')
+        raise ValueError('Hasil harus berisi brief, script, characters, warnings, treatment saja.')
+    validate_treatment(payload['treatment'])
     for key in ('brief', 'script'):
         if not isinstance(payload[key], str) or not payload[key].strip() or len(payload[key]) > 80000:
             raise ValueError(f'{key} harus berupa teks, maksimal 80000 karakter.')
@@ -102,6 +123,7 @@ def validate(payload, opts, _scene_plan=None):
             raise ValueError('Tokoh pada metadata dan film harus sama.')
         if opts['characters'] and len(film['characters']) != opts['characters']:
             raise ValueError('Jumlah tokoh harus mengikuti opsi pengguna.')
+        validate_cues(film, payload['treatment'])
         return film
     plan = _scene_plan or parse_script(payload['script'], seed=opts['seed'])
     if plan['environment'] not in LOCATIONS:
@@ -130,6 +152,8 @@ def validate(payload, opts, _scene_plan=None):
             raise ValueError('Prop pegangan harus cup, phone, book atau handheld_microphone.')
         if beat.get('do') == 'sit' and beat.get('on') not in {'chair', 'bench', 'sofa'}:
             raise ValueError('Tempat duduk harus chair, bench atau sofa.')
+    if _scene_plan is None:
+        validate_cues(plan, payload['treatment'])
     # A generated draft must never opt the later build into a different online service.
     if any(c.get('voice', '').split(':')[0] in ('edge', 'chatterbox', 'f5') for c in plan['characters']):
         raise ValueError('Gunakan suara Piper lokal atau petunjuk suara berat/tinggi dalam naskah.')

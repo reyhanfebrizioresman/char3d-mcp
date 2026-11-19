@@ -4080,6 +4080,11 @@ async def _music_checks(call):
     await run(call, text_of)
 
 
+async def _review_checks(call):
+    from review_checks import run
+    await run(call, text_of)
+
+
 async def main():
     server_args = ["-m", "mcp_server.server"]
     if "--audio-only" in sys.argv and os.environ.get("CHAR3D_AUDIO_NO_ASR"):
@@ -4097,6 +4102,12 @@ async def main():
         assert {"auto_expression", "face_life"} <= tools
 
         async def call(tool, **args):
+            if '--serial-video' in sys.argv:
+                import serial_film
+                if tool == 'render_film':
+                    return await serial_film.render(s,args)
+                if tool in ('render_status','cancel_render') and args.get('job_id') in serial_film.PENDING:
+                    return await (serial_film.status if tool=='render_status' else serial_film.cancel)(s,args['job_id'])
             if tool == 'render_video' and '--serial-video' in sys.argv:
                 from serial_video import render
                 return await render(s, args)
@@ -4120,7 +4131,8 @@ async def main():
             await call("engine_shutdown")
             print("AUDIO E2E OK", flush=True)
             return
-        for flag, section in (("--world-only", _world_checks),
+        for flag, section in (("--review-only", _review_checks),
+                              ("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),
                               ("--mpfb-only", _materials_realistic_checks),
                               ("--animated-style-only", _animated_style_checks),

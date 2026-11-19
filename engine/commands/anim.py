@@ -1048,6 +1048,9 @@ def import_mocap(path, armature, start_frame=1, in_place=False, bone_map=None,
                 if act.users == 0:
                     bpy.data.actions.remove(act)
     info["source_file"] = path
+    if tgt.animation_data and tgt.animation_data.action:
+        sources = json.loads(tgt.animation_data.action.get('c3d_import_sources', '[]'))
+        tgt.animation_data.action['c3d_import_sources'] = json.dumps(sorted(set(sources + [path])))
     info["next_start_frame"] = info["frames"][1] + 1
     if foot_lock and not in_place:
         info["foot_lock"] = _lock(tgt, info["frames"][0], info["frames"][1])

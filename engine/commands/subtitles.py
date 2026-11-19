@@ -58,7 +58,7 @@ def get_config(sc):
 
 def _resolved_style(cfg):
     st = dict(STYLES[cfg.get("style", "tiktok")])
-    for k in ("max_words", "position", "uppercase", "highlight"):
+    for k in ("max_words", "position", "uppercase", "highlight", "min_hold", "hold", "max_cps"):
         if cfg.get(k) is not None:
             st[k] = cfg[k]
     st["size"] *= float(cfg.get("size", 1.0))
@@ -152,11 +152,13 @@ def chunk_words(words, fps, style):
                 flush()
         cur.append(w)
     flush()
-    lead, hold = 1, round(0.3 * fps)
+    lead, hold = 1, round(style.get('hold', .3) * fps)
     min_len = round((0.45 if style["max_words"] <= 3 else 0.8) * fps)
     for i, c in enumerate(chunks):
         c["start"] = max(0, round(c["words"][0][1]) - lead)
-        c["end"] = max(round(c["words"][-1][2]) + hold, c["start"] + min_len)
+        c["end"] = max(round(c["words"][-1][2]) + hold, c["start"] + min_len,
+                       c["start"] + round(style.get('min_hold', 0)*fps),
+                       c["start"] + round(len(' '.join(w[0] for w in c['words']))/style.get('max_cps', 100000)*fps))
     for i in range(len(chunks) - 1):
         nxt = chunks[i + 1]["start"]
         if chunks[i]["end"] > nxt or nxt - chunks[i]["end"] < round(0.25 * fps):
@@ -353,12 +355,17 @@ def write_srt(path, chunks, fps, frame_start, frame_end):
 @command("add_subtitles")
 def add_subtitles(style="tiktok", lines=None, words=None, start_frame=None, position=None,
                   size=1.0, color=None, highlight_color=None, highlight=None, uppercase=None,
-                  max_words=None, font=None):
+                  max_words=None, font=None, min_hold=None, hold=None, max_cps=None):
     """Turn on captions for render_video / render_frames(camera="scene")."""
     if style not in STYLES:
         raise ValueError(f"style must be one of {list(STYLES)}")
     if position is not None and position not in POSITIONS:
         raise ValueError(f"position must be one of {list(POSITIONS)}")
+    for label, value, low, high in (('min_hold',min_hold,0,60),('hold',hold,0,10),('max_cps',max_cps,1,100)):
+        if value is not None and (not math.isfinite(value) or not low<=value<=high):
+            raise ValueError(label+' outside range')
+    if max_words is not None and (type(max_words) is not int or not 1<=max_words<=100):
+        raise ValueError('max_words must be 1..100')
     sc = bpy.context.scene
     fps = sc.render.fps / (sc.render.fps_base or 1)
     if words:            # transcript words in seconds (e.g. from transcribe_audio)
@@ -370,7 +377,7 @@ def add_subtitles(style="tiktok", lines=None, words=None, start_frame=None, posi
         cfg_words = None
     cfg = {"enabled": True, "style": style, "position": position, "size": float(size),
            "highlight": highlight, "uppercase": uppercase, "max_words": max_words,
-           "font": font, "lines": lines}
+           "font": font, "lines": lines, "min_hold": min_hold, "hold": hold, "max_cps": max_cps}
     if color is not None:
         cfg["color"] = [float(c) for c in color][:3]
     if highlight_color is not None:
