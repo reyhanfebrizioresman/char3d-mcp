@@ -57,16 +57,54 @@ def score(issues):
     return round(sum(scores[c]*w for c, w in zip(CATEGORIES, WEIGHTS))), scores
 
 
+def camera_proposal(view, **changes):
+    """Replay native settings or offer a non-automatic reconstruction for known subjects."""
+    if view.get('repair'):
+        args=dict(view['repair'][0]['args'])
+    elif view.get('subject'):
+        args=dict(subject=view['subject'],shot=view.get('size','medium'),move=view.get('move','static'),
+                  angle=view.get('angle',0),start_frame=view['frames'][0],end_frame=max(view['frames'][0]+1,view['frames'][1]),
+                  name=view.get('camera',view['name']),require_composition=True)
+    else:
+        return []
+    return [call('camera_shot',**dict(args,**changes))]
+
+
+def camera_followups(shots, findings, applied):
+    """A failed refit becomes a tighter-size suggestion, never a second fix round."""
+    native={a['args'].get('name') for a in applied if a['tool']=='camera_shot' and a.get('status')=='applied'}
+    views={s['name']:s for s in shots}
+    result=[]
+    for finding in findings:
+        view=views.get(finding.get('shot'))
+        if finding['id'].split(':')[0]=='small_subject' and view and view.get('camera',view['name']) in native:
+            tighter=SIZES[min(len(SIZES)-1,SIZES.index(view['size'])+1)]
+            finding=dict(finding,fix=camera_proposal(view,shot=tighter,lens=None),auto_fixable=False,
+                message='Refitting did not restore subject scale; consider one tighter size.',
+                evidence=dict(finding['evidence'],refit_attempted=True))
+        result.append(finding)
+    return result
+
+
 def rhythm(shots, fps, words=(), duration=0):
     out, lengths = [], []
-    for shot in shots:
+    for index,shot in enumerate(shots):
         a, b = shot['frames']; seconds = (b-a+1)/fps; lengths.append(seconds)
         where = dict(shot=shot['name'], frame=a)
         if seconds < .8 and not shot.get('deliberate'):
-            out.append(issue('short_shot', 'rhythm', 'warn', 'The cut gives this shot less than 0.8 seconds.',
-                             dict(seconds=round(seconds, 3), minimum_s=.8), **where))
+            neighbour=shots[index-1] if index else shots[1] if len(shots)>1 else None
+            fix=[]
+            if neighbour:
+                earlier,later=(neighbour,shot) if index else (shot,neighbour)
+                fix=[call('delete_shot',name=later['name'])]
+                fix+=camera_proposal(earlier,end_frame=later['frames'][1])
+            else:
+                fix=camera_proposal(shot,end_frame=a+math.ceil(.8*fps)-1)
+            out.append(issue('short_shot', 'rhythm', 'warn', 'The cut gives this shot less than 0.8 seconds; consider merging it with its neighbour.',
+                             dict(seconds=round(seconds, 3), minimum_s=.8),fix=fix, **where))
         if seconds > 8 and shot.get('move', 'static') == 'static':
-            out.append(issue('long_static', 'rhythm', 'warn', 'Consider a motivated change or a visible action during this hold.', dict(seconds=seconds), **where))
+            fix=camera_proposal(shot,move='push_in',intensity=.35)
+            out.append(issue('long_static', 'rhythm', 'warn', 'Consider a slow approach or a visible action during this hold.', dict(seconds=seconds),fix=fix, **where))
         if a > 1:
             hit = next((w for w in words if w[1]+.08*fps < a < w[2]-.08*fps), None)
             if hit:
@@ -84,15 +122,25 @@ SIZES = ('extreme_wide', 'wide', 'full', 'medium_full', 'medium', 'medium_close'
 
 
 def camera_checks(shots):
-    out = []
+    out = []; planned_sizes = {}
     for previous, current in zip(shots, shots[1:]):
         same = set(previous.get('subject', [])) == set(current.get('subject', [])) and current.get('subject')
         a = previous.get('angle_end', previous.get('angle', 0)); b = current.get('angle', 0)
         delta = abs((a-b+180) % 360-180)
         near_size = abs(SIZES.index(previous.get('size', 'medium'))-SIZES.index(current.get('size', 'medium'))) <= 1
         if same and near_size and delta < 30:
+            # Change two sizes while retaining subject, move, timing and line
+            # constraints. A wider view is conservative about occlusion/headroom.
+            repair=current.get('repair',[])
+            fix=[]
+            if current.get('subject'):
+                i=SIZES.index(current.get('size','medium')); previous_i=planned_sizes.get(previous['name'],SIZES.index(previous.get('size','medium')))
+                choices=[n for n in range(len(SIZES)) if abs(n-previous_i)>=2]
+                target=min(choices,key=lambda n:(abs(n-i),n))
+                fix=camera_proposal(current,shot=SIZES[target],lens=None)
+                planned_sizes[current['name']]=target
             out.append(issue('jump_cut', 'camera', 'warn', 'Consecutive views of the same subject have little change in size or angle.',
-                dict(angle_change_deg=round(delta, 2), previous=previous['name']), shot=current['name'], frame=current['frames'][0]))
+                dict(angle_change_deg=round(delta, 2), previous=previous['name']),fix=fix,auto=bool(repair and fix),shot=current['name'],frame=current['frames'][0]))
         if previous.get('action_side', 0)*current.get('action_side', 0) < 0:
             out.append(issue('line_crossing', 'camera', 'error', 'Dialog coverage crosses the live action line.',
                 dict(previous_side=previous['action_side'], side=current['action_side']), shot=current['name']))
@@ -108,14 +156,16 @@ def camera_checks(shots):
         scale = min((p.get('body_height', 1) if size in ('full', 'wide', 'extreme_wide') else p.get('head_chest_height', 1) for p in samples), default=1)
         if scale < minimum:
             out.append(issue('small_subject', 'camera', 'warn', 'The subject occupies too little of the frame for this shot size.',
-                dict(projected_height=round(scale, 4), minimum=minimum, size=size), fix=repair, **where))
+                dict(projected_height=round(scale, 4), minimum=minimum, size=size),
+                fix=repair or camera_proposal(s,shot=SIZES[min(len(SIZES)-1,SIZES.index(size)+1)]),auto=bool(repair), **where))
         edge = [p for p in samples if p.get('face_edge')]
         blocked = s.get('occlusion', 0)
         if edge or blocked > .05:
             out.append(issue('face_visibility', 'camera', 'warn', 'A face reaches the frame edge or is blocked.',
                 dict(edge_samples=len(edge), face_occlusion=blocked), fix=repair, auto=bool(repair), **where))
         if s.get('face_angle',0)>75:
-            out.append(issue('face_turned','camera','warn','A subject faces away from the camera; eyes may be hidden by the head or hair.',dict(face_angle_deg=s['face_angle']),shot=s['name']))
+            fix=camera_proposal(s,face_coverage=True)
+            out.append(issue('face_turned','camera','warn','A subject faces away from the camera; consider face-relative coverage while retaining the action-line side.',dict(face_angle_deg=s['face_angle']),fix=fix,shot=s['name']))
         eyes = [p['eye_y'] for p in samples if 'eye_y' in p]
         if size in ('close_up', 'medium_close', 'extreme_close_up') and any(not .20 <= y <= .48 for y in eyes):
             out.append(issue('eye_line', 'camera', 'warn', 'Close-shot eyes lie outside the upper-third band.', dict(eye_y=eyes, band=[.20,.48]), **where))

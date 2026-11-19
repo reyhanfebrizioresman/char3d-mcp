@@ -468,7 +468,9 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                       depth_of_field: bool | None = None, f_stop: float = 2.8,
                       name: str | None = None,
                       avoid_occlusion: Literal["auto"] | bool = "auto",
-                      action_line: list[str] | None = None, require_composition: bool = False) -> dict:
+                      action_line: list[str] | None = None, require_composition: bool = False,
+                      angle_limits: list[float] | None = None, face_coverage: bool = False,
+                      coverage_turns: list[dict] | None = None) -> dict:
     """Create a cinematic shot camera for frames start..end, framed on `subject` (mesh or
     armature names; default = everything) even while it moves. angle: 0 = in front,
     90 = subject's left, 180 = behind. elevation: degrees (negative = low angle, heroic).
@@ -484,7 +486,10 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
     Tries one wider size before retaining the original camera with a warning.
     Faces turned over 75 degrees away also trigger adjustment; face_angle reports
     the worst sampled angle in degrees. Frontal clear shots keep identical keys;
-    False retains original framing. Returns
+    False retains original framing. face_coverage=True follows the live head-facing
+    direction while action_line/angle_limits constrain the camera side; coverage_turns
+    optionally identifies the active speaker. Review repairs preserve these settings.
+    Returns
     occlusion fractions, frame_coverage_before/after, normalized face_screen eye
     positions (top-left origin), subject_scale, shot_size, adjustments and timing.
     Subject parts/held props and ground are ignored; other characters can occlude."""
@@ -493,7 +498,8 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                      elevation=elevation, intensity=intensity, ease=ease, lens=lens,
                      handheld=handheld, roll=roll, depth_of_field=depth_of_field,
                      f_stop=f_stop, name=name, avoid_occlusion=avoid_occlusion,
-                     action_line=action_line, require_composition=require_composition)
+                     action_line=action_line, require_composition=require_composition,
+                     angle_limits=angle_limits, face_coverage=face_coverage, coverage_turns=coverage_turns)
 
 
 @mcp.tool()

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from engine.review import rhythm,camera_checks,subtitle_checks,audio_metrics,wer,safe_fixes,issue,call,articulation_present
+from engine.review import rhythm,camera_checks,subtitle_checks,audio_metrics,wer,safe_fixes,issue,call,articulation_present,camera_followups
 from engine.credits import collect
 from engine.script_plan import parse_script
 from engine.film_plan import parse_film,transition,layout
@@ -28,6 +28,12 @@ def ids(issues): return {i['id'].split(':')[0] for i in issues}
 
 
 class ReviewTests(unittest.TestCase):
+    def test_segment_bounds_parallel_and_inside(self):
+        from engine.ray_bounds import intersects
+        targets=np.array([[0,0,0],[4,0,0],[2,3,0],[-2,0,0],[2,.5,0],[2,0,3]])
+        self.assertEqual(intersects([2,0,0],targets,[-1,-1,-1],[1,1,1]).tolist(),[True,False,False,True,False,False])
+        self.assertTrue(intersects([0,0,0],targets,[-1,-1,-1],[1,1,1]).all())
+
     def test_rhythm_and_cuts(self):
         shots=[shot('a',1,12),shot('b',13,36),shot('c',37,300)]
         found=rhythm(shots,24,[('word',10,20)],duration=40)
@@ -41,6 +47,52 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn('jump_cut',ids(camera_checks([shot('a',1,24,0),shot('b',25,48,50)])))
         tiny=shot('tiny',1,24,size='close_up');tiny['samples']=[dict(head_chest_height=.05,eye_y=.05,face_edge=True)]
         self.assertTrue({'small_subject','eye_line','face_visibility'}<=ids(camera_checks([tiny])))
+
+    def test_native_camera_repairs_and_directing_suggestions(self):
+        shots=[shot('a',1,12),shot('b',13,72),shot('c',73,400)]
+        for s in shots:
+            s['repair']=[call('camera_shot',subject=s['subject'],shot=s['size'],move=s['move'],
+                             name=s['name'],start_frame=s['frames'][0],end_frame=s['frames'][1],action_line=['Ana','Budi'])]
+        shots[2].update(samples=[dict(head_chest_height=.03)],face_angle=100)
+        findings=rhythm(shots,24)+camera_checks(shots)
+        for rule in ('short_shot','long_static','face_turned'):
+            finding=next(i for i in findings if i['id'].split(':')[0]==rule)
+            self.assertTrue(finding['fix']);self.assertFalse(finding['auto_fixable'])
+        for finding in findings:
+            if finding['id'].split(':')[0] in ('jump_cut','small_subject'):
+                self.assertTrue(finding['auto_fixable']);self.assertEqual(finding['fix'][0]['tool'],'camera_shot')
+                self.assertEqual(finding['fix'][0]['args']['action_line'],['Ana','Budi'])
+        self.assertEqual(next(i for i in findings if i['id'].startswith('jump_cut:b'))['fix'][0]['args']['shot'],'full')
+        remaining=camera_followups(shots,findings,[dict(call('camera_shot',name='c'),status='applied')])
+        small=next(i for i in remaining if i['id'].startswith('small_subject:'))
+        self.assertFalse(small['auto_fixable']);self.assertTrue(small['evidence']['refit_attempted'])
+        self.assertEqual(small['fix'][0]['args']['shot'],'medium_close')
+
+    def test_localized_editorial_draft_and_arrangement(self):
+        from engine.music.description import describe
+        from engine.music.soundfont import arrangement
+        from engine.director_cues import direction
+        for en in (False,True):
+            r=direct('dua sahabat lama bertemu lagi di taman setelah sepuluh tahun',generator='offline',language='en' if en else 'id',seed=3)
+            self.assertFalse(r['plan']['warnings'])
+            self.assertTrue(any(b.get('shot')=='auto' for b in r['plan']['beats']))
+            cues=[ln for ln in r['script'].splitlines() if ln.startswith(('[KAMERA:','[CAMERA:'))]
+            self.assertTrue(all('_' not in ln for ln in cues))
+            self.assertIn('[MUSIC: calm]' if en else '[MUSIK: tenang]',r['script'])
+            self.assertIn('[SILENCE 1 second]' if en else '[HENING 1 detik]',r['script'])
+            self.assertNotIn('[CAMERA:' if not en else '[KAMERA:',r['script'])
+            self.assertIn('ten years' if en else 'sepuluh tahun',r['treatment']['logline'])
+            self.assertTrue(all(b['event'] not in ('camera','music','look','interact') for b in r['treatment']['beat_sheet']))
+            self.assertGreaterEqual(len({s['reason'] for s in r['treatment']['shot_list']}),4)
+            self.assertIn('Establish' if en else 'Kenalkan',r['treatment']['shot_list'][0]['reason'])
+            self.assertIn('all characters' if en else 'semua tokoh',r['treatment']['beat_sheet'][1]['event'])
+        self.assertEqual(direction('KAMERA: medium close-up Ana, diam')['shot'],'medium_close')
+        self.assertIn('rambut ekor kuda',direct('dua sahabat reuni di taman',generator='offline',seed=7)['script'])
+        self.assertIn('rambut bob',direct('dua sahabat, perempuan berambut bob',generator='offline',seed=7)['script'])
+        synth=describe('warm',backend='synth');self.assertIn('piano elektrik',synth)
+        with patch('engine.music.description.resolve_backend',return_value='soundfont'):
+            sf=describe('warm');self.assertIn(f"GM {arrangement('warm')['melody']}",sf)
+            self.assertNotEqual(sf,describe('calm'))
 
     def test_caption_hold_cps_and_wer(self):
         chunks=[dict(start=1,end=13,words=[('A very long caption to read immediately',1,10)])]
@@ -163,6 +215,21 @@ class ReviewTests(unittest.TestCase):
         film=direct('dua sahabat di kafe lalu taman',generator='offline',duration_s=60)
         self.assertEqual(len(film['plan']['scenes']),3)
         validate_treatment(film['treatment'])
+
+    def test_director_rejects_lost_speaker_and_long_override(self):
+        opts=options('dua sahabat reuni di taman',characters=2,seed=3)
+        good=Backend().generate(opts)
+        lost=copy.deepcopy(good)
+        lost['script']=lost['script'].replace('[KAMERA: medium full dua tokoh, diam]',
+            '[KAMERA: medium '+good['characters'][1]['id']+', diam]',1)
+        long=copy.deepcopy(good);long['script']=long['script'].replace('[KAMERA: otomatis]\n','',1)
+        for bad in (lost,long):
+            with self.assertRaisesRegex(ValueError,'kamera'):validate(bad,opts)
+        from providers.director import claude,claude_cli
+        for provider,name in ((claude,'claude'),(claude_cli,'claude_cli')):
+            with patch.object(provider.Backend,'available',return_value=True),patch.object(provider.Backend,'generate',side_effect=[lost,copy.deepcopy(good)]) as mocked:
+                result=direct(opts['idea'],generator=name,characters=2,seed=3,consent=True)
+                self.assertEqual(result['generator'],name);self.assertEqual(mocked.call_count,2)
 
 
 if __name__=='__main__':

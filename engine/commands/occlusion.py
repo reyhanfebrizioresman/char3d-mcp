@@ -10,6 +10,7 @@ from mathutils.bvhtree import BVHTree
 from .anim import semantic_map
 from .gaze import head_frame, face_angle
 from .util import is_helper, scene_bounds
+from ..ray_bounds import intersects
 
 
 def sample_frames(start, end, fps):
@@ -90,6 +91,16 @@ class _Mesh:
         d = b - a
         length = d.length
         return length > 1e-5 and self.tree.ray_cast(a, d / length, max(0, length - 0.005))[0] is not None
+
+    def hits(self, origin, targets):
+        """Reject local AABB misses in bulk; possible hits still use the exact BVH."""
+        inverse=np.asarray(self.inverse,dtype=float)
+        local=targets@inverse[:3,:3].T+inverse[:3,3]
+        mask=intersects(self.inverse@origin,local,self.lo,self.hi)
+        result=np.zeros(len(targets),dtype=bool)
+        for i in np.flatnonzero(mask):
+            result[i]=self.hit(origin,Vector(targets[i]))
+        return result
 
     def inside(self, point):
         p = self.inverse @ point
@@ -184,14 +195,19 @@ def frame_coverage(pos, rot, lens, sensor, meshes, groups):
     if depth <= 0:
         return 1.0
     basis = rot.to_matrix()
-    covered = 0
+    targets=[]
     for y in range(14):
         for x in range(24):
-            direction = Vector((((x+0.5)/24-0.5)*sensor[0]/lens,
-                                (0.5-(y+0.5)/14)*sensor[1]/lens, -1))
-            target = pos + basis @ direction * depth
-            covered += any(m.hit(pos, target) for m in meshes)
-    return covered / (24*14)
+            direction=Vector((((x+0.5)/24-0.5)*sensor[0]/lens,
+                              (0.5-(y+0.5)/14)*sensor[1]/lens,-1))
+            targets.append(pos+basis@direction*depth)
+    targets=np.asarray(targets)
+    covered=np.zeros(len(targets),dtype=bool)
+    for mesh in meshes:
+        remaining=np.flatnonzero(~covered)
+        if not len(remaining):break
+        covered[remaining]=mesh.hits(pos,targets[remaining])
+    return float(np.mean(covered))
 
 
 class VisibilityProbe:

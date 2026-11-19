@@ -75,7 +75,7 @@ def direct(idea, generator='auto', language='id', duration_s=30, characters=None
         plan = validate(payload, opts)
     from .treatment import markdown
     if '## Treatment' not in payload['brief']:
-        payload['brief'] += '\n\n' + markdown(payload['treatment'])
+        payload['brief'] += '\n\n' + markdown(payload['treatment'],language)
     result = {**payload, 'generator': generator, 'plan': plan,
               'build_options': {'language': language, 'lighting': LIGHTING[(plan.get('look') or {}).get('preset', 'none')],
                                 'camera': 'mixed', 'seed': seed, 'treatment': payload['treatment'],

@@ -1,7 +1,7 @@
 """Offline idea → real MCP build → two Eevee dialogue stills + voiced draft MP4.
 
-CHAR3D_PORT=9989 CHAR3D_WORKSPACE=$PWD/output .venv/bin/python tests/director_e2e.py
-Uses only the isolated 9989 engine. All evidence is gitignored under output/.
+CHAR3D_PORT=9973 CHAR3D_WORKSPACE=$PWD/output .venv/bin/python tests/director_e2e.py --serial-video
+The review matrix uses --reviews-only. All evidence is gitignored under output/.
 """
 import asyncio
 import argparse
@@ -23,6 +23,8 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--serial-video', action='store_true')
     parser.add_argument('--resume', action='store_true', help='Reuse saved verified build after an interrupted render')
+    parser.add_argument('--review-case', choices=['reunion3','reunion7','confession2'])
+    parser.add_argument('--reviews-only', action='store_true', help='Build and review three 30-second offline scenarios')
     args = parser.parse_args()
     work = Path(os.environ.get('CHAR3D_WORKSPACE', ROOT / 'output'))
     report = json.loads((work / 'director_e2e.json').read_text()) if args.resume else {}
@@ -55,23 +57,12 @@ async def main():
                 draft, built = report['direct_scene'], report['build']
             else:
                 await call('new_scene', {'frame_end':48})
-                # Test-only local MPFB preferences: keep addon data writable.
-                await call('run_blender_python', {'code': f'''import importlib,os,shutil
-module='bl_ext.user_default.mpfb'
-source=os.path.join(bpy.utils.extension_path_user(module),'data')
-home={str(work / 'director_mpfb')!r}
-os.makedirs(home,exist_ok=True)
-if not os.path.isdir(os.path.join(home,'data')): shutil.copytree(source,os.path.join(home,'data'))
-cls=importlib.import_module(module+'._preferences').MpfbPreferences
-if 'bl_rna' not in cls.__dict__: bpy.utils.register_class(cls)
-a=bpy.context.preferences.addons.get(module)
-if a is None:
-    a=bpy.context.preferences.addons.new();a.module=module
-a.preferences.mpfb_user_data=home
-bpy.context.scene.render.threads_mode='FIXED'
-bpy.context.scene.render.threads=8
-result=True
-'''}, 'test_setup')
+                from director_review_checks import setup
+                await setup(call,work)
+                if args.reviews_only or args.review_case:
+                    from director_review_checks import run
+                    await run(call,work,args.review_case)
+                    return
                 draft = await call('direct_scene', {'idea':'Dua sahabat bertemu lagi di taman saat senja setelah 10 tahun, haru.',
                                                'generator':'offline', 'duration_s':15, 'characters':2, 'seed':7})
                 await call('script_to_scene', {'script':draft['script'], 'build':False, **draft['build_options']}, 'plan')
@@ -80,12 +71,9 @@ result=True
             assert len(built['characters']) == 2
             assert all(c['realistic'] for c in built['characters'].values()), built['warnings']
             assert built['generated_files'] or built['cache_hits']
-            # The first two-shot showed the listener's bob obscuring her profile.
-            # Apply one manual treatment adjustment and inspect it before delivery.
-            first = built['shots'][0]
-            await call('camera_shot', {'name': first['camera'], 'subject':[built['lines'][0]['speaker']],
-                                      'shot':'medium', 'angle':60, 'move':'static',
-                                      'start_frame':first['frames'][0], 'end_frame':first['frames'][1]}, 'opening_camera_adjustment')
+            reviewed = await call('review_scene',dict(level='standard',size=384),'delivery_review')
+            assert reviewed['score']>=90,reviewed['issues']
+            assert not [i for i in reviewed['issues'] if i['category'] in ('rhythm','camera') and i['severity'] in ('warn','error')],reviewed['issues']
             frames = [line['start'] + min(8, (line['end']-line['start']) // 2) for line in built['lines'][:2]]
             await call('render_frames', {'frames':frames, 'camera':'scene', 'engine_name':'workbench', 'size':384}, 'workbench')
             await call('render_frames', {'frames':frames, 'camera':'scene', 'engine_name':'eevee', 'size':512}, 'eevee')

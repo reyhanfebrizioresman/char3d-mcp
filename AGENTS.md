@@ -900,6 +900,16 @@ at the ending, one peak shot, motivated shot list, beat sheet, music/cut grid,
 section sound table and subtitle design. `direct_scene` returns this as `treatment`
 JSON and Markdown inside `brief`; offline/API/CLI use the same closed contract.
 No external directing documents or prompts are included.
+Offline drafts keep their dramatic progression and reserve camera overrides for the
+opening, the decisive line and the ending echo, returning to automatic speaker coverage
+between them. Their beat sheets describe actions/actors; instrument notes come from the
+actual composer events and the selected synth or zero-based GM program mapping.
+All director providers validate hidden speaking turns and long static overrides before
+building; online transports retain their single repair opportunity.
+Indonesian scripts use `MUSIK`, `KAMERA`, `HENING`, `jeda`, translated mood aliases and
+readable shot names (`medium close-up`, `close-up`, `diam` for a static camera).
+Default offline hair keeps eyes clear; an explicitly requested bob still needs visual
+inspection. Inspect the peak close-up even when the proxy-based camera score is high.
 
 Execute decisions with bracket cues or dict beats:
 - `[KAMERA: close-up Ana, push in]`, `[CAMERA: wide, drone reveal]`,
@@ -941,8 +951,11 @@ and a quiet turn; shot length/variation/mid-word cuts; projected scale, face/eye
 position, visibility, jump cuts and dialog side; subtitle hold/CPS/face overlap,
 title duration, sampled luminance/contrast; blink/articulation/expression/motion,
 sole/torso/held-grip proxies. `fix=True` runs at most one call per tool/target for
-safe blink, ducking, missing Foley/ambience, subtitle grouping/hold, one-size wider
-camera or title hold fixes, and reviews once. It never edits the script, cast or
+safe blink, ducking, missing Foley/ambience, subtitle grouping/hold, native camera
+re-fitting or title hold fixes, and reviews once. An undersized native shot is re-fitted
+with its subject, move and dialog side retained; a jump cut changes the incoming view
+by two sizes. Short shots, long static holds and turned faces receive executable
+suggestions, kept for a directing decision. It never edits the script, cast or
 voices. Insufficient subtitle space and artistic edits remain suggestions.
 `add_subtitles(min_hold=1.8,hold=.6,max_cps=17)` supplies reading-time targets;
 subsequent captions and the scene end can still constrain them.
@@ -973,6 +986,9 @@ Verification for this feature uses only **9973**, workspace `$PWD/output`, one
 Blender at a time. `tests/test_review.py` prints `REVIEW UNIT OK`;
 `tests/e2e_smoke.py --review-only --serial-video` supplies deliberate faults and
 before/after evidence. Keep `--script-only`, `--film-only` and director E2E passing.
+`tests/director_e2e.py --reviews-only` builds three seeded offline scenes and asserts
+score >=90, no rhythm/camera warnings/errors, speaker visibility and static holds <=6 s.
+Each matrix case uses a fresh owned engine; `--review-case NAME` reruns one case.
 Do not install packages into the shared `.venv`.
 
 ## Sutradara AI (idea → script)

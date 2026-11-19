@@ -12,7 +12,7 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from . import command, dispatch
 from .. import context
-from ..review import issue, call, score, rhythm, camera_checks, subtitle_checks, audio_metrics, sound_checks, report_text, safe_fixes, articulation_present
+from ..review import issue, call, score, rhythm, camera_checks, subtitle_checks, audio_metrics, sound_checks, report_text, safe_fixes, articulation_present, camera_followups
 
 
 def read(owner, key, default=None):
@@ -80,14 +80,15 @@ def _shots(sc, level):
     from .gaze import head_frame
     items=[]
     rigs=[o for o in sc.objects if o.type=='ARMATURE' and not o.hide_render and not o.name.startswith('__')]
-    for raw in dispatch('list_shots',{})['shots']:
+    raw_shots=dispatch('list_shots',{})['shots']
+    for raw in raw_shots:
         if not raw['camera']: continue
         cam=bpy.data.objects[raw['camera']]; meta=dict(cam.get('c3d_shot',{})); args=read(cam,'c3d_shot_args',{})
         a=max(sc.frame_start,raw['frames'][0]); b=min(sc.frame_end,raw['frames'][1])
         if b<a: continue
         size=meta.get('shot_size',meta.get('shot','medium')); names=list(meta.get('subject') or [])
         if size not in SHOTS:size='medium'
-        allowed={'subject','shot','move','start_frame','end_frame','angle','elevation','intensity','ease','lens','handheld','roll','depth_of_field','f_stop','name','action_line'}
+        allowed={'subject','shot','move','start_frame','end_frame','angle','elevation','intensity','ease','lens','handheld','roll','depth_of_field','f_stop','name','action_line','face_coverage','coverage_turns','angle_limits'}
         args={k:v for k,v in args.items() if k in allowed}
         missing=[n for n in names if n not in bpy.data.objects]
         names=[n for n in names if n in bpy.data.objects]
@@ -122,11 +123,16 @@ def _shots(sc, level):
                 rot=cam.matrix_world.to_euler(); aim=pos+cam.matrix_world.to_quaternion()@Vector((0,0,-1))
                 probe.capture(f,pos,aim,rot,cam.data.lens)
         measured=probe.measure() if probe.samples else {}
-        wider={'extreme_close_up':'close_up','close_up':'medium_close','medium_close':'medium','medium':'medium_full'}
         repair=[]
-        if args and size in wider and b>a:
-            repair=[call('camera_shot',**dict(args,name=cam.name,subject=names,shot=size,start_frame=a,end_frame=b,
-                         require_composition=True,avoid_occlusion='auto'))]
+        if args and names and not missing and b>a:
+            # Legacy native shots did not save their coverage flags. Add a live
+            # line constraint so re-fitting cannot silently change dialog sides.
+            line=args.get('action_line') or [r.name for r in rigs[:2]]
+            # A camera reused by return-to-coverage markers must keep its other
+            # intervals. Give this repair its own local camera in that case.
+            repair_name=cam.name+f'_Review{a}' if sum(s['camera']==cam.name for s in raw_shots)>1 else cam.name
+            repair=[call('camera_shot',**dict(args,name=repair_name,subject=names,shot=size,start_frame=a,end_frame=b,
+                         action_line=line if len(line)>1 else None,require_composition=True,avoid_occlusion='auto'))]
         items.append(dict(name=raw['marker'],camera=cam.name,frames=[a,b],subject=names,
                           size=size,move=meta.get('move','static'),samples=samples,missing_subjects=missing,
                           deliberate=bool(cam.get('c3d_deliberate_cut',False)),
@@ -398,7 +404,9 @@ def _scene_once(level,sheet,engine,size,frames,asr):
             strips.append(dict(action=label,frames=seq,path=result['path']))
         for sample in observations:
             if sample.get('contrast') is not None and sample['contrast']<.035:
-                issues.append(issue('low_contrast','readability','warn','Subject and surrounding background have similar sampled luminance.',dict(luminance_difference=sample['contrast'],engine=engine),frame=sample['frame']))
+                # Workbench renders untextured grey; its contrast is only a provisional hint.
+                severity='info' if engine=='workbench' else 'warn'
+                issues.append(issue('low_contrast','readability',severity,'Subject and surrounding background have similar sampled luminance.',dict(luminance_difference=sample['contrast'],engine=engine),frame=sample['frame']))
             if sample['dark_fraction']>.85 or sample['blown_fraction']>.5:
                 issues.append(issue('exposure','readability','warn','Sampled image is predominantly dark or near-white.',sample,frame=sample['frame']))
         for prev,cur in zip(observations,observations[1:]):
@@ -443,6 +451,7 @@ def review_scene(level='standard',fix=False,sheet=True,engine='workbench',size=3
             except (ValueError,RuntimeError,TypeError,KeyError,OSError) as exc:
                 applied.append(dict(action,status='failed',reason=str(exc)))
         after=_scene_once(level,sheet,engine,size,frames,asr)
+        after['issues']=camera_followups(after['shots'],after['issues'],applied)
         after.update(before=dict(score=before['score'],scores=before['scores'],issues=before['issues'],
                                  contact_sheet=before['contact_sheet'],report_md=before['report_md']),
                      fixed=applied,remaining=after['issues'],fix_rounds=1)

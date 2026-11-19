@@ -11,10 +11,13 @@ def cameras(plan, characters, shots, prefix, warnings):
     cast = [c['rig'] for c in characters.values()]
     baseline = sorted([(m.frame, m.camera) for m in sc.timeline_markers if m.camera], key=lambda x: x[0])
     cues = [b for b in plan['beats'] if b.get('do') == 'camera']
+    # Dialog coverage cuts four frames before speech. Share that cut boundary
+    # instead of leaving a four-frame sliver before an editorial override/auto.
+    starts = [next((f for f,_ in reversed(baseline) if 0 <= b['frames'][0]-f <= 4),b['frames'][0]) for b in cues]
     from .gaze import head_frame
     for i, beat in enumerate(cues):
-        lo = beat['frames'][0]
-        hi = cues[i+1]['frames'][0]-1 if i+1 < len(cues) else sc.frame_end
+        lo = starts[i]
+        hi = starts[i+1]-1 if i+1 < len(cues) else sc.frame_end
         if hi < lo:
             continue
         cover = next((cam for f, cam in reversed(baseline) if f <= lo), sc.camera)

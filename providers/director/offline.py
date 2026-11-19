@@ -169,7 +169,10 @@ def cast(opts, text, rng):
             ident += str(i + 1)
         outfit = find(text, (('winter', r'salju|snow|winter|dingin'), ('sport', r'olahraga|sport'),
                        ('formal', r'formal|kantor|office|sales|pitch|guru|interview')), 'casual')
-        hair = ('bob', 'ekor kuda')[rng.randrange(2)] if gender == 0 else 'pendek'
+        # Keep the eyes readable in the default dialog/peak views. Side-swept bob
+        # cards can hide them even when the head proxy passes camera visibility.
+        bob = re.search(r'(?:rambut|haircut?)\s+(?:model\s+)?bob\b|\bbob(?:bed)?\s+(?:hair|cut)', text)
+        hair = ('bob' if bob else 'ekor kuda') if gender == 0 else 'pendek'
         result.append(dict(id=ident, gender=gender, age=max(1, min(90, age)), hair=hair,
                            outfit=outfit, relationship=relationship))
     return result
@@ -201,9 +204,8 @@ class Backend:
         chars = cast(opts, text, rng)
         en = opts['language'] == 'en'
         pairs = list((ENGLISH if en else DIALOG)[genre])
-        # Keep a coherent ending, vary which opening detail carries the scene.
-        start = rng.randrange(3)
-        pairs = pairs[start:3] + pairs[:start] + pairs[3:]
+        # Keep the dramatic progression. Cast, look and title still vary by seed;
+        # shuffling the middle used to put the vulnerable admission before setup.
         title = rng.choice(['Ruang untuk Cerita', 'Satu Pertemuan', 'Sebelum Kita Pulang'])
         if genre == 'reunion':
             title = rng.choice(['Bangku yang Sama', 'Setelah Sepuluh Tahun' if re.search(r'10|sepuluh|ten years', text) else 'Satu Pertemuan Lagi', 'Kembali Menyapa'])
@@ -221,9 +223,15 @@ class Backend:
             speech = [s for p in pairs for s in p]
         extra = (['I would like to hear more.', 'Let us take our time.', 'That gives me something to think about.', 'Thank you for being here.'] if en else
                  ['Aku ingin mendengar lebih banyak.', 'Kita tidak perlu buru-buru.', 'Ada yang ingin kupikirkan lagi.', 'Terima kasih sudah ada di sini.'])
-        while len(speech) < 48:
-            speech.extend(extra)
-        from engine.script_plan import parse_script
+        # Fit complete exchanges and retain the resolution, rather than stopping
+        # after an arbitrary line or appending filler after the ending.
+        budget = max(2, opts['duration_s']-5)
+        def spoken_seconds(words):
+            return sum(len(w)/14+.48 for w in words)
+        while len(speech)>max(4,len(chars)) and spoken_seconds(speech)>budget:
+            del speech[min(len(chars),len(speech)-len(chars)-1):min(2*len(chars),len(speech)-len(chars))]
+        while opts['duration_s']>45 and spoken_seconds(speech)<budget-4 and len(speech)<48:
+            speech[-len(chars):-len(chars)] = extra[:len(chars)]
         for i, words in enumerate(speech):
             char = chars[i % len(chars)]
             ident = char['id']
@@ -235,15 +243,11 @@ class Backend:
                 lines.append(f'{ident}: {words}')
             if i == len(chars) - 1:
                 if len(chars) > 1:
-                    lines.append(f"[{chars[0]['id']} melihat {chars[1]['id']}]")
+                    lines.append(f"[{chars[0]['id']} {'looks at' if en else 'melihat'} {chars[1]['id']}]")
                 else:
-                    lines.append(f"[{ident} melihat camera]")
-                lines.append('[jeda 1 detik]')
-            plan = parse_script('\n'.join(lines), seed=opts['seed'])
-            elapsed = plan['estimated_frames'][1] / plan['fps']
-            if len(declared) == len(chars) and elapsed >= opts['duration_s'] - 5:
-                break
-        if opts['duration_s'] >= 25:
+                    lines.append(f"[{ident} {'looks at' if en else 'melihat'} camera]")
+                lines.append('[pause 1 second]' if en else '[jeda 1 detik]')
+        if opts['duration_s'] >= 45:
             if len(chars) > 1 and genre in ('reunion', 'celebration', 'farewell'):
                 lines.append(f"[{chars[0]['id']} dan {chars[1]['id']} bersalaman]")
             elif genre == 'lesson':
@@ -256,11 +260,21 @@ class Backend:
                          relationship=c['relationship']) for c in chars]
         from .film import arrange
         from .treatment import template_pass, markdown
-        script, treatment = template_pass(arrange(script, opts), opts, genre, chars)
+        from .story import narrative, PLACES
+        story = narrative(genre, chars, location, en, opts['idea'])
+        script, treatment = template_pass(arrange(script, opts), opts, genre, chars, story)
         palette = PALETTES[look]
-        brief = f"# {title}\n\n{genre}; {location}, {weather}. Look {look}; lighting {LIGHTING[look]}. "
-        brief += f"Palette {', '.join(palette)}. Soft face key, light fill and separated background.\n\n"
-        brief += DRESSING[location] + '\n\n' + markdown(treatment)
+        if en:
+            brief = f"# {title}\n\n{genre}; {PLACES[location][1]}, {weather}. Look {look}; lighting {LIGHTING[look]}. "
+            brief += f"Palette {', '.join(palette)}. Soft face key, light fill and separated background.\n\n"
+            brief += 'Keep the speaking area clear; layer the existing set pieces behind the cast.'
+        else:
+            label = dict(reunion='Pertemuan kembali',argument='Perselisihan',confession='Pengakuan',interview='Wawancara',
+                         lesson='Belajar bersama',sales='Penjelasan pilihan',comedy='Komedi',celebration='Perayaan',farewell='Perpisahan',conversation='Percakapan')[genre]
+            sky = dict(clear='cerah',rain='hujan',snow='salju',fog='berkabut',wind='berangin')[weather]
+            brief = f"# {title}\n\n{label} di {PLACES[location][0]}, {sky}. Look {look.replace('_',' ')}; pencahayaan {LIGHTING[look]}. "
+            brief += f"Palet {', '.join(palette)}. Cahaya utama lembut, pengisi ringan, latar terpisah.\n\n"+DRESSING[location]
+        brief += '\n\n' + markdown(treatment,opts['language'])
         warnings = ['Draf offline memakai skenario lokal; periksa dialog dan timing TTS sebelum membangun.',
                     'Cue kamera, musik dan hening dapat dijalankan; warna kostum dan dressing khusus perlu penataan.']
         if opts['language'] == 'ms':

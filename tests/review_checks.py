@@ -3,11 +3,13 @@ import json
 import os
 from pathlib import Path
 import time
+import textwrap
 
 
 async def run(call,text_of):
     root=Path(__file__).resolve().parents[1];work=root/'output';report={}
     async def data(tool,**args):
+        if tool=='run_blender_python':args['code']=textwrap.dedent(args['code'])
         start=time.monotonic(); result=json.loads(text_of(await call(tool,**args))[0])
         report.setdefault('calls',[]).append(dict(tool=tool,seconds=round(time.monotonic()-start,4)))
         print('REVIEW CHECK',tool,report['calls'][-1]['seconds'],flush=True)
@@ -15,6 +17,35 @@ async def run(call,text_of):
     def save(): (work/'review_e2e.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     await data('scene_info')
     await data('new_scene',frame_end=2)
+    # Bulk rejection must agree with the original exact BVH casts, including
+    # transformed/non-uniform meshes and rays parallel to bounds planes.
+    proof=await data('run_blender_python',code='''
+import numpy as np
+from mathutils import Vector
+from engine.commands.occlusion import _Mesh
+from engine.commands import dispatch
+bpy.ops.mesh.primitive_cube_add(location=(.3,.5,1),rotation=(.2,.4,.6),scale=(.5,1.2,.8))
+obj=bpy.context.object
+bpy.context.view_layer.update()
+probe=_Mesh(obj,bpy.context.evaluated_depsgraph_get(),1.8)
+rng=np.random.default_rng(17)
+targets=np.vstack([rng.uniform(-3,3,(600,3)),[(0,-4,1),(0,4,1),(2,-4,1)]])
+errors=0
+for origin in (Vector((0,-4,1)),obj.location.copy(),Vector((2,0,0))):
+    exact=np.array([probe.hit(origin,Vector(t)) for t in targets])
+    errors+=int(np.count_nonzero(exact!=probe.hits(origin,targets)))
+dispatch('camera_shot',dict(subject=[obj.name],shot='full',start_frame=1,end_frame=12,name='ReviewBinding',avoid_occlusion=False))
+marker=bpy.context.scene.timeline_markers.new('ReviewReturn',frame=14)
+marker.camera=bpy.data.objects['ReviewBinding']
+dispatch('camera_shot',dict(subject=[obj.name],shot='full',start_frame=1,end_frame=24,name='ReviewBinding',avoid_occlusion=False))
+bindings_preserved=marker.camera is bpy.data.objects['ReviewBinding']
+bpy.context.scene.timeline_markers.remove(marker)
+dispatch('delete_shot',dict(name='ReviewBinding'))
+bpy.data.objects.remove(obj,do_unlink=True)
+result=dict(rays=3*len(targets),errors=errors,bindings_preserved=bindings_preserved)
+''')
+    assert proof['result']['errors']==0 and proof['result']['bindings_preserved'],proof
+    report['geometry_proof']=proof['result']
     if os.environ.get('CHAR3D_REVIEW_REUSE'):
         await data('open_project',path='review_fault.blend')
     else:
@@ -65,8 +96,9 @@ async def run(call,text_of):
     report['after']=after;save()
     assert after['fix_rounds']==1
     remaining={i['id'].split(':')[0] for i in after['issues']}
-    assert not {'missing_blink','subtitle_speed','music_ducking'}&remaining,after['issues']
-    assert {'jump_cut','short_shot','small_subject'}<=remaining
+    assert not {'missing_blink','subtitle_speed','music_ducking','jump_cut','small_subject'}&remaining,after['issues']
+    assert 'short_shot' in remaining
+    assert all(i['fix'] for i in after['issues'] if i['id'].split(':')[0] in ('short_shot','long_static','face_turned'))
     await data('save_project',path='review_fixed.blend')
     # Draft is intentionally short; serial_video runs the native worker with editor stopped.
     draft=await data('render_video',path='review_fault_draft.mp4',quality='draft',width=384,height=216,

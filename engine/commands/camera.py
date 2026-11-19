@@ -157,6 +157,7 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
 
     name = name or _shot_name()
     old = bpy.data.objects.get(name)
+    bindings = [m for m in sc.timeline_markers if old and m.camera == old]
     if old:
         cam_data = old.data
         bpy.data.objects.remove(old, do_unlink=True)
@@ -165,6 +166,8 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     cam_data = bpy.data.cameras.new(name)
     cam = bpy.data.objects.new(name, cam_data)
     sc.collection.objects.link(cam)
+    for marker in bindings:
+        marker.camera = cam
     cam["c3d_shot"] = {"subject": subject, "shot": shot, "move": move}
     cam["c3d_focus_turns"] = json.dumps(coverage_turns or [])
     if depth_of_field is not None:
@@ -325,7 +328,8 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     cam['c3d_shot_args'] = json.dumps(dict(subject=subject, shot=used_size, move=move,
         start_frame=start, end_frame=end, angle=angle, elevation=elevation, intensity=intensity,
         ease=ease, lens=lens, handheld=handheld, roll=roll, depth_of_field=depth_of_field,
-        f_stop=f_stop, name=name, action_line=action_line))
+        f_stop=f_stop, name=name, action_line=action_line, angle_limits=angle_limits,
+        face_coverage=face_coverage, coverage_turns=coverage_turns))
 
     # timeline: cut to this camera at its start frame
     replaced = []

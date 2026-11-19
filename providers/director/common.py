@@ -94,6 +94,20 @@ def validate_cues(plan, treatment):
     required = {'camera', 'music'} | ({'silence'} if treatment['cue_map']['silences'] else set())
     if not required <= actions:
         raise ValueError('Naskah harus menjalankan treatment melalui cue kamera, musik dan hening.')
+    for p in plans:
+        beats=p['beats'];cameras=[(i,b) for i,b in enumerate(beats) if b.get('do')=='camera']
+        for n,(i,cue) in enumerate(cameras):
+            if cue['shot']=='auto':continue
+            j=cameras[n+1][0] if n+1<len(cameras) else len(beats)
+            span=beats[i+1:j]
+            offscreen=[b['say'] for b in span if b.get('say') and cue.get('subject') and b['say'] not in cue['subject']]
+            if offscreen:
+                raise ValueError('Cue kamera menyembunyikan pembicara '+offscreen[0]+'. Kembalikan coverage otomatis sebelum jawabannya.')
+            end=beats[j]['estimated_frames'][0] if j<len(beats) else p['estimated_frames'][1]+1
+            seconds=(end-cue['estimated_frames'][0])/p['fps']
+            breath=not any('say' in b for b in span) and any(b.get('do') in ('pause','silence') for b in span)
+            if cue.get('move')=='static' and seconds>6 and not breath:
+                raise ValueError('Cue kamera diam lebih dari enam detik tanpa jeda napas; gunakan coverage otomatis di antara momen penting.')
 
 
 def validate(payload, opts, _scene_plan=None):

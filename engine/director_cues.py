@@ -7,6 +7,16 @@ MOVES = ('static', 'push_in', 'dolly_in', 'dolly_out', 'pull_out', 'orbit_left',
          'orbit_right', 'arc', 'crane_up', 'crane_down', 'truck_left', 'truck_right',
          'pan_left', 'pan_right', 'tilt_up', 'tilt_down', 'zoom_in', 'crash_zoom',
          'dolly_zoom', 'handheld', 'tracking', 'tracking_side', 'drone_reveal')
+MOVE_ALIASES = {'diam': 'static', 'dorong masuk': 'push_in', 'tarik mundur': 'dolly_out'}
+
+
+def display_size(value):
+    return {'close_up': 'close-up', 'medium_close': 'medium close-up',
+            'extreme_close_up': 'extreme close-up'}.get(value, value.replace('_', ' '))
+
+
+def display_move(value, language='en'):
+    return ('diam' if language != 'en' and value == 'static' else value.replace('_', ' '))
 
 
 def token(value):
@@ -32,15 +42,16 @@ def direction(text):
         return {'do': 'camera', 'shot': 'auto'}
     pieces = [s.strip() for s in value.split(',')]
     first = pieces.pop(0)
-    match = re.fullmatch(r'(' + '|'.join(s.replace('_', r'[ -_]') for s in sorted(SIZES, key=len, reverse=True)) +
+    size_forms = {display_size(s): s for s in SIZES} | {s.replace('_', ' '): s for s in SIZES} | {s: s for s in SIZES}
+    match = re.fullmatch(r'(' + '|'.join(re.escape(s).replace(r'\ ', r'[ -_]') for s in sorted(size_forms, key=len, reverse=True)) +
                          r')(?:\s+(two[ -]shot|dua tokoh))?(?:\s+(.+))?', first, re.I)
     if not match:
         return None
-    beat = {'do': 'camera', 'shot': token(match[1]), 'move': 'static'}
+    beat = {'do': 'camera', 'shot': size_forms.get(match[1].lower(), token(match[1])), 'move': 'static'}
     if match[3]:
         beat['subject'] = match[3].strip()
     if pieces:
-        move = token(pieces[0])
+        move = MOVE_ALIASES.get(pieces[0].lower(), token(pieces[0]))
         if len(pieces) != 1 or move not in MOVES:
             return None
         beat['move'] = move

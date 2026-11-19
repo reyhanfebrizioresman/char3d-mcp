@@ -646,14 +646,14 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
     with timed("graphics"):
         words_available = any(load_words(bpy.data.objects[c["mesh"]], 1, final) for c in characters.values())
         if subtitles and words_available:
-            dispatch("add_subtitles", {"style": "classic"})
+            dispatch("add_subtitles", {"style": "classic", **(dict(max_words=14,min_hold=1.8,hold=.6,max_cps=17) if plan.get('treatment') else {})})
         else:
             dispatch("remove_subtitles", {})
             if subtitles:
                 warnings.append("No word times available; subtitles disabled")
         if plan["title"]:
             dispatch("add_title", {"text": plan["title"], "style": "lower_third", "size": 0.7, "start_s": 0,
-                "duration_s": min(2, final / fps), "name": prefix + "Title"})
+                "duration_s": min(3 if plan.get('treatment') else 2, final / fps), "name": prefix + "Title"})
         for i, beat in enumerate(titles):
             dispatch("add_title", {"text": beat["title"], "subtitle": beat.get("subtitle"), "style": "center",
                 "start_s": (beat["frames"][0] - 1) / fps,

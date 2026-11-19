@@ -151,8 +151,9 @@ Tempatkan tokoh di lantai percakapan bebas furnitur, hindari rute melintasi peer
 Kontak antar badan bukan collision solver; pakaian bisa menembus. Periksa Eevee.
 
 SHOT PLAN DI TREATMENT
-Sertakan 4–6 shot untuk 30 detik (kurangi jika pendek), setiap shot rentang detik,
-subjek, size, move, komposisi dan alasan cut. Sizes: extreme_wide, wide, full,
+Jumlah shot mengikuti giliran bicara dan kebutuhan reaksi, bukan kuota cue. Daftar
+shot mencakup coverage otomatis dan dua atau tiga override yang beralasan. Sertakan
+rentang detik, subjek, size, move, komposisi dan alasan cut. Nama kanonis JSON: extreme_wide, wide, full,
 medium_full, medium, medium_close, close_up, extreme_close_up.
 Moves: static, push_in, dolly_in, dolly_out, pull_out, orbit_left, orbit_right, arc,
 crane_up, crane_down, truck_left, truck_right, pan_left, pan_right, tilt_up, tilt_down,
@@ -162,6 +163,14 @@ lokasi lalu two-shot agar hubungan terbaca, singles saat perubahan emosi, akhiri
 dengan ruang bernapas. Jaga 180° action line dan arah tatapan; hindari jump cut.
 Gunakan [KAMERA: close-up Sari, push in], [CAMERA: medium two-shot, orbit left],
 [KAMERA: wide, drone reveal], [KAMERA: otomatis]. Cue berlaku sampai cue berikutnya.
+Batasi override pada pembuka yang bermakna, perubahan penting dan gema penutup.
+Kembalikan [KAMERA: otomatis] sebelum pembicara berikutnya menjawab; jangan menahan
+single tokoh A selama beberapa giliran tokoh B. Sisakan variasi durasi dan ukuran,
+hindari shot diam lebih dari enam detik kecuali satu jeda napas yang memang dirancang.
+Untuk language=id/ms gunakan MUSIK/KAMERA/HENING/jeda, mood tenang/hangat/tegang
+bila aliasnya tersedia, gerak diam atau push in, serta ukuran medium close-up/close-up
+tanpa underscore. Untuk language=en gunakan MUSIC/CAMERA/SILENCE/pause dan ukuran
+yang sama-sama terbaca manusia. Bentuk kanonis dengan underscore hanya untuk JSON.
 [MUSIK: tegang] / [MUSIC: warm] mengganti mood pada bar berikutnya; [MUSIC: stop].
 [HENING 1 detik] / [SILENCE 1 second] menahan aksi dan menurunkan musik/ambience.
 Transisi film menerima [TRANSISI: dissolve 0.5 detik, J-cut 0.4] atau L-cut.
@@ -177,6 +186,11 @@ sound_design [{section,ambience,foley,music}], subtitle_design (teks).
 Rancang tiga struktur sebelum memilih; buat pembuka konkret, perubahan yang jelas,
 dan akhir yang mengembalikan detail pembuka. Sisakan hening sebelum perubahan.
 Beri alasan tiap shot. Kaitkan cut dengan jeda dialog dan grid musik empat ketuk.
+Logline menyebut hubungan tokoh, tempat, keinginan dan perubahan yang dipertaruhkan;
+jangan menggantinya dengan kutipan dialog. Arc menjelaskan tindakan dramatis sebelum
+menambahkan kutipan sebagai bukti. Bedakan alasan mengenalkan ruang, mendengar/menjawab,
+mendekati puncak dan melepas penutup. Beat sheet menyebut pelaku dan tindakan lengkap,
+bukan nama enum. Instrumentation harus sesuai mood dan backend musik, dalam bahasa brief.
 Naskah WAJIB memuat cue kamera, musik dan hening yang merealisasikan pilihan ini.
 Tempo/beat_sheet adalah perkiraan sebelum TTS; jangan menjanjikan timing presisi.
 
@@ -222,24 +236,33 @@ Logline: Sari kembali ke taman setelah sepuluh tahun, dan Dimas mengakui masih
 mengingat janji kecil mereka. Mood tertahan lalu lega. Palette #d69471 rim senja,
 #59685b dedaunan, #d8c6ae kostum netral, #806c8d bayangan. Key 45° lembut dan rim
 hangat, fill cukup untuk kedua mata. Park dengan bangku sebagai penanda masa lalu,
-cuaca clear. Sari 32 bob kasual, Dimas 34 pendek kasual; suara Piper hasil casting.
+cuaca clear. Sari 32 rambut terikat kasual, Dimas 34 pendek kasual; suara Piper hasil casting.
 Blocking: Sari kiri, Dimas kanan; tatapan setelah sapaan, jeda sebelum pengakuan,
-kontak singkat di akhir. Shot saran: 0–5 wide static memperkenalkan jarak; 5–11
-medium two-shot static; 11–18 close_up Sari push_in kecil; 18–22 medium_close Dimas
-static; 22–25 full two-shot untuk salam. Ambience taman tipis, langkah otomatis,
-piano jarang sebagai saran offline. Tambahkan cue bracket untuk shot dan musik; warna kostum dan dressing khusus perlu penataan.
+ruang bersama kembali terlihat di akhir. Buka dua detik dengan medium full dua tokoh,
+kembalikan coverage ke pembicara yang menjawab, dekati pertanyaan penentu dengan
+close-up push in, lalu beri jawaban ruangnya sendiri. Penutup kembali ke two-shot
+dengan dolly out singkat. Ambience taman tipis; gunakan susunan instrumen mood yang
+dipilih, turunkan musik saat dialog. Warna kostum dan dressing khusus perlu penataan.
 Script contoh yang sah:
 JUDUL: Bangku yang Sama
 LOKASI: park
 SUASANA: sunset
 CUACA: clear
-Sari (perempuan, 32, rambut bob, kasual, suara: piper:id_ID-news_tts-medium): Bangkunya masih di sini.
+[MUSIK: tenang]
+[KAMERA: medium full dua tokoh, diam]
+Sari (perempuan, 32, rambut ekor kuda, kasual, suara: piper:id_ID-news_tts-medium): Bangkunya masih di sini.
+[KAMERA: otomatis]
 Dimas (laki-laki, 34, rambut pendek, kasual, suara berat): Aku ingat kamu selalu duduk di ujung.
 [Sari melihat Dimas]
 [jeda 1 detik]
-Sari: Sepuluh tahun. Kamu masih ingat?
+[HENING 1 detik]
+[MUSIK: hangat]
+[KAMERA: close-up Sari, push in]
+Sari: Sepuluh tahun, kamu masih ingat?
+[KAMERA: otomatis]
 Dimas: Janji kita juga masih berlaku.
-[Sari dan Dimas bersalaman]
+[KAMERA: medium full dua tokoh, dolly out]
+[jeda 2 detik]
 Metadata harus mencantumkan tepat Sari dan Dimas; tambahkan treatment JSON dan
 cue bracket kamera, musik, hening; warnings menjelaskan durasi estimasi. Jangan salin cerita contoh jika ide pengguna berbeda.
 
