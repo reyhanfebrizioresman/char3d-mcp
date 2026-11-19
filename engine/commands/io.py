@@ -1,6 +1,6 @@
 """Import / export / save / open."""
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import bpy
 
@@ -123,11 +123,16 @@ def export_asset(path, objects=None, max_influences=None):
         exported = [o for o in bpy.context.scene.objects
                     if (not objects or o.select_get()) and o.visible_get()]
         from .holding import export_attachments
+        from .materials import export_materials
+        portable = os.path.splitext(path)[1].lower() in ('.glb', '.gltf')
+        material_context = export_materials(exported) if portable else nullcontext(None)
         with _limited_weights(exported, max_influences) as limited:
             with export_attachments(exported):
-                _export(path, objects, max_influences)
+                with material_context as material_report:
+                    _export(path, objects, max_influences)
         return {"path": path, "bytes": os.path.getsize(path),
-                "max_influences": max_influences, "vertices_limited": limited}
+                "max_influences": max_influences, "vertices_limited": limited,
+                "material_fallback": material_report}
     finally:
         for obj in bpy.context.selected_objects:
             obj.select_set(False)

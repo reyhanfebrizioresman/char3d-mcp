@@ -27,7 +27,9 @@ def nature_cost_factor(sc, engine):
 
 
 def _effects_cost(sc, engine):
-    return cost_factor(sc,engine)*look_cost_factor(sc,engine)*nature_cost_factor(sc,engine)
+    from .materials import scene_cost_factor
+    return (cost_factor(sc, engine) * look_cost_factor(sc, engine) *
+            nature_cost_factor(sc, engine) * scene_cost_factor(sc, engine))
 
 QUALITY = {
     # engine, resolution %, samples
@@ -578,11 +580,13 @@ def render_options(quality="final", frame_start=None, frame_end=None, vertical=F
         options.append({"resolution": name, "size": f"{w}x{h}",
                         **_estimate(sc, quality, w, h, frames + handles)})
     engine = QUALITY[quality][0]
+    from .materials import scene_cost_factor
     calib = _calibration_report()
     out = {"quality": quality, "frames": [start, end], "duration_s": round(frames / fps, 2),
            "render_style": style_config(sc), "style_cost_factor": cost_factor(sc, engine),
            "cinematic_look": look_config(sc), "look_cost_factor": look_cost_factor(sc, engine),
            "nature_cost_factor": nature_cost_factor(sc, engine),
+           "materials_cost_factor": scene_cost_factor(sc, engine),
            "handle_frames": handles,
            "scene_weight": "heavy" if _scene_weight(sc) >= 1 else "light",
            "options": options, "machine_speed": calib[ENGINE_KEY[engine]]}

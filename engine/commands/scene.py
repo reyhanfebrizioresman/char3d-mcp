@@ -47,7 +47,7 @@ def _describe(obj):
         info["mesh"] = {
             "vertices": len(me.vertices),
             "faces": len(me.polygons),
-            "materials": [m.name for m in me.materials if m],
+            "materials": [slot.material.name for slot in obj.material_slots if slot.material],
             "vertex_groups": len(obj.vertex_groups),
             "shape_keys": len(me.shape_keys.key_blocks) if me.shape_keys else 0,
         }

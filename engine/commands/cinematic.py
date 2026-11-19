@@ -473,6 +473,8 @@ def applied_look(sc, camera=None):
         yield
         return
     from .outdoor import outdoor_root
+    from .materials import apply_look_materials, restore_look_materials
+    portrait_materials = []
     objects, meshes, materials, groups, worlds, actions = [], [], [], [], [], []
     lights, cameras = [], []
     old_world = sc.world
@@ -508,6 +510,8 @@ def applied_look(sc, camera=None):
         has_rim = False
         for obj in list(sc.objects):
             if obj.type != 'LIGHT':
+                continue
+            if obj.get('c3d_material_catchlight_owner'):
                 continue
             original = obj.data
             transform = {key: (getattr(obj, key).copy() if hasattr(getattr(obj, key), 'copy')
@@ -624,9 +628,11 @@ def applied_look(sc, camera=None):
             _focus(sc, camera, objects, actions)
         _volume(sc, cfg, outdoors, objects, meshes, materials)
         _particles(sc, cfg, objects, meshes, materials, groups)
+        portrait_materials = apply_look_materials(sc, cfg)
         bpy.context.view_layer.update()
         yield
     finally:
+        restore_look_materials(portrait_materials)
         for camera, original in cameras:
             copy = camera.data
             camera.data = original

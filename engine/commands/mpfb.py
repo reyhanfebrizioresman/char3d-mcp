@@ -312,9 +312,11 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
                            hair=None, eyebrows="eyebrow001", eyelashes="eyelashes01",
                            eyes="high-poly", clothes=None, rig="game_engine",
                            subdiv=0, location=(0, 0, 0), face=True, beard=None,
-                           outfit=None, seed=0):
+                           outfit=None, seed=0, materials="enhanced"):
     """Build a realistic human with MPFB. gender 0=female..1=male; age in years;
     muscle/weight/height/proportions 0..1 (0.5 = average); race weights dict."""
+    from ..materials import options
+    options(materials)
     AssetService, HumanService, _loc = _services()
     if rig == "rigify":
         addon_utils.enable("rigify", default_set=True)   # MPFB checks this before adding the metarig
@@ -383,6 +385,17 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     basemesh.name = name
     basemesh["c3d_kind"] = "humanoid"
     basemesh["c3d_source"] = "mpfb"
+    basemesh["c3d_age"] = float(age)
+    basemesh["c3d_skin"] = skin_name or ""
+    # Persist asset categories: names alone cannot identify every pack hair proxy.
+    for obj in new:
+        if obj.type != "MESH" or obj is basemesh:
+            continue
+        part = obj.name.removeprefix(name + '.')
+        obj["c3d_material_part"] = ("hair " + part) if hair and part == hair else part
+        if part in metadata:
+            obj["c3d_garment_category"] = metadata[part]["category"]
+            obj["c3d_garment_tags"] = " ".join(metadata[part]["tags"])
     repaired = {}
     if root.type == "ARMATURE":
         repaired = _repair_part_weights([o for o in new if o.type == "MESH" and o is not basemesh],
@@ -421,6 +434,12 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         "height_m": round(hi.z - lo.z, 3) if lo else None,
         "parts": sorted(o.name for o in new if o.type == "MESH" and o is not basemesh),
     })
+    if materials == "enhanced":
+        from .materials import upgrade_materials
+        result["materials"] = upgrade_materials(root.name)
+    else:
+        result["materials"] = {"quality": "mpfb", "materials_cost_factor": 1.}
+    result["mesh"]["materials"] = [slot.material.name for slot in basemesh.material_slots if slot.material]
     return result
 
 
