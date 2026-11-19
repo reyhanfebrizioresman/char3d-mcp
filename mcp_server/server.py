@@ -950,7 +950,8 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
                                  clothes: list[str] | None = None, rig: MpfbRig = "game_engine",
                                  subdiv: int = 0, location: list[float] = [0, 0, 0],
                                  face: bool = True, beard: str | None = None,
-                                 outfit: Outfit | None = None, seed: int = 0) -> dict:
+                                 outfit: Outfit | None = None, seed: int = 0,
+                                 materials: Literal["enhanced", "mpfb"] = "enhanced") -> dict:
     """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
     eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
     gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
@@ -965,12 +966,27 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
     import_mocap and camera_shot (pass the armature name `<name>_rig` as subject).
     rig="game_engine" (53 bones, best for games/glTF) or "rigify" (full animator control
     rig incl. face controls, ~930 bones; slower, ~9 s). face=True loads ARKit face shapes +
-    visemes and adds teeth/tongue so set_expression / lip_sync / auto_blink work."""
+    visemes and adds teeth/tongue so set_expression / lip_sync / auto_blink work.
+    materials="enhanced" preserves textures and improves skin/eyes/hair/fabric shading;
+    "mpfb" keeps original shaders. upgrade_materials can switch existing characters."""
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
                      clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face,
-                     beard=beard, outfit=outfit, seed=seed)
+                     beard=beard, outfit=outfit, seed=seed, materials=materials)
+
+
+@mcp.tool()
+async def upgrade_materials(character: str, quality: Literal["enhanced", "mpfb"] = "enhanced",
+                            skin_tone: str | list[float] | None = None,
+                            skin_detail: float = 1.0, hair_detail: float = 1.0) -> dict:
+    """Improve an existing MPFB character's skin, eyes, hair and fabric, retaining textures.
+    character is its armature or body. quality="mpfb" restores exact original materials.
+    skin_tone: null samples the texture; light/medium/dark or linear RGB tunes scatter
+    without recoloring the texture. Detail 0..2 scales pores/strand variation (default 1).
+    Persistent in .blend/video snapshots. glTF uses a reported bake-free PBR fallback."""
+    return await run("upgrade_materials", character=character, quality=quality,
+                     skin_tone=skin_tone, skin_detail=skin_detail, hair_detail=hair_detail)
 
 
 Expression = Literal["neutral", "smile", "big_smile", "laugh", "sad", "angry", "furious",

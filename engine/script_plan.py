@@ -269,7 +269,9 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
         for key, default, low, high in (("pitch", 0, -12, 12), ("pitch_offset", 0, -12, 12), ("rate", 1, .5, 2)):
             if key in char:
                 char[key] = _number(char.get(key, default), key, low, high)
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate"}:
+        if "materials" in char and char["materials"] not in ("enhanced", "mpfb"):
+            raise ValueError("materials must be enhanced or mpfb")
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):

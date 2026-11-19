@@ -25,6 +25,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `render_preview`, `render_views` | Render pratinjau (kamera otomatis atau kamera shot), gambarnya dikirim balik ke AI; `engine_name="eevee"` untuk tekstur |
 | `create_human` | Karakter manekin prosedural: realistic, heroic, stylized, cartoon, chibi |
 | `create_realistic_human`, `mpfb_assets` | Manusia realistis (MakeHuman/MPFB): kulit, rambut, baju, sepatu, janggut, aksesori; kategori pakaian + preset `outfit` dengan `seed`; rig `game_engine`, `mixamo`, `rigify` |
+| `upgrade_materials` | Material kulit, mata basah, rambut dan kain yang ditingkatkan; `quality="mpfb"` memulihkan material asli |
 | `set_expression`, `list_expressions` | 24 ekspresi wajah (senyum, tawa, sedih, marah, kaget, kedip, dll.) + 52 unit ARKit |
 | `auto_expression` | Ekspresi otomatis per kalimat dari makna teks lip sync (id/ms/en): senang, sedih, kaget, marah, takut, berpikir; negasi dan tanda baca, antisipasi, kembali ke ekspresi dasar saat jeda, serta `cues` manual; artikulasi mulut dan kedipan tetap berjalan |
 | `lip_sync`, `auto_blink` | Gerak mulut dari teks dan kedipan otomatis |
@@ -504,6 +505,23 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 ```
 
 ## Manusia realistis (MPFB)
+
+Material `enhanced` kini menjadi default: tekstur kulit tetap dipakai, dengan
+scatter hangat yang mengikuti warna kulit, roughness lokal, detail pori halus,
+normalisasi kulit terang agar tidak putih kapur, iris cokelat alami dengan
+catchlight khusus mata, variasi rambut dan sheen kain. Gunakan `materials="mpfb"`
+saat membuat karakter untuk shader bawaan, atau
+`upgrade_materials("Maya_rig", quality="mpfb")` untuk memulihkannya persis.
+`skin_detail` / `hair_detail` bernilai 0..2; `skin_tone=None` mengukur tekstur,
+atau pilih `light` / `medium` / `dark` untuk menyesuaikan scatter tanpa mengganti
+warna tekstur. Material tersimpan dalam `.blend` dan snapshot video. glTF tetap
+membawa tekstur warna/alpha/normal dan roughness dasar; hasil ekspor melaporkan
+detail prosedural yang hilang. Estimasi render menghitung faktor material
+tersendiri (maksimal 1.15×; draft 1×).
+Koreksi potret tidak ditumpuk penuh dengan key sinematik yang sudah diredupkan;
+preset lampu dan exposure global tetap. Bukti pengukuran dan sheet revisi ada di
+`output/material_review_v2/` dan `output/skin_result.md`.
+
 `create_realistic_human` memakai [MPFB](https://extensions.blender.org/add-ons/mpfb/) dan
 paket aset sistem MakeHuman (CC0). Keduanya dipasang di Blender portable milik char3d,
 jadi `~/.config/blender` tidak tersentuh. Instalasi (±327 MB, checksum diverifikasi):

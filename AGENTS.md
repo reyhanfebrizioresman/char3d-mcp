@@ -134,6 +134,114 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 - Use `create_human` (mannequin) for stylized/blockout work or when MPFB is missing
   (`mpfb_assets` errors → tell the user to run `scripts/install_mpfb.sh`).
 
+## Character materials
+
+`create_realistic_human(..., materials="enhanced")` is the default, including
+script/film builds and characters used in dialog. `materials="mpfb"` retains the
+original MPFB shaders. Existing characters use
+`upgrade_materials("Maya_rig", quality="enhanced", skin_tone=None,
+skin_detail=1.0, hair_detail=1.0)`; the body name also works.
+`quality="mpfb"` restores the original material datablocks, slot links and inactive
+object overrides, removing owned attributes and unused shader copies. Upgrade is
+idempotent. Restore before changing a character's material slots/topology.
+
+- Skin keeps its original color/alpha/normal textures and UV graph. Automatic
+  scatter parameters sample facial texture texels in linear color, independent of
+  gender/ethnicity. `skin_tone="light"|"medium"|"dark"` or linear RGB overrides
+  scatter/reflectance tuning, without replacing the texture's color. Red scatters
+  farther than green/blue, over about 0.85–1.05 mm. T-zone oil, softer cheeks,
+  restrained lip/lid darkening and cheek/nose/ear/knuckle warmth use fitted rest
+  masks. Bright scans use a stronger monotone portrait normalization, preserving
+  texture detail and tone order while keeping dark scans unchanged. A restrained rosy undertone
+  applies to light skin. This is an artistic exposure calibration for char3d's
+  lights, not a measurement of biological reflectance; global exposure/presets
+  stay unchanged. Cinematic renders apply less of that correction under their
+  already-dimmed face keys (temporary scalar values, restored even on failure
+  and baked into video snapshots). Child pores are softer; elders retain wrinkles.
+  The known default 5% global MPFB red mix is replaced by localized warmth; custom
+  mix colors/strengths and the original material remain intact.
+- Eyes keep their iris/vein textures, with warm sclera, soft upper-lid shading and
+  an opaque wet coat (IOR 1.336), stronger moisture on the lower eye, a normal-based
+  corneal cap, dark limbal ring and radial detail. The red default brown atlas is
+  desaturated/balanced to natural brown; other eye textures keep their hue.
+  A head-parented point supplies a clean catchlight: nominally 20 W, scaled with
+  eye size, linked only to that character's eyes, zero diffuse/volume contribution,
+  no shadows. It is native saved data and is removed by restore/excluded from glTF.
+  This is still one surface, without refractive cornea/iris or tear geometry.
+  DOF naturally softens the catchlight.
+- Hair keeps authored alpha edges with Eevee DITHERED (legacy HASHED) rendering,
+  a height-based root/tip gradient, UV strand variation, restrained sheen and thin
+  scattering. Brow/lash undertones follow the hair texture. Principled anisotropy
+  is used where supported; strand normals/sheens approximate it in Eevee.
+  Coily/afro cards use a rougher, less directional highlight to reduce bright seams.
+  No geometry shells, animated noise or refraction are added.
+- Clothing names/categories choose cotton, denim, wool, knit, silk or leather
+  roughness/sheen and meter-scaled micro normals. Authored maps remain. Wool fuzz
+  is sheen, not fibers. A combined suit mesh uses one inferred fabric per material;
+  individual garments give more control. Glasses, teeth and tongue are preserved.
+- `skin_detail` and `hair_detail` accept 0..2 (default 1). Zero removes added pore
+  or strand variation. Rest-space attributes follow skinning and face morphs,
+  without world-space texture swimming. Save/open and separate-process video
+  snapshots retain native materials without Python handlers or downloads.
+- glTF export temporarily uses a bake-free PBR graph: original base/alpha and
+  normal images, skin reflectance factor and tuned scalar roughness (or authored
+  roughness maps). `material_fallback` reports lost
+  SSS, procedural masks/microdetail, corneal/iris shading, the eye-linked light
+  and hair sheen/anisotropy.
+  Scene material graphs are restored even on export failure. `.blend` keeps all
+  detail; the portable fallback does not bake procedural effects.
+
+`render_options.materials_cost_factor` is 1.15 for enhanced characters, weighted
+by the fraction of MPFB characters upgraded (not environment material count).
+Draft is 1.0; full-strength clay/anime shader replacement is 1.0. The factor is
+multiplied into estimates and divided out of machine learning once, alongside
+style/look/nature factors. Actual CPU costs depend on framing and alpha coverage.
+
+Measured after review corrections: CPU llvmpipe, two clothed MPFB characters,
+512×288 / 16 Eevee samples, four Blender threads and `LP_NUM_THREADS=4`,
+no look/style. ABBA order; every timed frame follows a 320×180 warm-up.
+Two samples per material include render setup/restoration and PNG output.
+
+| framing | MPFB s/frame | enhanced s/frame | ratio |
+|---|---:|---:|---:|
+| close-up | 28.57 | 24.57 | 0.860× |
+| medium | 50.76 | 41.83 | 0.824× |
+| wide | 43.39 | 33.05 | 0.762× |
+
+Shared CPU load causes substantial absolute variation: MPFB close-up bookends
+were 14.67 and 42.46 s. These paired results meet the medium ≤1.25× budget;
+they do not establish a universal speedup or comparable absolute times between
+framings. Keep the conservative 1.15 estimate factor. Raw samples/warm-ups:
+`output/material_review_v2/benchmark.json`. Shader cache: `output/mesa_cache/`.
+
+Verify only on **9971**, workspace `$PWD/output`, one owned Blender at a time:
+`tests/test_materials.py` → `MATERIALS UNIT OK`;
+`tests/e2e_smoke.py --materials-only` / `--mpfb-only`;
+isolated `--render-style-only --serial-video` and `--cinematic-only --serial-video`.
+`tests/materials_review.py --stills --bench --clip` reproduces the current
+seven-person, five-light close/extreme-close matrix and movie through MCP.
+Use `--cast`, `--looks`, `--shots`, `--qualities` and `--reuse` for resumable batches.
+`--engine cycles --tag cycles` checks Cycles; `--film --tag film` uses film style
+with f/8 eye-plane DOF. The earlier `tests/materials_visuals.py` also covers
+medium framing, six fabrics and proxy repairs.
+
+Current evidence: `output/material_review_v2/`; `metering.json` defines
+unobscured Lina forehead/cheek ROIs. `luminance.json` reports mean sRGB RGB,
+encoded Rec.709 Y-prime and decoded linear luminance from original PNGs.
+The revised pooled Y-prime values are studio 0.638, soft 0.660 and misty 0.591
+(target 0.55–0.70); earlier enhanced values were 0.838, 0.856 and 0.793.
+The harness explicitly sets square scene dimensions and asserts frame sizes;
+the preview MCP wrapper currently drops null height for scene cameras.
+Video checks prepare through `render_video`, stop the editor, then run its
+native snapshot worker. The 36-frame, three-second talking clip decodes;
+distinct static frames have MAE 0.0 for full image, hair and skin.
+
+Canonical current close/extreme-close sheets: `output/material_sheets/`;
+movie: `output/renders/materials_talking_3s.mp4`. Earlier sheets, including the
+older medium-shot matrix, are archived in `material_sheets/iterations/review_v1/`.
+See `output/skin_result.md` for all measured results, paths and inspected limits.
+No dynamic cloth/hair collision or fiber/vascular simulation is implied.
+
 ## Hands
 `set_hand_pose(character, shape, side)` poses the fingers on any rig with finger bones
 (MPFB game_engine/mixamo/rigify, Mixamo, Rigify human); curl axes are derived from the

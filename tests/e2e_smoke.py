@@ -21,6 +21,9 @@ from mcp.client.stdio import stdio_client
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
+if os.environ.get('CHAR3D_PORT') == '9971':
+    os.environ.setdefault('MESA_SHADER_CACHE_DIR', os.path.join(ROOT, 'output', 'mesa_cache'))
+    os.makedirs(os.environ['MESA_SHADER_CACHE_DIR'], exist_ok=True)
 # Test-only introspection: inspect the actual Blender animation curves, including
 # sibling face meshes, to prove speech and blinks survive expression generation.
 os.environ["CHAR3D_ALLOW_PYTHON"] = "1"
@@ -3814,6 +3817,16 @@ async def _film_checks(call):
     await run(call, text_of)
 
 
+async def _materials_checks(call):
+    from materials_checks import run
+    await run(call, text_of)
+
+
+async def _materials_realistic_checks(call):
+    from materials_checks import realistic
+    await realistic(call, text_of, _mpfb_pack_checks, _check_glb_weights)
+
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"],
                                    cwd=ROOT, env=dict(os.environ))
@@ -3825,6 +3838,9 @@ async def main():
         assert "auto_expression" in tools
 
         async def call(tool, **args):
+            if tool == 'render_video' and '--serial-video' in sys.argv:
+                from serial_video import render
+                return await render(s, args)
             if any(flag in sys.argv for flag in ("--cinematic-only", "--render-style-only", "--outdoor-only", "--world-only", "--script-only")):
                 print("CHECK", tool, flush=True)
             if tool == "render_frames" and args.get("engine_name") == "eevee" and os.environ.get("CHAR3D_TEST_SAMPLES"):
@@ -3841,6 +3857,8 @@ async def main():
 
         print("status:", text_of(await call("engine_status")))
         for flag, section in (("--world-only", _world_checks),
+                              ("--materials-only", _materials_checks),
+                              ("--mpfb-only", _materials_realistic_checks),
                               ("--film-only", _film_checks),
                               ("--script-only", _script_scene_checks),
                               ("--dialog-only", _dialog_gaze_checks),
