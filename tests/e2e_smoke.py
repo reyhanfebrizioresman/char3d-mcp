@@ -1957,7 +1957,9 @@ async def _script_appearance_checks(call):
                 "beats": [{"say": "Ana", "text": "Halo.", "estimated_frames": [1, 12]},
                           {"say": "Budi", "text": "Ya.", "estimated_frames": [21, 28]}],
                 "estimated_frames": [1, 36], "fps": 24, "seed": 17, "warnings": [],
-                "look": None, "recommended_look": "studio_film"}
+                "look": None, "recommended_look": "studio_film",
+                "music": {"mood": "warm", "tempo": 73.47, "key": "G# major", "tonic": 8,
+                          "scale": [0, 2, 4, 5, 7, 9, 11], "requested": "auto"}}
     for descriptors in (("perempuan, 28, gaun, musim panas", "laki-laki, 35, kasual, brewok, kacamata, topi"),
                         ("female, 28, dress, summer", "male, 35, casual, beard, glasses, hat")):
         script = f"Ana ({descriptors[0]}): Halo.\nBudi ({descriptors[1]}): Ya."
