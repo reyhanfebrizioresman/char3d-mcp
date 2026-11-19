@@ -55,9 +55,9 @@ def _embed(manifest, index, path):
 @command('script_to_film')
 def script_to_film(script, name=None, environment=None, lighting='studio', camera='mixed',
                    subtitles=True, language='auto', seed=0, build=True, sound=True,
-                   look=None, body_language=True, scene_index=None, _plan=None):
+                   look=None, body_language=True, scene_index=None, _plan=None, style=None, life=1.):
     plan = copy.deepcopy(_plan) if _plan else parse_film(script, name, environment, seed,
-        bpy.context.scene.render.fps, look, lighting)
+        bpy.context.scene.render.fps, look, lighting, style)
     if not build:
         return {'plan': plan, 'kind': 'film', 'built': False, 'frames': plan['estimated_frames'],
                 'duration_s': plan['duration_s'], 'warnings': plan['warnings']}
@@ -65,7 +65,7 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
         raise ValueError('Wait for or cancel the current film render before rebuilding')
     path = manifest_path(plan['name'])
     options = dict(camera=camera, subtitles=subtitles, language=language, seed=seed,
-                   sound=sound, body_language=body_language)
+                   sound=sound, body_language=body_language, life=life)
     # Validate every scene through the original pipeline before clearing the editor.
     for scene in plan['scenes']:
         dispatch('script_to_scene', dict(script=scene['plan'], lighting=scene['lighting'], build=False, **options))

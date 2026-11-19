@@ -5,6 +5,7 @@ Microsoft viseme names (aa_02, p_b_m_21, ...). MPFB humans get them from the CC0
 faceunits01 / visemes01 packs (loaded on demand); child meshes of the same rig
 (eyebrows, eyelashes, eyes) carry interpolated copies and are driven together.
 """
+import json
 import math
 import random
 import re
@@ -449,6 +450,9 @@ def auto_expression(character, frame_start=None, frame_end=None, base="smile",
             key(tail_values, fe)
     finally:
         sc.frame_set(current)
+    previous = json.loads(mesh.get('char3d_emotions', '[]'))
+    kept = [e for e in previous if (e.get('relax_frame') or e['frames'][1]) < fs or e['frames'][0] > fe]
+    mesh['char3d_emotions'] = json.dumps(sorted(kept+events, key=lambda e: e['frames'][0]))
     return {"character": mesh.name, "frames": [fs, fe], "language": language,
             "base": base, "base_strength": base_strength, "intensity": intensity,
             "sentences": events, "keyed_units": EMOTION_UNITS,

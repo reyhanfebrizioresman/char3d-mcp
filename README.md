@@ -8,6 +8,16 @@ dan meng-export aset 3D.
 Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (engine/) ──► .glb .blend .png
 ```
 
+
+Gaya `render_style("animated_film")` (`animasi`/`film_animasi`) menyatukan karakter,
+alam, dan set dengan empat massa cahaya lembut, bayangan berwarna, tekstur lebih
+bersih, kulit hangat dan rim yang jelas. Palet mengikuti cinematic look, termasuk
+malam dan kabut. Bisa dipilih lewat `style=` atau header naskah `GAYA: animasi`;
+override render bersifat sementara. Wajah dialog/naskah/film kini memakai `face_life` secara
+bawaan: ekspresi mikro, kedipan bervariasi, gerak mata, reaksi pendengar, dan napas
+halus yang tidak menimpa kurva viseme/tubuh. Gunakan `life=0` untuk menonaktifkannya;
+`face_life(..., intensity=1, seed=3)` tersedia untuk adegan manual.
+
 ## Status
 ✅ Fase 1 (fondasi) · ✅ Fase 2 (karakter + rigging) · ✅ Fase 3 (animasi) · ✅ Fase 4 (kamera, cahaya, video) · ✅ Fase 6 (integrasi AI: Hugging Face gratis + fal.ai) · ✅ Manusia realistis (MPFB)
 

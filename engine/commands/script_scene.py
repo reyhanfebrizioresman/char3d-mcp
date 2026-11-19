@@ -104,7 +104,7 @@ def _skeleton(command_name, params):
 @command("script_to_scene")
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
                     subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
-                    body_language=True, character_seeds=None):
+                    body_language=True, character_seeds=None, style=None, life=1.):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -127,7 +127,9 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
 
     sc = bpy.context.scene
     with timed("parse"):
-        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps, look=look)
+        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps, look=look, style=style)
+        from ..face_life import intensity as life_intensity
+        life = life_intensity(life)
         if camera not in ("mixed", "singles", "two_shot", "none"):
             raise ValueError("camera must be mixed, singles, two_shot or none")
         if plan["environment"] and plan["environment"] not in PRESETS:
@@ -571,7 +573,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             result["body_language"] = dialog_body(turns, cast, language, expression_results)
         for i, (ident, char) in enumerate(characters.items()):
             rig = char["rig"]
-            if char["realistic"]:
+            if char["realistic"] and not life:
                 dispatch("auto_blink", {"character": rig, "frame_start": 1, "frame_end": final, "seed": seed + i * 13})
             # Each layer samples the untouched body once for the entire range. Calling
             # it per turn would sample the preceding turn's held keys as the next base,
@@ -587,7 +589,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             if turns or schedule:
                 dispatch("talk_motion", {"character": rig, "frame_start": 1, "frame_end": final,
                     "look_at": schedule or None, "look_at_camera": not others, "seed": seed + 11 * i,
-                    "listen_to": others[0] if len(others) == 1 else None})
+                    "listen_to": others, "life": life, "_defer_life": True})
             own_turns = [t for t in turns if t["speaker"] == rig]
             if own_turns:
                 args = {"character": rig, "frame_start": 1, "frame_end": final,
@@ -623,6 +625,18 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                     "bloom": cfg["bloom"], "dof": cfg["dof"], "particles": cfg["particles"],
                     "grade": cfg["grade"], "sun": {k: cfg[k] for k in ("elevation", "azimuth")}}
                    if cfg["preset"] != "none" else {})})
+    if plan.get('style') is not None:
+        result['style'] = dispatch('render_style', {'style': plan['style']})
+    # Final cameras/lighting now exist: rebuild only the independent morph layer
+    # so editorial cuts and the saved look can inform blinks/pupil adaptation.
+    with timed('face_life'), _bones_only():
+        for i, char in enumerate(characters.values()):
+            if char['realistic']:
+                rig = char['rig']
+                result.setdefault('face_life', {})[rig] = dispatch('face_life', {
+                    'character': rig, 'frame_start': 1, 'frame_end': final,
+                    'intensity': life, 'seed': seed+11*i,
+                    'listen_to': [n for n in cast if n != rig]})
     with timed("graphics"):
         words_available = any(load_words(bpy.data.objects[c["mesh"]], 1, final) for c in characters.values())
         if subtitles and words_available:
