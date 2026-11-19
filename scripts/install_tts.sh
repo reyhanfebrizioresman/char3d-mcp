@@ -17,7 +17,7 @@ for arg in "$@"; do
       echo "Piper: ~34 MB package/espeak + 63 MB voice. Runtime GPL-3.0; voice personal use (dataset unclear)."
       echo "Edge: small package; unofficial Microsoft API, sends dialog text online."
       echo "F5: >=1.35 GB checkpoint + vocoder + roughly 3 GB CPU PyTorch environment."
-      echo "F5 code/Indonesian fine-tune Apache-2.0; upstream base weights CC-BY-NC, non-commercial."
+      echo "F5 code MIT; Indonesian fine-tune Apache-2.0; upstream base weights CC-BY-NC, non-commercial."
       exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 1 ;;
   esac
@@ -26,8 +26,12 @@ if (( ${#engines[@]} == 0 )); then engines=(piper edge); fi
 for engine in "${engines[@]}"; do
   if [[ "$engine" == f5 ]]; then
     echo "F5 OPTIONAL: >=1.35 GB checkpoint + vocoder + roughly 3 GB CPU PyTorch environment."
-    echo "License: fine-tune Apache-2.0; upstream weights CC-BY-NC (NON-COMMERCIAL)."
-    (( yes )) || { echo "Explicit acceptance required: scripts/install_tts.sh f5 --yes" >&2; exit 1; }
+    echo "License: code MIT; fine-tune Apache-2.0; upstream weights CC-BY-NC (NON-COMMERCIAL)."
+    cat "$SCRIPT_DIR/f5_assets.tsv"
+    if (( ! yes )); then
+      read -r -p 'Download F5 weights/vocoder and install a separate CPU environment? [y/N] ' answer
+      [[ "$answer" == y || "$answer" == Y ]] || exit 1
+    fi
   fi
 done
 for engine in "${engines[@]}"; do
@@ -52,24 +56,7 @@ for engine in "${engines[@]}"; do
       ;;
     edge) "$PYTHON" -m pip install 'edge-tts>=7.3,<7.4' ;;
     f5)
-      "$PYTHON" -m pip install -r "$ROOT/requirements-f5.txt"
-      "$PYTHON" - "$TTS_DIR/f5" <<'PY'
-import sys
-from pathlib import Path
-from huggingface_hub import hf_hub_download
-root = Path(sys.argv[1])
-files = [("anantoj/f5-id-v1", "model.safetensors", root),
-         ("SWivid/F5-TTS", "F5TTS_Base/vocab.txt", root / "base"),
-         ("charactr/vocos-mel-24khz", "config.yaml", root / "vocos"),
-         ("charactr/vocos-mel-24khz", "pytorch_model.bin", root / "vocos")]
-for repo, filename, dest in files:
-    path = hf_hub_download(repo, filename, local_dir=str(dest))
-    if filename.endswith("vocab.txt"):
-        import shutil
-        shutil.copyfile(path, root / "vocab.txt")
-(root / "voices").mkdir(exist_ok=True)
-print('Register voices/<name>.json with voice_reference and reference_text. Only own/permitted voices.')
-PY
+      "$SCRIPT_DIR/install_f5.sh" --yes
       ;;
   esac
 done

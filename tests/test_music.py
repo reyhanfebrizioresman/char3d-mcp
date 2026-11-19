@@ -18,13 +18,63 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from engine.music import (ALIASES, PALETTES, RATE, compose, infer_mood, instrument,
-                          loudness, metrics, render, settings, spectral_metrics, true_peak, write_cached)
+                          loudness, metrics, render as render_backend, settings, spectral_metrics, true_peak, write_cached)
 from engine.music.film import duck_envelope, score_film
 from engine.script_plan import parse_script
 from engine.film_plan import parse_film
+from unittest.mock import patch
+
+def render(score, **kwargs):
+    return render_backend(score, backend="synth", **kwargs)
 
 
 class MusicTests(unittest.TestCase):
+    def test_soundfont_selection_mapping_and_missing_font(self):
+        from engine.music.soundfont import PROGRAMS, arrangement, resolve_backend
+        self.assertEqual(set(PROGRAMS), set(PALETTES))
+        for mood in PALETTES:
+            self.assertTrue(all(0 <= p < 128 for p in arrangement(mood).values()))
+        with patch.dict(os.environ, CHAR3D_SOUNDFONT='/missing/test.sf2'):
+            self.assertEqual(resolve_backend('auto'), 'synth')
+            score = compose(1, 'calm')
+            self.assertTrue(np.array_equal(render_backend(score), render(score)))
+            with self.assertRaisesRegex(RuntimeError, 'SoundFont unavailable'):
+                render_backend(score, backend='soundfont')
+        with self.assertRaises(ValueError):
+            resolve_backend('unknown')
+
+    def test_soundfont_audio_and_loop(self):
+        from engine.music.soundfont import available
+        if not available():
+            self.skipTest('local SoundFont/tinysoundfont not installed')
+        score = compose(6, 'nusantara', seed=17)
+        x = render_backend(score, backend='soundfont')
+        self.assertTrue(np.array_equal(x, render_backend(score, backend='soundfont')))
+        self.assertEqual(x.shape, (6*RATE, 2))
+        measured = metrics(x, score)
+        self.assertAlmostEqual(measured['lufs'], -16, delta=.6)
+        self.assertLessEqual(measured['true_peak_dbfs'], -1)
+        self.assertGreater(measured['key_energy_ratio'], .75)
+        self.assertTrue(100 < measured['centroid_hz'] < 6000)
+        self.assertLess(measured['below_30_ratio'], .02)
+        self.assertEqual(score['renderer']['drum_channel'], 10)
+        x = render_backend(compose(8, 'warm', loop=True), backend='soundfont')
+        self.assertLess(np.max(abs(x[-1]-x[0])), 4e-5)
+        self.assertGreater(np.sqrt(np.mean(x[:2400]**2)), np.sqrt(np.mean(x*x))*.2)
+
+    def test_soundfont_blender_interpreter_bridge(self):
+        from engine.music import soundfont
+        if not soundfont.available():
+            self.skipTest('local SoundFont not installed')
+        score = compose(1, 'calm')
+        # Simulate Blender with no compatible native extension. The subprocess
+        # uses the MCP virtualenv; this process never imports a foreign ABI.
+        with patch.object(soundfont.importlib.util, 'find_spec', return_value=None):
+            self.assertTrue(soundfont.available())
+            x = render_backend(score, backend='soundfont')
+        self.assertEqual(x.shape, (RATE, 2))
+        self.assertEqual(score['renderer']['backend'], 'soundfont')
+
     def test_aliases_and_headers(self):
         for alias, canonical in ALIASES.items():
             p = parse_script(f'MUSIK: {alias}\nANA: Halo.')
@@ -207,14 +257,15 @@ class MusicTests(unittest.TestCase):
                 self.assertLess(np.max(abs(np.diff(x[at-240:at+240], axis=0))), .10)
 
 
-def demos():
-    directory = ROOT/'output/music_demos'
+def demos(backend="synth"):
+    directory = ROOT/("output/music_demos_sf" if backend == "soundfont" else "output/music_demos")
     directory.mkdir(parents=True, exist_ok=True)
     results = {}
     for mood in PALETTES:
         start = time.perf_counter()
         score = compose(30, mood, seed=17)
-        x = render(score)
+        x = render_backend(score, backend=backend)
+        elapsed = time.perf_counter()-start
         path, digest = write_cached(x, directory)
         target = directory/f'{mood}.wav'
         shutil.copyfile(path, target)
@@ -222,7 +273,7 @@ def demos():
         with wave.open(str(target), 'rb') as wav:
             pcm = np.frombuffer(wav.readframes(wav.getnframes()), '<i2').reshape(-1, 2)/32768
         results[mood] = dict(path=str(target), hash=digest, **metrics(pcm, score),
-                             tempo=score['tempo'], key=score['key'], render_seconds=round(time.perf_counter()-start, 2))
+                             tempo=score['tempo'], key=score['key'], backend=backend, render_seconds=round(elapsed, 3))
         (directory/f'{mood}.json').write_text(json.dumps(score, indent=2)+'\n')
         print(mood, json.dumps(results[mood]), flush=True)
     (directory/'metrics.json').write_text(json.dumps(results, indent=2)+'\n')
@@ -230,7 +281,7 @@ def demos():
 
 if __name__ == '__main__':
     if '--demos' in sys.argv:
-        demos()
+        demos("soundfont" if "--soundfont" in sys.argv else "synth")
     else:
         if not unittest.main(exit=False).result.wasSuccessful():
             sys.exit(1)

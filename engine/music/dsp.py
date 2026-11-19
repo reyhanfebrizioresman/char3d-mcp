@@ -1,7 +1,8 @@
-"""Numpy-only instruments, Schroeder room, K-weighting and PCM mastering, 48 kHz.
+"""Numpy instruments and shared room/K-weighting/mastering, 48 kHz.
 
 Harmonic oscillators are explicitly band limited. Filters/reverb use FFT transfer
 functions with zero padding, avoiding Python sample loops and scipy dependencies.
+The optional local SoundFont renderer feeds the same mix/master pipeline.
 """
 import hashlib
 import math
@@ -265,7 +266,15 @@ def master(x, loop=False, fade_in=.02, fade_out=.04):
     return x.astype(np.float32)
 
 
-def render(score, fade_in=.02, fade_out=.04):
+def render(score, fade_in=.02, fade_out=.04, backend="auto"):
+    from .soundfont import resolve_backend, render_raw
+    chosen = resolve_backend(backend)
+    if chosen == "soundfont":
+        x = render_raw(score, RATE)
+        for ch in range(2):
+            x[:, ch] = _bandlimit(x[:, ch])
+        return master(reverb(x, score["loop"]), score["loop"], fade_in, fade_out)
+    score["renderer"] = dict(backend="synth")
     x = np.zeros((round(score["duration"]*RATE), 2), np.float32)
     cache = {}
     for event in score["events"]:

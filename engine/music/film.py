@@ -46,7 +46,7 @@ def score_film(scenes, fps, total_frames, directory):
             groups.append(dict(start=scene["segment_start"], end=scene["film_frames"][1]+1, cfg=None))
             continue
         start, end = scene["segment_start"], scene["film_frames"][1]+1
-        same = ("mood", "key", "tempo", "seed", "volume", "intensity")
+        same = ("mood", "key", "tempo", "seed", "volume", "intensity", "backend")
         if groups and groups[-1]["cfg"] and all(groups[-1]["cfg"].get(k) == cfg.get(k) for k in same):
             groups[-1]["end"] = end
         else:
@@ -78,7 +78,7 @@ def score_film(scenes, fps, total_frames, directory):
                         cfg["seed"], cuts=[f for f in cuts if a <= f < b],
                         emotions=[e for e in emotions if a <= e["frame"] < b],
                         sections=[e for e in custom if a <= e['frame'] < b], fps=fps, first=a)
-        x = render(score)
+        x = render(score, backend=cfg.get("backend", "auto"))
         frame_grid = np.arange(a, b+1)
         envelope = duck_envelope(frame_grid, speech, fps)*cfg.get("volume", .35)
         if before:
@@ -98,7 +98,7 @@ def score_film(scenes, fps, total_frames, directory):
         count = min(len(x), len(samples)-at)
         samples[at:at+count] += x[:count]
         report.append(dict(mood=cfg["mood"], tempo=cfg["tempo"], key=cfg["key"], frames=[a, b-1],
-                           transition="crossfade" if before else "start", sections=score["sections"]))
+                           renderer=score['renderer'], transition="crossfade" if before else "start", sections=score["sections"]))
     # Preserve intended quiet dialog level; peak guard only, never renormalize it.
     from .dsp import true_peak
     samples *= min(1, 10**(-1.05/20)/max(true_peak(samples), 1e-12))

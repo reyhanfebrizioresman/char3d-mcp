@@ -8,7 +8,7 @@ from .catalog import PALETTES, mood_name, infer_mood
 
 NOTES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 FLATS = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
-VERSION = 2
+VERSION = 3
 
 
 def number(value, label, lo, hi):
@@ -117,7 +117,7 @@ def compose(duration=30, mood="warm", tempo=None, key=None, intensity=.6, seed=0
                          intensity=number(section.get("intensity", .7), "section intensity", 0, 1)))
     events, chords = [], []
 
-    def add(instrument, at, length, note=60, velocity=.3, pan=0, role="accompaniment", exact=False):
+    def add(instrument, at, length, note=60, velocity=.3, pan=0, role="accompaniment", exact=False, gm_track=None):
         at = at if exact else at+rng.uniform(-.009, .009)
         if not 0 <= at < duration:
             at = max(0., at)
@@ -135,6 +135,8 @@ def compose(duration=30, mood="warm", tempo=None, key=None, intensity=.6, seed=0
         events.append(dict(instrument=instrument, time=round(at, 7), duration=round(max(.04, length), 6),
                            note=int(note), velocity=round(velocity*dynamic*palette.dynamics*(.5+.5*intensity)*rng.uniform(.92, 1.08), 6),
                            pan=pan, role=role))
+        if gm_track:
+            events[-1]['gm_track'] = gm_track
 
     grammar = rng.choice(palette.grammar)
     motif = [0, rng.choice((1, 2)), rng.choice((2, 4)), 1, 0, 2, 1, 0]
@@ -163,6 +165,11 @@ def compose(duration=30, mood="warm", tempo=None, key=None, intensity=.6, seed=0
             bass = register(pitch(degree+interval, 1), 31, 46)
             add('bass', at+offset*beat, beat*length, bass,
                 palette.bass_level*(1 if k == 0 else .83), 0, 'bass')
+        if cfg['mood'] in ('warm', 'playful') and b % 2:
+            next_degree = grammar[(b+1) % len(grammar)] % size
+            approach = next_degree-1 if next_degree > degree else next_degree+1
+            add('bass', at+3.5*beat, beat*.4, register(pitch(approach, 1), 31, 46),
+                palette.bass_level*.65, 0, 'bass')
         keys = next(i for i in palette.instruments if i in ("piano", "epiano", "pluck", "bell", "metallophone"))
         for step in palette.arp_steps:
             if intensity < .4 and step % 2:
@@ -180,6 +187,13 @@ def compose(duration=30, mood="warm", tempo=None, key=None, intensity=.6, seed=0
             secondary = 'piano' if keys == 'pluck' else 'pluck'
             for k in (1, 3):
                 add(secondary, at+k*beat, beat*1.3, voiced[k % len(voiced)]+12, .11, -.4)
+        # B develops a quieter answering line in contrary motion, leaving space
+        # between the main phrase entries. Intro/outro deliberately stay sparse.
+        if duration*.50 <= at < duration*.80 and intensity >= .4:
+            for k in (1.5, 3.25):
+                note = register(pitch(degree+4-(b % 3), 4), 60, 81)
+                add('bell' if cfg['mood'] == 'nusantara' else 'pluck', at+k*beat,
+                    beat*.65, note, .12, -.4, 'counter')
         if (b or duration < bar*2) and (intensity >= .35 or b % 2 == 0):
             for step, offset in enumerate(palette.melody_beats):
                 m = motif[((b % 2)*4+step) % len(motif)]
@@ -216,6 +230,16 @@ def compose(duration=30, mood="warm", tempo=None, key=None, intensity=.6, seed=0
                             role="pulse", exact=True)
         if "gong" in palette.instruments and b % 4 == 0:
             add("gong", at, min(5, duration-at), register(pitch(0, 1), 27, 38), .55, 0)
+        if cfg['mood'] == 'nusantara':
+            # Interlocking original figures: three contrasting GM colors, plus
+            # tuned low hits. This is an approximation, never sampled repertoire.
+            color = ('koto', 'steel', 'celesta')[b % 3]
+            for k, offset in enumerate((.75, 1.75, 2.75, 3.75)):
+                add('pluck', at+offset*beat, beat*.5, register(pitch(degree+k, 4), 60, 84),
+                    .12, -.3, 'color', gm_track=color)
+            if b % 4 == 3:
+                add('tom', at+3*beat, beat*.8, register(pitch(0, 2), 36, 52),
+                    .16, 0, 'pulse', gm_track='low_hits')
     if not loop:
         # End tonic is independent of the rounded bar grid and lands before the tail.
         voiced = voice_lead([pitch(d) for d in ((0, 2, 4) if size == 7 else (0, 2))], previous)
@@ -226,6 +250,19 @@ def compose(duration=30, mood="warm", tempo=None, key=None, intensity=.6, seed=0
         add("bass", ending, duration-ending, register(pitch(0, 1), 31, 46),
             palette.bass_level*.8, 0, "cadence", exact=True)
     accents = []
+    # A short, mood-aware pickup precedes form changes and editorial cuts. Quiet
+    # moods use tonal pickups; rhythmic moods use a restrained drum fill.
+    boundaries = [a for _name, a, _b, _d in form[1:]]
+    boundaries += [(f-first)/fps for f in cuts]
+    for boundary in sorted(set(boundaries)):
+        if not .4 < boundary < ending:
+            continue
+        chord = next((c for c in reversed(chords) if c['time'] <= boundary), chords[0])
+        for j in range(3):
+            inst = 'tom' if palette.drums >= .9 and 'kick' in palette.instruments else keys
+            note = chord['notes'][j % len(chord['notes'])]
+            add(inst, boundary-(3-j)*beat*.25, beat*.18, note, .10+j*.018,
+                .25, 'fill')
     for frame in sorted(set(cuts) | {c["frame"] for c in cues}):
         at = (number(frame, "cut frame", first, first+duration*fps)-first)/fps
         if at >= duration:

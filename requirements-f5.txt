@@ -1,4 +1,4 @@
-# Optional, large CPU install. Do not include from requirements.txt.
-# F5 code/Indonesian fine-tune Apache-2.0; base weights CC-BY-NC.
-f5-tts>=1.1,<1.2
-huggingface-hub>=0.34,<2
+# Optional isolated CPU install; never install into the MCP virtualenv.
+# Code MIT, Indonesian finetune Apache-2.0, base weights CC-BY-NC.
+f5-tts==1.1.22
+huggingface-hub==1.33.0

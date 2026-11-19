@@ -3626,8 +3626,10 @@ async def _tts_scene_check(call, backend):
     assert all(c["realistic"] for c in built["characters"].values()), "MPFB needed for real facial checks"
     if backend == "edge":
         assert any("Microsoft" in p for p in built["privacy"])
-    audio_strips = (await data("list_audio"))["strips"]
+    all_audio_strips = (await data("list_audio"))["strips"]
+    audio_strips = [s for s in all_audio_strips if s['kind'] == 'voice']
     assert len(audio_strips) == 2 and all(s["kind"] == "voice" and s["speaker"] for s in audio_strips)
+    assert any(s['kind'] == 'music' for s in all_audio_strips), 'default automatic music missing'
     checked = (await data("run_blender_python", code=f'''
 from engine.commands.semantic import load_words
 from engine.commands.face import _face_meshes, VISEMES
@@ -3691,7 +3693,7 @@ result = {{'words': words, 'peak_counts': {{n: len(p) for n,p in peaks.items()}}
         assert abs(delta) < 1 / 24 and correlation > .75, (delta, correlation)
         assert np.sqrt(np.mean(found ** 2)) > .025
         alignment.append({"character": file["character"], "offset_s": delta, "correlation": correlation})
-    report = {"build": built, "timeline_audio": audio_strips, "checked": checked,
+    report = {"build": built, "timeline_audio": all_audio_strips, "checked": checked,
               "movie": movie, "alignment": alignment,
               "stills": [json.loads(t) for t in text_of(stills)]}
     (workspace / f"tts_{backend}_checks.json").write_text(json.dumps(report, indent=2))
@@ -4043,6 +4045,11 @@ result = samples
 
 
 
+async def _audio2_checks(call):
+    from audio2_scene import run
+    await run(call, text_of)
+
+
 async def _music_checks(call):
     from music_checks import run
     await run(call, text_of)
@@ -4087,6 +4094,7 @@ async def main():
             return
         for flag, section in (("--world-only", _world_checks),
                               ("--music-only", _music_checks),
+                              ("--audio2-only", _audio2_checks),
                               ("--auto-sfx-only", _auto_sfx_checks),
                               ("--film-only", _film_checks),
                               ("--script-only", _script_scene_checks),

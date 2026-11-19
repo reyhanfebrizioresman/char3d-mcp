@@ -38,7 +38,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
 - Audio & voice: `add_audio`, `auto_music`, `auto_sfx`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
-  `list_voices`, `text_to_speech`, `lip_sync_audio`, `talk_motion`, `talk_gestures`,
+  `list_voices`, `text_to_speech`, `cancel_tts`, `lip_sync_audio`, `talk_motion`, `talk_gestures`,
   `ai_text_to_speech` (legacy free HF Space)
 - Dialog: `dialog`, `stage_dialog`, `script_to_scene` (live dialog coverage, guest seating, outfits + hair/cloth motion)
 - Characters & rigs: `create_human`, `estimate_landmarks`, `auto_rig_humanoid`,
@@ -342,11 +342,32 @@ from the `voice` speech switch.
 
 `auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=0.6,
 seed=0, volume=0.35, follow_cuts=True, follow_emotion=True, sections=None,
-fade_in=1.0, fade_out=2.0, clear=False)` composes an original offline score, adds
+fade_in=1.0, fade_out=2.0, clear=False, backend="auto")` composes an original offline score, adds
 an owned `kind="music"` strip, then runs `duck_music` (-12 dB under speech).
 Duration defaults to the inclusive scene range; it does not extend the timeline.
 Reruns replace only generator-owned music; clear removes only those strips.
 Manual music/voice/Foley stay intact. Save/open retains the score and volume keys.
+
+`backend="auto"` (default) uses installed GeneralUser GS 2.0.3 through
+TinySoundFont offline rendering; `backend="soundfont"` requires it, and
+`backend="synth"` selects the original numpy instruments. Auto falls back to synth
+when the font or renderer is absent. No runtime downloads or PyAudio playback.
+Install explicitly with `scripts/install_soundfont.sh` (asks confirmation; `--yes`
+accepts): 32,319,396-byte bank + license, verified sizes/SHA-256 in
+`scripts/soundfonts.tsv`, tinysoundfont 0.3.7 `--no-deps`. `CHAR3D_SOUNDFONT`
+overrides the bank path. `CHAR3D_MUSIC_PYTHON` overrides the compatible renderer
+Python (default repository `.venv/bin/python`); Blender uses a short subprocess
+because its bundled Python has a different native-extension ABI. The installed
+bank license permits private and commercial music creation.
+
+The GM arrangements use guitar/piano, strings, woodwinds, brass, choir/pads,
+mallets, acoustic/fingered bass and MIDI channel 10 drums. Intro/A/B/outro dynamics,
+voice-led inversions, bass approaches, answering melodies, pickups/fills at form
+changes/cuts, and 20 Hz CC11 expression complement velocity humanization and CC7.
+`renderer` reports actual backend, bank hash and zero-based GM programs, retained
+in saved scene metadata and film reports. SF spectra are measured independently
+from numpy; sampled flute/nylon guitar need not match a synth's high-band ratios.
+
 
 Moods: happy/ceria, warm/hangat, sad/haru/sedih, romantic/romantis,
 tense/tegang, mysterious/misterius, epic/epik, calm/tenang, playful/lucu,
@@ -362,7 +383,7 @@ changing tempo; emotion peaks shape swells/drops. Ending cues resolve to tonic.
 `tempo` is 40..180 BPM; `key` e.g. `D minor`, `F# major`; intensity is 0..1.
 `sections=[{"frame":49,"name":"reveal","intensity":0.8}]` adds dynamic accents.
 Result includes sections/frames, accents, mood/key/tempo, content hash/path,
-measured loudness and timings. Numpy synthesis uses additive/FM keys, band-limited
+measured loudness and timings. The fallback numpy synthesis uses additive/FM keys, band-limited
 strings/pads, Karplus–Strong plucks, bass, bells and short filtered percussion;
 there are no downloaded samples, AI services or stored melodies.
 Keys cycle through all twelve tonics across moods and seeds, with octave folding
@@ -393,12 +414,14 @@ Re-render after editing timing/emotions/cameras; no adaptive audio plays at runt
 This is a compact rule-based accompanist, not an orchestral or cultural simulation.
 
 Verify: `tests/test_music.py` → `MUSIC UNIT OK`; `--demos` writes every 30 s mood
-to `output/music_demos/` with `metrics.json` and score JSONs. Isolated checks:
+to `output/music_demos/` with `metrics.json` and score JSONs.
+`--demos --soundfont` writes the same twelve 30 s cues to `output/music_demos_sf/`;
+metrics include backend and render seconds. Isolated checks:
 Spectra use the first 20 seconds of the decoded WAV, mono `(L+R)/2`, Hann FFT:
 power below 120/30 Hz, above 2/4/8/16 kHz, air 8–16 kHz and centroid. Tests also
 measure folded aliases inside the audible band, against an uncorrected saw;
 near-zero energy above 16 kHz by itself does not prove low aliasing.
-`CHAR3D_PORT=9974 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python
+`CHAR3D_PORT=9975 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python
 tests/e2e_smoke.py --music-only` (low-resolution workbench film + PyAV AAC checks).
 Use `--audio-only` / `--auto-sfx-only` with `CHAR3D_AUDIO_CLAY_ONLY=1` for audio
 regressions without Eevee. Shut down the isolated engine after checks.
@@ -430,18 +453,57 @@ files. Tools never download models. Missing models report the exact install comm
   languages with a static fallback. **Text goes to Microsoft**. This is an unofficial
   API that can change or fail; edge-tts is LGPL-3.0. No offline engine ever falls back
   to Edge. Online results include a `privacy` note, including cache hits.
-- **f5**: optional local cloning; **not installed by default**. `scripts/install_tts.sh
-  f5 --yes` prints the size/license before installing a large CPU PyTorch environment
-  (roughly 3 GB), >=1.35 GB Indonesian checkpoint, vocabulary and vocoder. The
-  [Indonesian fine-tune](https://huggingface.co/anantoj/f5-id-v1) is Apache-2.0, while
-  [upstream base weights](https://github.com/SWivid/F5-TTS#license) are CC-BY-NC
-  (**non-commercial**). Dependencies are separate in `requirements-f5.txt`; use a
-  Python/PyTorch version supported by F5 if the current interpreter has no wheels.
-  Register `tts/f5/voices/Ana.json` with `{"voice_reference":"my_voice.wav",
-  "reference_text":"Exact reference transcript", "language":"id", "gender":"female"}`.
-  Relative references resolve beside that JSON. Use only the user's own voice or a
-  voice they have permission to use. All model/vocoder files and transcripts must
-  exist locally; inference does not auto-download a model or ASR weights.
+- **f5**: optional, natural offline Indonesian cloning with a single persistent
+  JSON-lines subprocess in `~/.local/share/char3d/f5-venv/bin/python` (override
+  `CHAR3D_F5_PYTHON`). Torch never enters the MCP/Blender process. `cancel_tts()`
+  stops/reaps it and releases RAM; next use restarts it. Timeout is 600 s per
+  operation (`CHAR3D_F5_TIMEOUT`), with clear offline/missing-file errors.
+  `scripts/install_tts.sh f5` asks confirmation (`--yes` accepts) and uses a
+  separate CPU venv, never the MCP venv. Recorded model/vocoder bytes and SHA-256
+  are in `scripts/f5_assets.tsv`: 1,348,431,976-byte Indonesian checkpoint,
+  54,365,991-byte Vocos weights and 461-byte config, plus a 11,255-byte vocabulary
+  bundled with pinned f5-tts. Already cached Vocos files are usable read-only.
+  All inference runs with HF_HUB_OFFLINE=1 and blocked network sockets; supplied
+  transcripts avoid Whisper/ASR downloads. WAV decoding uses libsndfile because
+  optional torchcodec can have incompatible FFmpeg/CUDA libraries. Text chunks run
+  serially on the shared model/cache, with native torch CPU threading underneath.
+
+  Code is [MIT](https://github.com/SWivid/F5-TTS/blob/main/LICENSE), the
+  [Indonesian finetune](https://huggingface.co/anantoj/f5-id-v1) is labelled
+  Apache-2.0, and upstream base weights are CC-BY-NC: personal/non-commercial use.
+  Bundled package example clips are not used: their speaker/recording permissions
+  are not separately established by the code license. Builtin `f5:female_adult`,
+  `f5:male_adult`, `f5:elder`, `f5:child` references are generated from our installed
+  Piper output at first synthesis, cached inside workspace imports (no home writes).
+  These are synthetic variants of one speaker, not four trained speakers, and keep
+  Piper news_tts's personal-use limitation. Catalog/parse-only never generate them.
+  Casting selects gender/age-tagged refs and applies only small pitch variation.
+
+  For your own/permitted voice, record a clean mono WAV, 8–12 seconds, one speaker,
+  quiet room, normal pace, no music/reverb/clipping; transcribe every spoken word.
+  Use `text_to_speech("Halo!", engine="f5", voice_reference="audio/my_voice.wav",
+  reference_text="Exact words in the reference")` (relative to imports), or register
+  `tts/f5/voices/Ana.json` with `{"voice_reference":"my_voice.wav",
+  "reference_text":"Exact transcript", "language":"id", "gender":"female", "age":28}`;
+  relative paths in JSON resolve beside it. Do not use Edge/Microsoft speech or an
+  unpermitted real person's recordings as references.
+
+  `script_to_scene(script, tts_engine="f5", language="id")` works with normal casting.
+  Results include measured wall/CPU time and real-time factor; cache keys include
+  reference content, local model/vocab/vocoder identity and inference settings.
+  `CHAR3D_F5_STEPS=8|16|24|32|64` chooses quality/cost (default 32),
+  `CHAR3D_F5_THREADS=2` controls CPU threads; experimental
+  `CHAR3D_F5_QUANTIZE=1` quantizes linear layers to int8, with its own cache identity.
+  CPU generation is much slower than real time on the i5-4460; Piper stays default.
+  Measured with four CPU threads: draft 8-step sentences take roughly 40–46 s for
+  2–3 s speech; the current 32-step smoke takes 167.922 s wall / 629.306 s CPU for
+  2.187 s raw speech (76.79 RTF; 2.267 s normalized WAV). These are local measurements,
+  not guarantees; default thread count is two. The 8-step child reference has worse
+  Whisper-tiny WER than its Piper comparison, so do not assume every F5 preset improves speech.
+  Run `tests/audio2_demos.py` for 10 Indonesian sentences per builtin voice plus
+  matched Piper WAVs, Whisper-tiny WER, F0/duration/loudness/peak and latency metrics
+  in `output/voice_demos_f5/`. Quality scores are measurements, not a claim that
+  synthetic references reproduce the variety/naturalness of licensed recordings.
 - **chatterbox**: explicit online wrapper of the existing free Hugging Face Space
   (MIT, tiny GPU quota, may queue/fail, **no Indonesian**). Use `chatterbox:ms` only
   when Malay is acceptable. Text is sent to Hugging Face/ResembleAI. The existing
@@ -450,7 +512,8 @@ files. Tools never download models. Missing models report the exact install comm
 `list_voices(language="id")` reports installed engines, licenses, privacy, install hints
 and voices. The default catalog and all casting are offline; explicitly requesting
 `engine="edge"` refreshes its list. `text_to_speech(text, voice=None, engine="piper",
-language="id", rate=1.0, pitch=0.0, gender=None, output=None)` returns `path` relative to
+language="id", rate=1.0, pitch=0.0, gender=None, output=None,
+voice_reference=None, reference_text=None)` returns `path` relative to
 `imports/`, `duration_s`, `engine`, `voice`, `cached`, and online `privacy`. `rate` is a
 0.5..2 multiplier; `pitch` is -12..12 semitones relative to the raw voice. `output`
 optionally copies the cached WAV to another `.wav` path inside `imports/`.

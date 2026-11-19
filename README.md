@@ -141,10 +141,43 @@ tautan dataset pada model card belum jelas, jadi perlakukan model Indonesia seba
 **penggunaan pribadi**. Edge memakai API Microsoft tidak resmi yang dapat berubah;
 **teks dikirim ke Microsoft hanya bila Edge dipilih** (Ardi/Gadis). Chatterbox juga
 online, berkuota, dan belum mendukung Indonesia. UI meminta persetujuan sebelum
-mengirim teks. F5 tersedia sebagai backend opsional tanpa instalasi default;
-`scripts/install_tts.sh f5 --yes` menerima unduhan besar dan batas lisensi bobot dasar
-**nonkomersial**. Referensi kloning wajib milik sendiri atau berizin. Detail konfigurasi
-dan batasan ada di [Voices (TTS)](AGENTS.md#voices-tts).
+mengirim teks. F5 tersedia sebagai backend offline opsional.
+`scripts/install_tts.sh f5` meminta konfirmasi untuk venv CPU terpisah (~3 GB),
+checkpoint 1.348.431.976 byte, vocab paket 11.255 byte dan Vocos 54.365.991 + 461 byte;
+manifest ukuran/SHA-256 ada di `scripts/f5_assets.tsv`. Override interpreter:
+`CHAR3D_F5_PYTHON=~/.local/share/char3d/f5-venv/bin/python`. Inferensi selalu offline,
+memakai worker JSON yang memuat model sekali; `cancel_tts()` menghentikannya.
+Kode F5 [MIT](https://github.com/SWivid/F5-TTS/blob/main/LICENSE),
+[finetune Indonesia](https://huggingface.co/anantoj/f5-id-v1) Apache-2.0;
+[bobot dasar](https://github.com/SWivid/F5-TTS#license) CC-BY-NC → pribadi/nonkomersial.
+Suara bawaan `f5:female_adult`, `f5:male_adult`, `f5:elder`, `f5:child` berasal dari
+output Piper sintetis (satu speaker dengan variasi pitch; batas penggunaan Piper tetap
+berlaku), bukan contoh rekaman paket yang izin suaranya belum jelas. Casting memilih
+referensi menurut gender/umur. `list_voices(engine="f5")` menampilkan katalog lokal.
+
+```python
+text_to_speech("Selamat pagi!", engine="f5", voice="f5:female_adult")
+script_to_scene("MUSIK: haru\nANA (perempuan, 28): Halo!", tts_engine="f5", language="id")
+# Gunakan hanya suara sendiri atau suara dengan izin pemiliknya:
+text_to_speech("Halo!", engine="f5", voice_reference="audio/saya.wav",
+               reference_text="Transkrip persis rekaman saya.")
+```
+
+Rekam WAV mono bersih 8–12 detik, satu pembicara, ruangan tenang, tanpa musik,
+reverb atau clipping, lalu tuliskan seluruh kata. Referensi juga bisa didaftarkan
+melalui JSON `tts/f5/voices/<nama>.json` dengan `voice_reference`, `reference_text`,
+`gender`, `age`, `language`. Jangan gunakan suara Edge/Microsoft atau orang tanpa izin.
+Worker memakai `HF_HUB_OFFLINE=1`, tidak mengunduh ASR, dan tidak mengimpor torch
+ke MCP. Cache mencakup referensi dan pengaturan; timeout `CHAR3D_F5_TIMEOUT=600`,
+langkah `CHAR3D_F5_STEPS=8|16|24|32|64` (default 32), thread `CHAR3D_F5_THREADS=2`.
+Int8 eksperimental: `CHAR3D_F5_QUANTIZE=1`. F5 CPU jauh lebih lambat dari real time;
+Piper tetap default. Pada i5-4460 dengan empat thread, draft 8 langkah membutuhkan
+sekitar 40–46 detik untuk 2–3 detik suara; smoke 32 langkah membutuhkan 167,9 detik
+untuk 2,19 detik suara mentah (RTF 76,8). Preset child pada 8 langkah memiliki WER
+Whisper lebih buruk daripada pembanding Piper; F5 tidak selalu meningkatkan setiap profil.
+Demo 10 kalimat × 4 suara dan pembanding Piper, WER Whisper,
+F0, durasi, loudness, clipping, waktu dan RTF: `tests/audio2_demos.py` →
+`output/voice_demos_f5/`.
 
 `interact(a, b, "handshake")` menyambung setelah animasi kedua rig. Pilih
 `hug`, `high_five`, `fist_bump`, `handover`, atau `pat_shoulder`; `start_frame`
@@ -559,11 +592,29 @@ aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersi
 
 ## Musik latar otomatis
 
+`auto_music(..., backend="auto")` memakai GeneralUser GS jika bank dan renderer
+tersedia, lalu otomatis memilih synth numpy bila tidak ada. `backend="soundfont"`
+mewajibkan bank; `backend="synth"` memakai versi lama. Instal eksplisit dengan
+`scripts/install_soundfont.sh` (konfirmasi, atau `--yes`): tinysoundfont 0.3.7 tanpa
+PyAudio, SF2 v2.0.3 32.319.396 byte dan lisensi dengan checksum di
+`scripts/soundfonts.tsv`. `CHAR3D_SOUNDFONT` mengganti path; lisensi bank mengizinkan
+pembuatan musik pribadi/komersial. Tidak ada unduhan saat render. Blender memakai
+subproses Python kompatibel (`CHAR3D_MUSIC_PYTHON`, default `.venv/bin/python`).
+
+Aransemen GM mencakup piano/e-piano, gitar nylon/steel, strings, woodwinds, brass,
+choir/pad, harp, mallet, bass dan drum kanal 10. Inversi dengan voice leading, bass
+approach, counter-melody di B, fill sebelum pergantian bagian/cut, velocity serta
+CC7/CC11 membentuk intro → A → B → outro. Nusantara menggunakan figur orisinal
+bersahutan dengan vibraphone, marimba, glock/celesta, tubular bells, steel drums,
+kalimba/koto, taiko/timpani dan orchestral hit. Tangga nada pelog/slendro hanya
+pendekatan subset equal temperament; bukan rekonstruksi laras, repertoar atau ansambel
+tradisional. Metrik spektrum soundfont dan synth dilaporkan terpisah.
+
 `auto_music(mood="auto", seed=17)` membuat musik orisinal secara offline dengan
-numpy, lalu menurunkannya 12 dB saat dialog. Tanpa sampel unduhan atau layanan AI.
+soundfont lokal atau numpy, lalu menurunkannya 12 dB saat dialog. Tidak memakai layanan AI.
 Pilih ceria, hangat, sedih/haru, romantis, tegang, misterius, epik, tenang, lucu,
 nostalgia, dreamy, atau nusantara (pentatonik temperamen sama, bell/metallophone
-dan gong sintetis; bukan tiruan karya atau tuning daerah tertentu).
+dan gong; bukan tiruan karya atau tuning daerah tertentu).
 Mode auto membaca emosi dialog, suasana sinematik, cuaca dan lokasi. Aksen kecil
 mengikuti cut/judul, dinamika mengikuti emosi, dan akhir mendapat kadens.
 
@@ -584,6 +635,7 @@ Panggilan ulang mengganti musik milik generator saja; `clear=True` menghapusnya.
 Musik manual tetap ada. Simpan ulang setelah perubahan timeline/emosi/kamera.
 Ini pengiring berbasis aturan dengan sintesis ringan; hasil perlu didengarkan.
 Demo semua mood: `tests/test_music.py --demos` → `output/music_demos/metrics.json`.
+`--demos --soundfont` → `output/music_demos_sf/` (12 mood × 30 detik, metrik dan waktu render).
 Setiap mood/seed memilih dari semua 12 key, dengan register, ritme bass/drum dan
 orkestrasi berbeda. PolyBLEP 2×, FM 4× dan resonator pluck modal menjaga harmonik
 serta air alami; guard antialias tidak memotong semua treble. Metrik spektrum memakai

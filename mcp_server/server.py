@@ -1064,14 +1064,16 @@ async def list_voices(language: str | None = None, engine: str | None = None) ->
     Default catalog is offline; engine='edge' explicitly refreshes Microsoft's voice
     list (static fallback on network error). No models are downloaded. Piper is local;
     Edge and Chatterbox are online/explicit only. F5 needs a registered reference clip
-    and transcript: use only your own voice or one you have permission to use."""
+    and transcript, or a built-in synthetic Piper reference: use only your own voice
+    or one you have permission to use. The catalog never generates references."""
     return await anyio.to_thread.run_sync(lambda: tts.catalog(language, engine))
 
 
 @mcp.tool()
 async def text_to_speech(text: str, voice: str | None = None, engine: str = "piper",
                          language: str = "id", rate: float = 1.0, pitch: float = 0.0,
-                         gender: float | None = None, output: str | None = None) -> dict:
+                         gender: float | None = None, output: str | None = None,
+                         voice_reference: str | None = None, reference_text: str | None = None) -> dict:
     """Generate cached 48 kHz mono PCM WAV; path is relative to imports/, ready for
     lip_sync_audio/add_audio. voice='piper:id_ID-news_tts-medium',
     'edge:id-ID-GadisNeural', 'f5:<registered-name>' or 'chatterbox:ms'.
@@ -1079,9 +1081,19 @@ async def text_to_speech(text: str, voice: str | None = None, engine: str = "pip
     Default Piper is offline. Explicit Edge sends text to Microsoft (unofficial API);
     Chatterbox sends text to a quota-limited HF Space (no Indonesian). No fallback to
     online engines. F5 references require the user's own voice or permission to use it.
+    F5 voice_reference (WAV, relative to imports or absolute) requires exact
+    reference_text; built-in f5:female_adult/male_adult/elder/child use synthetic Piper.
     Returns path, duration_s, engine, voice, cached and privacy for online engines."""
     return await anyio.to_thread.run_sync(lambda: tts.synthesize(
-        text, voice, engine, language, rate, pitch, gender, output))
+        text, voice, engine, language, rate, pitch, gender, output, voice_reference, reference_text))
+
+
+@mcp.tool()
+async def cancel_tts() -> dict:
+    """Cancel an active F5 inference and release its CPU worker/model RAM.
+    The next F5 request starts a fresh worker. Cached WAVs remain available."""
+    await anyio.to_thread.run_sync(tts.close)
+    return {"stopped": True, "engine": "f5"}
 
 
 @mcp.tool()
@@ -1125,7 +1137,8 @@ async def auto_music(mood: str = "auto", duration: float | None = None,
                      intensity: float = .6, seed: int = 0, volume: float = .35,
                      follow_cuts: bool = True, follow_emotion: bool = True,
                      sections: list[dict] | None = None, fade_in: float = 1.,
-                     fade_out: float = 2., clear: bool = False) -> dict:
+                     fade_out: float = 2., clear: bool = False,
+                     backend: Literal["auto", "soundfont", "synth"] = "auto") -> dict:
     """Compose original offline music, place it and duck -12 dB under dialog.
     Moods: happy/ceria, warm/hangat, sad/haru/sedih, romantic/romantis,
     tense/tegang, mysterious/misterius, epic/epik, calm/tenang, playful/lucu,
@@ -1133,7 +1146,8 @@ async def auto_music(mood: str = "auto", duration: float | None = None,
     location. Cuts/titles receive tonal accents; emotion peaks shape dynamics.
     duration defaults to scene range (seconds, max 600); tempo 40..180 BPM;
     key e.g. D minor. sections=[{frame, name?, intensity?}] adds dynamic cues.
-    Seeded numpy instruments, no samples/network. Stereo 48 kHz 16-bit WAV,
+    backend=auto uses a local GM SoundFont when installed, otherwise numpy synth.
+    No downloads/network. Stereo 48 kHz 16-bit WAV,
     about -16 LUFS/-1 dBTP before volume/fades/ducking. Content-hash cache in
     imports/audio/music/generated. Reruns replace only owned scores; clear removes
     those scores. Returns mood/key/tempo, frames, sections, accents, path/hash,
@@ -1141,7 +1155,8 @@ async def auto_music(mood: str = "auto", duration: float | None = None,
     """
     return await run("auto_music", mood=mood, duration=duration, tempo=tempo, key=key,
         intensity=intensity, seed=seed, volume=volume, follow_cuts=follow_cuts,
-        follow_emotion=follow_emotion, sections=sections, fade_in=fade_in, fade_out=fade_out, clear=clear)
+        follow_emotion=follow_emotion, sections=sections, fade_in=fade_in, fade_out=fade_out, clear=clear,
+        backend=backend)
 
 
 @mcp.tool()
@@ -1753,6 +1768,7 @@ if os.environ.get("CHAR3D_ALLOW_PYTHON") == "1":
 async def engine_shutdown() -> str:
     """Stop the Blender engine started by this server (it restarts on the next call)."""
     await anyio.to_thread.run_sync(engine.stop)
+    await anyio.to_thread.run_sync(tts.close)
     return "stopped"
 
 

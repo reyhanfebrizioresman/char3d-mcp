@@ -222,6 +222,17 @@ class AudioTests(unittest.TestCase):
 
 
 class BackendTests(unittest.TestCase):
+    def test_f5_chunks_share_one_model_thread_and_preserve_exceptions(self):
+        import threading
+        from providers.tts.f5_worker import SerialChunks
+        with SerialChunks() as executor:
+            result = executor.submit(threading.get_ident)
+            self.assertEqual(result.result(), threading.get_ident())
+            def failed():
+                raise ValueError('chunk failure')
+            with self.assertRaisesRegex(ValueError, 'chunk failure'):
+                executor.submit(failed).result()
+
     def test_edge_mock_success_privacy_and_failure(self):
         calls = []
         class Communicate:
@@ -242,39 +253,100 @@ class BackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "no engine fallback"):
                     service.synthesize("Different", "edge:id-ID-GadisNeural")
 
-    def test_f5_lazy_local_mock_reference_and_hint(self):
+    def test_f5_local_catalog_reference_and_cache(self):
+        from providers.tts.f5 import BUILTINS, WORKER
+        self.assertNotIn('torch', sys.modules, 'Torch belongs only in the F5 subprocess')
         with tempfile.TemporaryDirectory() as folder:
-            backend = F5(folder)
+            service = TTS(folder, folder)
+            backend = service.backends['f5']
             self.assertFalse(backend.available())
-            with self.assertRaisesRegex(RuntimeError, "f5 --yes"):
-                backend.synthesize("Halo", "Ana", "id", 1, 0, Path(folder) / "x.wav")
-            for file in ("model.safetensors", "vocab.txt", "vocos/config.yaml", "vocos/pytorch_model.bin"):
-                dest = Path(folder) / "f5" / file
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.touch()
-            voices = Path(folder) / "f5/voices"
-            voices.mkdir()
-            audio.write(voices / "ref.wav", tone(), 22050)
-            (voices / "Ana.json").write_text(json.dumps({"voice_reference": "ref.wav", "reference_text": "Suara saya"}))
-            calls = []
-            class F5TTS:
-                def __init__(self, **kwargs): calls.append(kwargs)
-                def infer(self, **kwargs):
-                    calls.append(kwargs)
-                    return tone(), 22050, None
-            module = ModuleType("f5_tts")
-            module.__spec__ = importlib.machinery.ModuleSpec("f5_tts", loader=None)
-            api = ModuleType("f5_tts.api")
-            api.F5TTS = F5TTS
-            with patch.dict(sys.modules, {"f5_tts": module, "f5_tts.api": api}):
-                self.assertTrue(backend.available())
-                self.assertEqual(backend.voices()[0]["id"], "f5:Ana")
-                result = backend.synthesize("Halo", "Ana", "id", 1.1, 0, Path(folder) / "out.wav")
-                self.assertEqual(result["sample_rate"], 22050)
-                self.assertIn(folder, calls[0]["ckpt_file"])
-                self.assertIn(folder, calls[0]["vocoder_local_path"])
-                self.assertEqual(calls[1]["ref_text"], "Suara saya")
-                self.assertEqual(calls[1]["speed"], 1.1)
+            with self.assertRaisesRegex(RuntimeError, 'f5 --yes'):
+                backend.synthesize('Halo', 'female_adult', 'id', 1, 0, Path(folder)/'x.wav')
+            refs = Path(folder)/'f5/voices'
+            refs.mkdir(parents=True)
+            audio.write(refs/'ref.wav', tone(), 22050)
+            (refs/'Ana.json').write_text(json.dumps(dict(voice_reference='ref.wav',
+                reference_text='Suara saya', gender='female', age=28)))
+            self.assertEqual(backend.config('Ana')['reference_text'], 'Suara saya')
+            fingerprint = backend.fingerprint('Ana')
+            audio.write(refs/'ref.wav', tone(hz=180), 22050)
+            self.assertNotEqual(backend.fingerprint('Ana'), fingerprint)
+            def infer(python, assets, request):
+                audio.write(request['output'], tone(), 22050)
+                return dict(sample_rate=22050, duration_s=1, wall_seconds=2, cpu_seconds=3)
+            with patch.object(backend, 'available', return_value=True), patch.object(WORKER, 'infer', side_effect=infer) as call:
+                r = service.synthesize('Halo', voice='f5:Ana')
+                self.assertEqual(r['inference']['real_time_factor'], 2)
+                self.assertTrue(service.synthesize('Halo', voice='f5:Ana')['cached'])
+                self.assertEqual(call.call_count, 1)
+                r = service.synthesize('Milik saya', engine='f5', voice_reference=str(refs/'ref.wav'), reference_text='Suara saya')
+                self.assertEqual(r['voice'], 'f5:custom_reference')
+                self.assertEqual(call.call_args.args[2]['reference_text'], 'Suara saya')
+                with patch('providers.tts.f5.audio.pitch_shift', return_value=tone()*8):
+                    raw = refs/'pitched.wav'
+                    backend.synthesize('Pitch headroom', 'Ana', 'id', 1, 2, raw)
+                    shifted, _ = audio.read(raw)
+                    self.assertLess(float(np.max(abs(shifted))), .99)
+                    self.assertGreater(float(np.max(abs(shifted))), .95)
+                builtin = dict(backend.config('female_adult'), voice_reference=str(refs/'ref.wav'))
+                with patch.object(backend, '_reference', return_value=builtin):
+                    first = service.synthesize('Referensi sintetis', voice='f5:female_adult')
+                    self.assertTrue(service.synthesize('Referensi sintetis', voice='f5:female_adult')['cached'])
+                    audio.write(refs/'ref.wav', tone(hz=240), 22050)
+                    changed = service.synthesize('Referensi sintetis', voice='f5:female_adult')
+                    self.assertFalse(changed['cached'])
+                    self.assertNotEqual(first['path'], changed['path'])
+                with self.assertRaises(ValueError):
+                    service.synthesize('Halo', engine='piper', voice_reference='x.wav', reference_text='x')
+            with patch.object(backend, 'available', return_value=True), patch('providers.tts.piper.Backend.available', return_value=True), patch('providers.tts.piper.Backend.model_path', return_value=refs/'ref.wav'):
+                catalog = backend.voices('id')
+                self.assertTrue(set('f5:'+n for n in BUILTINS) <= {v['id'] for v in catalog})
+                casting = service.cast([dict(id='Girl', gender=0, age=30), dict(id='Boy', gender=1, age=35),
+                    dict(id='Elder', gender=1, age=70), dict(id='Child', gender=0, age=9)], engine='f5')
+                self.assertEqual([casting[n]['voice'] for n in ('Girl','Boy','Elder','Child')],
+                    ['f5:female_adult','f5:male_adult','f5:elder','f5:child'])
+
+    def test_f5_subprocess_protocol_reuse_timeout_cancellation(self):
+        import threading
+        import time
+        from providers.tts.f5 import Worker
+        with tempfile.TemporaryDirectory() as folder:
+            script = Path(folder)/'fake_worker.py'
+            script.write_text("""import sys,json,time,os
+for line in sys.stdin:
+ r=json.loads(line)
+ if r.get('text') == 'wait': time.sleep(10)
+ if r.get('text') == 'exit': sys.exit(7)
+ if r.get('text') == 'bad': print('invalid json',flush=True); continue
+ print(json.dumps(dict(id=r['id'],ok=r.get('text') != 'error',error='mock failure',result=dict(pid=os.getpid()))),flush=True)
+""")
+            worker = Worker(str(script))
+            self.addCleanup(worker.close)
+            a = worker.infer(sys.executable, {}, dict(text='one'))
+            b = worker.infer(sys.executable, {}, dict(text='two'))
+            self.assertEqual(a['pid'], b['pid'])
+            for text, error in [('error', RuntimeError), ('exit', RuntimeError), ('bad', RuntimeError)]:
+                with self.assertRaises(error):
+                    worker.infer(sys.executable, {}, dict(text=text))
+                self.assertIsNone(worker.process)
+            with patch.dict('os.environ', CHAR3D_F5_TIMEOUT='.1'):
+                with self.assertRaises(TimeoutError):
+                    worker.infer(sys.executable, {}, dict(text='wait'))
+            errors = []
+            def pending():
+                try: worker.infer(sys.executable, {}, dict(text='wait'))
+                except RuntimeError as exc: errors.append(str(exc))
+            thread = threading.Thread(target=pending)
+            thread.start()
+            deadline = time.monotonic()+3
+            while worker.process is None and time.monotonic() < deadline: time.sleep(.01)
+            time.sleep(.1)
+            process = worker.process
+            worker.cancel()
+            thread.join(3)
+            self.assertFalse(thread.is_alive())
+            self.assertIsNotNone(process.poll())
+            self.assertTrue(errors)
 
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
@@ -317,8 +389,22 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
 
 if __name__ == "__main__":
+    real_f5 = '--f5-real' in sys.argv
+    if real_f5:
+        sys.argv.remove('--f5-real')
     result = unittest.main(exit=False)
     if result.result.wasSuccessful():
         print("TTS UNIT OK")
+        if real_f5:
+            service = TTS(Path(__file__).resolve().parents[1]/'output')
+            try:
+                if service.backends['f5'].available():
+                    generated = service.synthesize('Selamat pagi. Apa kabar hari ini?', voice='f5:female_adult')
+                    assert generated['duration_s'] > .3 and generated['sample_rate'] == 48000
+                    print('F5 REAL SMOKE OK', json.dumps(generated))
+                else:
+                    print('F5 REAL SMOKE SKIP: local assets unavailable')
+            finally:
+                service.close()
     else:
         sys.exit(1)

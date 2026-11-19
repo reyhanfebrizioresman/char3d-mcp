@@ -1,0 +1,4 @@
+# path bytes sha256 URL; pinned upstream revisions, verified installed files
+f5-id-v1/model.safetensors 1348431976 4a46409e9a982aa1fbca839d12dee30d2a22af10c5663b80d8c71235b810c049 https://huggingface.co/anantoj/f5-id-v1/resolve/781cc2c84e4533ecca0a3461092d9211d867338d/model.safetensors
+vocos/config.yaml 461 da9033922f969a47f0c160010226919e59f27761fd5066f3828d46de6650b0fc https://huggingface.co/charactr/vocos-mel-24khz/resolve/0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21/config.yaml
+vocos/pytorch_model.bin 54365991 97ec976ad1fd67a33ab2682d29c0ac7df85234fae875aefcc5fb215681a91b2a https://huggingface.co/charactr/vocos-mel-24khz/resolve/0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21/pytorch_model.bin

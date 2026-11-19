@@ -43,7 +43,8 @@ def scene_context(sc):
 
 @command("auto_music")
 def auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=.6, seed=0, volume=.35,
-               follow_cuts=True, follow_emotion=True, sections=None, fade_in=1., fade_out=2., clear=False):
+               follow_cuts=True, follow_emotion=True, sections=None, fade_in=1., fade_out=2., clear=False,
+               backend="auto"):
     sc = bpy.context.scene
     started = time.perf_counter()
     first, last = sc.frame_start, sc.frame_end
@@ -62,7 +63,7 @@ def auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=.6, s
                         [e for e in emotions if first <= e["frame"] < first+duration*fps] if follow_emotion else (),
                         sections, fps, first)
         parsed = time.perf_counter()
-        samples = render(score)
+        samples = render(score, backend=backend)
         path, digest = write_cached(samples, context.resolve("audio/music/generated", "imports"))
         measured = metrics(samples, score)
         rendered = time.perf_counter()
@@ -92,7 +93,7 @@ def auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=.6, s
         strip[PROP] = True
         strip["char3d_music_hash"] = digest
         result = {k: score[k] for k in ("mood", "key", "tempo", "sections", "accents", "emotion_cues", "seed")}
-        result.update(path=path, hash=digest, frames=[first, end-1], duration_s=duration,
+        result.update(path=path, hash=digest, backend=backend, renderer=score['renderer'], frames=[first, end-1], duration_s=duration,
                       sample_rate=48000, channels=2, loudness=measured, strips=[strip.name], removed=removed,
                       volume=volume, intensity=intensity, fade_in=fade_in, fade_out=fade_out,
                       follow_cuts=follow_cuts, follow_emotion=follow_emotion, custom_sections=sections or [])

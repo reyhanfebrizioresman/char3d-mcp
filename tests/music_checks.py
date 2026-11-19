@@ -1,4 +1,4 @@
-"""Small real MCP music/film check, always run with CHAR3D_PORT=9974."""
+"""Small real MCP music/film check, run on the isolated 9974 or audio-v2 9975 port."""
 import json
 import os
 from pathlib import Path
@@ -22,7 +22,7 @@ def decode(path):
 
 
 async def run(call, text_of):
-    assert os.environ.get('CHAR3D_PORT') == '9974', 'music integration must use port 9974'
+    assert os.environ.get('CHAR3D_PORT') in ('9974', '9975'), 'music integration requires an isolated test port'
 
     async def data(tool, **args):
         return json.loads(text_of(await call(tool, **args))[-1])
