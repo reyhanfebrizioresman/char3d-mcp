@@ -104,7 +104,7 @@ def _skeleton(command_name, params):
 @command("script_to_scene")
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
                     subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
-                    body_language=True, character_seeds=None):
+                    body_language=True, character_seeds=None, music="auto"):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -127,7 +127,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
 
     sc = bpy.context.scene
     with timed("parse"):
-        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps, look=look)
+        plan = parse_script(script, name=name, environment=environment, seed=seed, fps=sc.render.fps, look=look, music=music)
         if camera not in ("mixed", "singles", "two_shot", "none"):
             raise ValueError("camera must be mixed, singles, two_shot or none")
         if plan["environment"] and plan["environment"] not in PRESETS:
@@ -648,6 +648,14 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             result["sfx"] = dispatch("auto_sfx", {"characters": cast, "seed": seed})
     else:
         result["sfx"] = {"strips": [], "counts": {}}
+    sc["char3d_music_beats"] = json.dumps(plan["beats"])
+    if plan["music"]:
+        with timed("music"):
+            cfg = plan["music"]
+            result["music"] = dispatch("auto_music", {"mood": cfg["mood"], "tempo": cfg["tempo"],
+                "key": cfg["key"], "seed": seed})
+    else:
+        result["music"] = dispatch("auto_music", {"clear": True})
     sc.frame_set(1)
     warnings[:] = list(dict.fromkeys(warnings))
     timings["total"] = round(time.perf_counter() - started, 4)

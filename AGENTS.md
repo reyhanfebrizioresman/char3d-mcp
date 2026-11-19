@@ -37,7 +37,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Realistic humans (MPFB): `mpfb_assets` (categories + installed packs),
   `create_realistic_human` (optional CC0 packs, beard, seeded outfit)
 - Face: `list_expressions`, `set_expression`, `auto_expression`, `lip_sync` (phoneme/word detail), `auto_blink`
-- Audio & voice: `add_audio`, `auto_sfx`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
+- Audio & voice: `add_audio`, `auto_music`, `auto_sfx`, `duck_music`, `list_audio`, `remove_audio`, `transcribe_audio`,
   `list_voices`, `text_to_speech`, `lip_sync_audio`, `talk_motion`, `talk_gestures`,
   `ai_text_to_speech` (legacy free HF Space)
 - Dialog: `dialog`, `stage_dialog`, `script_to_scene` (live dialog coverage, guest seating, outfits + hair/cloth motion)
@@ -337,6 +337,74 @@ from the `voice` speech switch.
   `add_subtitles()` (optional captions) → `render_video` (use `shot="medium"` when gestures
   should be seen).
 - `transcribe_audio` gives text + word times without animating.
+
+## Background music
+
+`auto_music(mood="auto", duration=None, tempo=None, key=None, intensity=0.6,
+seed=0, volume=0.35, follow_cuts=True, follow_emotion=True, sections=None,
+fade_in=1.0, fade_out=2.0, clear=False)` composes an original offline score, adds
+an owned `kind="music"` strip, then runs `duck_music` (-12 dB under speech).
+Duration defaults to the inclusive scene range; it does not extend the timeline.
+Reruns replace only generator-owned music; clear removes only those strips.
+Manual music/voice/Foley stay intact. Save/open retains the score and volume keys.
+
+Moods: happy/ceria, warm/hangat, sad/haru/sedih, romantic/romantis,
+tense/tegang, mysterious/misterius, epic/epik, calm/tenang, playful/lucu,
+nostalgic/nostalgia, dreamy and nusantara. Nusantara uses original pentatonic
+pelog/slendro-inspired equal-tempered subsets, metallophone/bell and low gong
+timbres; it does not reconstruct regional tunings, repertoire or ensembles.
+Auto uses saved sentence/beat emotions (including explicit expression cues), then
+cinematic look, weather and location. Golden hour suggests warm; night mysterious;
+rain nostalgic. Inference is a small local lexicon, with the same limits as
+`auto_expression`. Camera cuts/title starts receive quiet tonal accents without
+changing tempo; emotion peaks shape swells/drops. Ending cues resolve to tonic.
+
+`tempo` is 40..180 BPM; `key` e.g. `D minor`, `F# major`; intensity is 0..1.
+`sections=[{"frame":49,"name":"reveal","intensity":0.8}]` adds dynamic accents.
+Result includes sections/frames, accents, mood/key/tempo, content hash/path,
+measured loudness and timings. Numpy synthesis uses additive/FM keys, band-limited
+strings/pads, Karplus–Strong plucks, bass, bells and short filtered percussion;
+there are no downloaded samples, AI services or stored melodies.
+Keys cycle through all twelve tonics across moods and seeds, with octave folding
+to comfortable registers. Moods also choose their lead, note density, bass pattern,
+drum feel and mix levels. Strings use 2x polyBLEP, FM uses 4x reconstruction, and
+plucks resolve the delay/loss loop's modal poles instead of undersampling narrow
+resonances on an FFT grid. A flat 14 kHz passband retains natural air; the 14–16 kHz
+transition is an antialias guard, not a blanket timbre low-pass. The bass is G1..Bb2
+with controlled sub-30 Hz energy. Mastering leaves this instrument balance intact.
+48 kHz stereo 16-bit PCM lives under `imports/audio/music/generated/` by SHA-256
+of PCM. Mastering targets about -16 LUFS before strip volume/fades/ducking, with
+4x sinc-estimated true peak <= -1 dBFS. K weighting and absolute/relative gates
+are BS.1770-like, not a certified meter. Pure `compose(..., loop=True)` + `render`
+supports periodic tails/reverb and seamless endpoints (explicit tempo requires
+whole four-beat bars); the scene tool writes one
+duration-matched cue. Duration is limited to 600 seconds per composition.
+
+Scripts/films default to `music="auto"`; `MUSIK:` / `MUSIC:` headers choose a mood,
+`otomatis`/`auto` or `tanpa`/`none`. `music=None` disables generated music globally;
+an explicit mood overrides headers. `sound=False` controls Foley separately.
+Parse-only plans report `plan.music` (request/mood/tempo/key) without rendering.
+Film scenes keep preview scores in their blends. `render_film` replaces those in
+temporary snapshots with a global score through cards/cuts: adjacent equal moods
+share one composition when key/tempo/seed/intensity/volume also match; changed
+settings or moods crossfade around a cadence. Film speech
+is ducked on its final global timeline. Manual scene music remains in the clips.
+Re-render after editing timing/emotions/cameras; no adaptive audio plays at runtime.
+This is a compact rule-based accompanist, not an orchestral or cultural simulation.
+
+Verify: `tests/test_music.py` → `MUSIC UNIT OK`; `--demos` writes every 30 s mood
+to `output/music_demos/` with `metrics.json` and score JSONs. Isolated checks:
+Spectra use the first 20 seconds of the decoded WAV, mono `(L+R)/2`, Hann FFT:
+power below 120/30 Hz, above 2/4/8/16 kHz, air 8–16 kHz and centroid. Tests also
+measure folded aliases inside the audible band, against an uncorrected saw;
+near-zero energy above 16 kHz by itself does not prove low aliasing.
+`CHAR3D_PORT=9974 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python
+tests/e2e_smoke.py --music-only` (low-resolution workbench film + PyAV AAC checks).
+Use `--audio-only` / `--auto-sfx-only` with `CHAR3D_AUDIO_CLAY_ONLY=1` for audio
+regressions without Eevee. Shut down the isolated engine after checks.
+The same clay flag makes `--film-only` use low-resolution workbench checks.
+`CHAR3D_AUDIO_NO_ASR=1` keeps synthetic-vowel audio checks offline and lighter;
+supplied-word/phoneme timing remains covered without loading Whisper.
 
 ## Voices (TTS)
 `scripts/install_tts.sh` installs Piper + Edge packages and the Indonesian Piper voice.

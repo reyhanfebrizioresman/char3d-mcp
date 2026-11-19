@@ -184,7 +184,7 @@ def _direction(text, warnings):
     return beat
 
 
-def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None):
+def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None, music="auto"):
     """Normalize dict or bilingual text. Estimated frames never read files or mutate a scene."""
     from .film_plan import is_film
     if is_film(script):
@@ -197,9 +197,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
             line = line.strip()
             if not line:
                 continue
-            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD|DUNIA|WORLD)\s*:\s*(.*)$", line, re.I)
+            header = re.match(r"^(JUDUL|TITLE|LOKASI|LOCATION|CUACA|WEATHER|SUASANA|LOOK|MOOD|DUNIA|WORLD|MUSIK|MUSIC)\s*:\s*(.*)$", line, re.I)
             if header:
                 key = ("title" if header[1].upper() in ("JUDUL", "TITLE") else
+                       "music" if header[1].upper() in ("MUSIK", "MUSIC") else
                        "world" if header[1].upper() in ("DUNIA", "WORLD") else
                        "weather" if header[1].upper() in ("CUACA", "WEATHER") else
                        "look" if header[1].upper() in ("SUASANA", "LOOK", "MOOD") else "environment")
@@ -401,6 +402,9 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None)
         extra["weather"] = weather
     from .cinematic import look_spec
     extra['look'] = look_spec(look if look is not None else raw.get('look'))
+    from .music import script_settings
+    extra['music'] = script_settings(raw.get('music', 'auto') if music == 'auto' else music,
+                                    seed, beats, extra['look'], weather, location)
     extra['recommended_look'] = 'golden_hour' if location in ('park', 'beach', 'cafe_terrace', 'city_street', *NATURE_PRESETS) else 'studio_film'
     return {"name": name or raw.get("title") or "ScriptScene", "title": raw.get("title"),
             "environment": location, **extra,

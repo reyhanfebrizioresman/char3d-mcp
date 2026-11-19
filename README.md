@@ -33,7 +33,7 @@ Claude / Codex ──MCP──► mcp_server/ ──TCP lokal──► Blender (
 | `talk_motion` | Gerak kepala (angguk saat penekanan, miring per kalimat), alis, dan lirikan mata saat bicara; menatap kamera |
 | `talk_gestures` | Gerak tangan saat bicara: postur bicara + beat, buka telapak, sapuan, menunjuk (lengkap dengan jari); mengikuti penekanan kata, plus gesture sesuai makna kata ("dua" → dua jari, "saya" → tangan di dada, "besar" → tangan melebar, "tidak" → telapak menyapu, ...) atau `cues` manual |
 | `set_hand_pose` | Pose jari: rileks, terbuka, kepal, menunjuk, jempol, peace, tiga, empat, OK, dll. (rig MPFB, Mixamo, Rigify) |
-| `add_audio`, `duck_music`, `list_audio`, `remove_audio` | Suara `kind="voice"/"music"/"sfx"`; musik `loop=True` sampai akhir adegan + `fade_in`/`fade_out` (detik); `duck_music(amount_db=-12)` menurunkan musik saat dialog; video otomatis bersuara AAC |
+| `auto_music`, `add_audio`, `duck_music`, `list_audio`, `remove_audio` | Musik prosedural orisinal yang mengikuti adegan, otomatis turun saat dialog; audio manual `kind="voice"/"music"/"sfx"`, loop dan fade; video bersuara AAC |
 | `auto_sfx` | Foley prosedural tersinkron: langkah dari kontak kaki, duduk/berdiri, rustle kain opsional, ambience sesuai set; WAV 48 kHz/16-bit dengan seed dan cache hash, tanpa sampel unduhan |
 | `list_voices`, `text_to_speech` | Pilih mesin/suara: Piper offline, Edge online, F5 opsional, Chatterbox online; WAV 48 kHz dengan cache, pitch dan tempo |
 | `ai_text_to_speech` | Teks → suara (gratis, Chatterbox di Hugging Face, 23 bahasa) |
@@ -556,6 +556,38 @@ periksa `render_views(..., engine_name="eevee")` sebelum ekspor.
 
 Lisensi: kode MPFB GPL-3.0 (tidak disalin ke repo ini, hanya dipanggil saat runtime);
 aset MakeHuman CC0, jadi karakter hasilnya bebas dipakai, termasuk untuk komersial.
+
+## Musik latar otomatis
+
+`auto_music(mood="auto", seed=17)` membuat musik orisinal secara offline dengan
+numpy, lalu menurunkannya 12 dB saat dialog. Tanpa sampel unduhan atau layanan AI.
+Pilih ceria, hangat, sedih/haru, romantis, tegang, misterius, epik, tenang, lucu,
+nostalgia, dreamy, atau nusantara (pentatonik temperamen sama, bell/metallophone
+dan gong sintetis; bukan tiruan karya atau tuning daerah tertentu).
+Mode auto membaca emosi dialog, suasana sinematik, cuaca dan lokasi. Aksen kecil
+mengikuti cut/judul, dinamika mengikuti emosi, dan akhir mendapat kadens.
+
+Naskah menerima `MUSIK: hangat` / `MUSIC: sad`, atau `MUSIK: tanpa`.
+`script_to_scene` dan `script_to_film` memakai `music="auto"` secara default;
+`music=None` menonaktifkan musik, terpisah dari `sound=False` untuk Foley.
+`build=False` melaporkan mood/tempo/key tanpa membuat WAV.
+Film memakai skor berkelanjutan melewati kartu dan cut: mood yang sama meneruskan
+komposisi; mood berbeda memakai crossfade. Preview tiap adegan tetap bersuara.
+
+Parameter opsional: `duration` (detik, default rentang adegan, maksimum 600),
+`tempo` (40..180 BPM), `key="D minor"`, `intensity=0.6`, `volume=0.35`,
+`sections=[{"frame":49,"intensity":0.8}]`, `fade_in=1`, `fade_out=2`.
+WAV stereo 48 kHz/16-bit disimpan berdasarkan hash konten di
+`output/imports/audio/music/generated/`, sekitar −16 LUFS dan puncak ≤−1 dBFS
+sebelum volume/fade/ducking. Pengukur K-weighted/true-peak berupa pendekatan.
+Panggilan ulang mengganti musik milik generator saja; `clear=True` menghapusnya.
+Musik manual tetap ada. Simpan ulang setelah perubahan timeline/emosi/kamera.
+Ini pengiring berbasis aturan dengan sintesis ringan; hasil perlu didengarkan.
+Demo semua mood: `tests/test_music.py --demos` → `output/music_demos/metrics.json`.
+Setiap mood/seed memilih dari semua 12 key, dengan register, ritme bass/drum dan
+orkestrasi berbeda. PolyBLEP 2×, FM 4× dan resonator pluck modal menjaga harmonik
+serta air alami; guard antialias tidak memotong semua treble. Metrik spektrum memakai
+20 detik pertama WAV mono-sum dengan Hann FFT: <120 Hz, >2/4/8/16 kHz dan centroid.
 
 ## Suara dan lip sync dari audio
 

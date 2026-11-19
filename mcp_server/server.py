@@ -1120,6 +1120,31 @@ async def auto_sfx(characters: list[str] | None = None, kinds: list[str] | None 
 
 
 @mcp.tool()
+async def auto_music(mood: str = "auto", duration: float | None = None,
+                     tempo: float | None = None, key: str | None = None,
+                     intensity: float = .6, seed: int = 0, volume: float = .35,
+                     follow_cuts: bool = True, follow_emotion: bool = True,
+                     sections: list[dict] | None = None, fade_in: float = 1.,
+                     fade_out: float = 2., clear: bool = False) -> dict:
+    """Compose original offline music, place it and duck -12 dB under dialog.
+    Moods: happy/ceria, warm/hangat, sad/haru/sedih, romantic/romantis,
+    tense/tegang, mysterious/misterius, epic/epik, calm/tenang, playful/lucu,
+    nostalgic/nostalgia, dreamy, nusantara. Auto reads emotions, look, weather,
+    location. Cuts/titles receive tonal accents; emotion peaks shape dynamics.
+    duration defaults to scene range (seconds, max 600); tempo 40..180 BPM;
+    key e.g. D minor. sections=[{frame, name?, intensity?}] adds dynamic cues.
+    Seeded numpy instruments, no samples/network. Stereo 48 kHz 16-bit WAV,
+    about -16 LUFS/-1 dBTP before volume/fades/ducking. Content-hash cache in
+    imports/audio/music/generated. Reruns replace only owned scores; clear removes
+    those scores. Returns mood/key/tempo, frames, sections, accents, path/hash,
+    measured loudness and timings. Rule-based scoring, approximate LUFS/true peak.
+    """
+    return await run("auto_music", mood=mood, duration=duration, tempo=tempo, key=key,
+        intensity=intensity, seed=seed, volume=volume, follow_cuts=follow_cuts,
+        follow_emotion=follow_emotion, sections=sections, fade_in=fade_in, fade_out=fade_out, clear=clear)
+
+
+@mcp.tool()
 async def duck_music(music_strip: str | None = None, amount_db: float = -12,
                      attack: float = 0.15, release: float = 0.4) -> dict:
     """Lower music during speech using volume keys. music_strip=None selects all music;
@@ -1334,7 +1359,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           build: bool = True, sound: bool = True, voice: bool = True,
                           tts_engine: str = "piper", voices: dict | None = None,
                           look: str | dict | None = None,
-                          body_language: bool = True) -> dict:
+                          body_language: bool = True, music: str | None = "auto") -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     Optional look="golden_hour" or SUASANA:/LOOK:/MOOD: senja selects atmosphere.
@@ -1360,6 +1385,8 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     own voice or used with permission. Existing audio always takes precedence.
     sound=True adds procedural footsteps, sit/stand and ambience after animation;
     sound=False disables generation. Results include sfx strip counts and paths.
+    music='auto' adds an original offline score; MUSIC:/MUSIK: sets its mood or
+    none/tanpa. music=None disables it independently of Foley. Plans report key/tempo.
     Outfit: casual/formal/sport/summer/winter (explicit clothes overrides it).
     Beard: catalog name or True for a seeded installed choice. Text also recognizes
     gaun/dress/rok/skirt, jenggot/beard/kumis/moustache, kacamata/glasses and topi/hat;
@@ -1377,7 +1404,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     import time
     from engine.script_plan import parse_script
     started = time.perf_counter()
-    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look)
+    prepared = parse_script(script, name=name, environment=environment, seed=seed, look=look, music=music)
     parse_warnings = list(prepared["warnings"])
     casting = tts.cast(prepared["characters"], tts_engine, language, seed, voices) if voice else {}
     report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
@@ -1400,7 +1427,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
                   language=language, seed=seed, build=build, sound=sound, look=look,
-                  body_language=body_language)
+                  body_language=body_language, music=music)
     r["plan"]["warnings"] = list(dict.fromkeys(parse_warnings + r["plan"].get("warnings", [])))
     r["voices"] = casting
     r["generated_files"] = report["generated_files"]
@@ -1421,7 +1448,7 @@ async def script_to_film(script: dict | str, name: str | None = None,
                          build: bool = True, sound: bool = True, voice: bool = True,
                          tts_engine: str = "piper", voices: dict | None = None,
                          look: str | dict | None = None, body_language: bool = True,
-                         scene_index: int | None = None) -> dict:
+                         scene_index: int | None = None, music: str | None = "auto") -> dict:
     """Build a film from ADEGAN/SCENE headers or {title, characters, scenes:[...]}.
 
     Each scene has name, environment, look, weather, lighting, card, transition_in,
@@ -1437,10 +1464,13 @@ async def script_to_film(script: dict | str, name: str | None = None,
     This replaces the current editor scene; save existing work first. Inspect each
     scene with open_film_scene and Eevee. Then film_render_options + render_film.
     Voice/privacy and component limitations match script_to_scene.
+    MUSIC:/MUSIK: selects each scene's score (auto by default); music=None disables
+    all generated scores. Film renders join compatible moods and crossfade changes,
+    scoring cards/cuts and ducking speech on the final timeline.
     """
     from engine.film_plan import parse_film
     import copy
-    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting)
+    plan = parse_film(script, name=name, environment=environment, seed=seed, look=look, lighting=lighting, music=music)
     casting = tts.cast(plan["characters"], tts_engine, language, seed, voices) if voice else {}
     plan["voices"] = casting
     if not build:
@@ -1468,7 +1498,7 @@ async def script_to_film(script: dict | str, name: str | None = None,
     prepared["warnings"] = list(dict.fromkeys(prepared["warnings"] + [w for r in reports for w in r["warnings"]]))
     result = await run("script_to_film", script=script, name=plan["name"], lighting=lighting,
         camera=camera, subtitles=subtitles, language=language, seed=seed, build=True,
-        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared)
+        sound=sound, look=look, body_language=body_language, scene_index=scene_index, _plan=prepared, music=music)
     result["voices"] = casting
     result["generated_files"] = [f for r in reports for f in r["generated_files"]]
     result["cache_hits"] = sum(r["cache_hits"] for r in reports)

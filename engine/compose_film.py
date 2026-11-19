@@ -41,6 +41,8 @@ def main(path):
             wav.writeframesraw(bytes(n*2))
             samples -= n
     strips.new_sound('Continuous audio', silence, channel=1, frame_start=1)
+    if spec.get('music'):
+        strips.new_sound('Film score', spec['music']['path'], channel=7, frame_start=1)
     pictures, sounds = [], []
     for i, scene in enumerate(spec['scenes']):
         # Adjacent scenes alternate channels; transition windows cannot overlap.
