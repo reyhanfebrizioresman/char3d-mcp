@@ -4092,6 +4092,11 @@ async def _emocam_checks(call):
     await run(call, text_of)
 
 
+async def _toon_checks(call):
+    from toon_checks import run
+    await run(call, text_of)
+
+
 async def main():
     server_args = ["-m", "mcp_server.server"]
     if "--audio-only" in sys.argv and os.environ.get("CHAR3D_AUDIO_NO_ASR"):
@@ -4141,6 +4146,7 @@ async def main():
             print("AUDIO E2E OK", flush=True)
             return
         for flag, section in (("--emocam-only", _emocam_checks),
+                              ("--toon-only", _toon_checks),
                               ("--review-only", _review_checks),
                               ("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),

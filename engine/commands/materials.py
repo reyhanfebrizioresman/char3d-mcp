@@ -688,24 +688,30 @@ def _fallback(original, enhanced):
     surface_roughness = {'eyes': .28, 'brows': .52,
                          'hair': .64 if 'afro' in original.name.lower() else .46}
     rough = profile.get('roughness', surface_roughness.get(role, profiles.FABRICS[kind]['roughness']))
-    bsdf.inputs['Base Color'].default_value = original.diffuse_color
+    flat = enhanced.get('c3d_photo_flat_color')
+    bsdf.inputs['Base Color'].default_value = tuple(flat)+(1.,) if flat is not None else original.diffuse_color
     bsdf.inputs['Roughness'].default_value = rough
     bsdf.inputs['Specular IOR Level'].default_value = .28 if role == 'skin' else .5
-    diffuse = _image(original)
+    diffuse = enhanced.get('c3d_photo_base_image') or _image(original)
     if diffuse:
         node = _node(tree, 'ShaderNodeTexImage', 'export base texture')
         node.image = diffuse
-        tree.links.new(node.outputs['Color'], bsdf.inputs['Base Color'])
-        if role == 'skin':
+        if flat is None:
+            tree.links.new(node.outputs['Color'], bsdf.inputs['Base Color'])
+        if (role == 'skin' and flat is None) or enhanced.get('c3d_photo_tint'):
             # glTF recognizes this image * constant graph as baseColorFactor,
             # keeping the restrained reflectance correction without a bake.
             factor = _node(tree, 'ShaderNodeMix', 'export skin reflectance factor')
             factor.data_type, factor.blend_type = 'RGBA', 'MULTIPLY'
             factor.inputs[0].default_value = 1.
-            gain = profile.get('albedo_gain', 1.)
-            factor.inputs[7].default_value = tuple(gain*t for t in profile.get('albedo_tint', (1., 1., 1.)))+(1.,)
+            gain = profile.get('albedo_gain', 1.) if role=='skin' else 1.
+            tint = profile.get('albedo_tint', (1., 1., 1.)) if role=='skin' else enhanced['c3d_photo_tint']
+            factor.inputs[7].default_value = tuple(gain*t for t in tint)+(1.,)
             tree.links.new(node.outputs['Color'], factor.inputs[6])
             tree.links.new(factor.outputs[2], bsdf.inputs['Base Color'])
+        elif role=='skin' and flat is not None:
+            gain=profile.get('albedo_gain',1.)
+            bsdf.inputs['Base Color'].default_value=tuple(v*gain*t for v,t in zip(flat,profile.get('albedo_tint',(1,1,1))))+(1.,)
         if role in ('hair', 'brows'):
             tree.links.new(node.outputs['Alpha'], bsdf.inputs['Alpha'])
     opacity = _image(original, 'opacity')

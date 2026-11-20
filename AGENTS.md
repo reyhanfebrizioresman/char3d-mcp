@@ -131,8 +131,134 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   behavior. Any positive integer is supported on skinned meshes; non-bone groups stay intact.
   Existing glTF modifier defaults can leave MPFB helper geometry visible after re-import;
   this also occurs without `max_influences`.
-- Use `create_human` (mannequin) for stylized/blockout work or when MPFB is missing
+- Use `create_human` (mannequin) for blockout work or when MPFB is missing
   (`mpfb_assets` errors → tell the user to run `scripts/install_mpfb.sh`).
+
+## Stylized characters
+
+`create_realistic_human(..., style="realistic"|"anime"|"cartoon"|"chibi")`
+uses MPFB for all four styles. The default realistic path is unchanged. Anime is
+6.75 heads, cartoon 4.75, chibi 2.8, measured scalp-to-chin (hair is excluded). These
+are original proportions/materials, not designs from existing characters/studios.
+Stylized builds freeze the phenotype, deform every relative facial target and
+fitted hair/clothing mesh together, transform rest bone endpoints, and re-fit
+stored landmarks. MPFB weights, fingers, ARKit/visemes and rigs remain native.
+For Rigify, proportions are fitted on its metarig before generating the rig's
+length-dependent mechanisms; the generated rest face is checked against the mesh.
+`game_engine` and FK `rigify` support the usual pose, walk, seat, interaction,
+speaking gesture, blink/lip-sync and GLB paths. Do not auto-rig them again.
+
+Eyes are enlarged with their lids/lashes and have an original code-generated
+iris/pupil/highlight atlas. Closed blink targets recess the eye inserts behind
+the lids (native continuous morphs, with no visibility/alpha switches). The full
+upper lid margin is calibrated onto the lower contour in the blink target,
+including both canthi; the review checks the 3D gap and sampled eye occlusion.
+Eye width and height use independent monotone remaps, with lower eye placement,
+a larger forehead and reduced lower face/nose. Anime has a softly pointed chin;
+cartoon/chibi have rounder cheeks/chins. Native skinned ink ribbons follow the
+upper/lower lid morphs; simple thin brows replace photographic alpha strands.
+The short styles rebalance leg/torso heights and shorten arms/hands/feet with
+actual shoulder/wrist anchors. One C1 height map spans torso, neck and head;
+the neck width blend excludes shoulders. Chibi uses 82% of the MPFB stature to
+shorten torso and limbs together while retaining 2.8 heads; other styles retain
+the source stature. Choose a proportionate low chair for its short lower legs.
+Hair uses packed binary cutout alpha,
+also portable to GLB, rather than stochastic intermediate strand opacity.
+`tests/toon_polish.py --case f_anime` (also f/m × all four styles) records actual
+eye/head/face ratios, blink and A/O/M/B/P lip gaps. `--sheet` composes the rendered
+female/male front/three-quarter comparison. Use port 9971 and one case at a time.
+Skin uses flat sampled albedo with soft UV blush and no pores;
+hair retains authored cutout alpha with flat pigment, and clothes
+use flat sampled colours. These PBR textures/materials export without downloading
+assets. The result recommends `render_style("anime")`; it never changes global
+render style. `animated_film` also works. Rest deformation is not an MPFB macro
+editor: recreate the character to change its phenotype/style afterwards.
+GLB carries proportions, skinning, morphs and flat textures; outlines/cel bands
+remain Blender scene render effects.
+Keep `face=True` for facial animation; a stylized `face=False` build must be
+recreated rather than loading unfitted facial targets onto its frozen proportions.
+
+Descriptors accept `gaya anime` / `anime`, `kartun` / `cartoon`, `chibi` and
+`realistis` / `realistic`. Dict characters accept `style`. A `GAYA: anime` or
+`STYLE: anime` scene defaults otherwise unspecified characters to anime bodies;
+an explicit character style wins. An explicit scene render-style argument wins
+over the header. Other scene render styles keep realistic body defaults.
+
+Inspect front/right/back/three-quarter and posed faces. Extreme heads, existing
+garment designs, hats and very tight clothes can intersect; this is continuous
+rest deformation, not clothing remeshing or collision simulation. MPFB's target
+inventory remains available for articulation; it cannot produce arbitrary anime
+topology or independent hand-drawn facial linework. Full blinks and mouth opening
+are measured in the isolated checks, alongside actual rendered posed meshes.
+
+## VRM import (optional add-on)
+
+`import_model("avatar.vrm")` supports VRM 0.x and 1.0 through the installed
+[VRM Add-on for Blender](https://vrm-addon-for-blender.info/en-us/scripting-api/).
+Missing installations report `scripts/install_vrm.sh`; runtime never downloads.
+The installer prints version/URL/size/licence, asks confirmation, and verifies
+the TSV SHA-256/bytes before using a ZIP. `--dry-run` is read-only/offline;
+`--install` also runs Blender's extension installer (stop engines first).
+Recommended extension: 4.10.5, 1,649,936 bytes, MIT OR GPL-3.0-or-later.
+Metadata/source URLs are recorded in `scripts/toon_assets.tsv`.
+
+The adapter reads declared humanoid bone assignments (including fingers), saves
+semantic maps, and builds native char3d expression/viseme aliases from authored
+morph binds. This supports `apply_pose`, animation/navigation/mocap, hands, facial
+expressions, lip sync, blinks, talk motion and face life, within the model's own
+channel inventory. Bone-based VRoid eye looks are baked to gaze morphs when
+authored look expression binds are absent. Five vowels approximate consonants. Combined Blink cannot
+provide independent winks. Missing expressions are not fabricated; material/UV
+binds remain VRM metadata. Spring bones are static; VRM physics is not baked.
+Inspect facing and rig mapping after import. Keep the imported rig; do not run
+`prepare_model` (which deliberately removes rigs) or auto-rig it.
+
+**VRM models carry their own licences. The user is responsible for permission to
+use each model**, independently of the add-on's software licence.
+
+## Face from a photo (optional local ONNX models)
+
+`face_from_photo(character, image, strength=1, texture=None, consent=False)` fits
+eleven paired MPFB head/chin/eye/nose/mouth/brow modifiers against local 66-point
+OpenSeeFace landmarks. It requires `consent=True`: use only your own face or a
+person who gave permission. JPEG/PNG must already be under workspace `imports/`;
+paths and symlink targets outside it are rejected, including an `imports/` folder
+that resolves outside the workspace. No photo is uploaded. Blender
+decodes it; a short subprocess uses the existing host numpy/onnxruntime CPU, with
+no torch, OpenCV or Pillow. Transient decoded arrays/landmarks are created only
+inside imports and cleaned after success/failure. Saved .blend/GLB assets retain
+the fitted appearance and optional generated texture; delete those separately
+if removing the likeness. The original photo is never copied to another path.
+
+Install explicitly with `scripts/install_face_landmarks.sh`: OpenSeeFace
+`mnv3_detection_opt.onnx` (568,302 bytes) and `lm_model0_opt.onnx` (1,902,521 bytes),
+both BSD-2-Clause, pinned to commit `50c09741897010faad721a218b2bbe14ecad6251`.
+**The owner must fill the two SHA-256 cells in `scripts/toon_assets.tsv` before
+installation**; no weights were downloaded to determine them. `--dry-run` prints
+the plan without network/writes. Models default to `output/models/face`;
+`CHAR3D_FACE_MODEL_DIR` overrides it. `CHAR3D_FACE_PYTHON` overrides the host Python.
+Runtime missing-file errors give the installation hint and do not fetch models.
+
+Use a neutral, level, frontal photo with one well-lit unobscured face. The bounded
+weak-perspective fit reports projected pixel RMSE and modifier values. Unseen 3D
+depth remains the MPFB prior; it is not a scan or an identity guarantee. Colour
+patch estimates can be biased by lighting, glasses, dark pupils or a background
+above the hairline. `strength=0` leaves appearance unchanged. For realistic
+characters, `texture=None` projects a softly masked photo into face UVs, keeping
+eyes and mouth interior from the model. For stylized characters it defaults off
+and transfers restrained shape traits plus skin/hair/eye pigment instead. Explicit
+`texture=True` enables projection on either style. Existing weights and facial
+animation deltas remain; inspect blinks/lips and refit hair after large transfers.
+Photo fitting keeps generated Rigify mechanisms at their original rest skeleton;
+large edits can need manual facial control/pivot adjustments. Morph articulation
+and re-fitted skin/contact landmark metadata are retained.
+Use original HM08 MPFB topology. Reapply after replacing/restoring materials.
+
+Verify only on **9971**, workspace `$PWD/output`, one owned engine at a time:
+`tests/test_toon.py` prints `TOON UNIT OK`; `tests/e2e_smoke.py --toon-only`
+builds all styles, measures actual eyelid rims/mouth morphs, walks/seats/speaks,
+checks GLB morph/skin animation, descriptors and inspected Eevee stills.
+Optional model/add-on interfaces are mocked until the owner installs them.
 
 ## Character materials
 

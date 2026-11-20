@@ -312,10 +312,12 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
                            hair=None, eyebrows="eyebrow001", eyelashes="eyelashes01",
                            eyes="high-poly", clothes=None, rig="game_engine",
                            subdiv=0, location=(0, 0, 0), face=True, beard=None,
-                           outfit=None, seed=0, materials="enhanced"):
+                           outfit=None, seed=0, materials="enhanced", style="realistic"):
     """Build a realistic human with MPFB. gender 0=female..1=male; age in years;
     muscle/weight/height/proportions 0..1 (0.5 = average); race weights dict."""
     from ..materials import options
+    from ..toon import style_name
+    style = style_name(style)
     options(materials)
     AssetService, HumanService, _loc = _services()
     if rig == "rigify":
@@ -370,7 +372,15 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         bpy.ops.object.mode_set(mode="OBJECT")
     before = set(bpy.data.objects)
     basemesh = HumanService.deserialize_from_dict(info, settings)
+    if style != "realistic":
+        # Freeze the chosen phenotype before loading facial animation targets.
+        # MPFB's live macro keys otherwise add their original unscaled deltas.
+        from bl_ext.user_default.mpfb.services.targetservice import TargetService
+        TargetService.bake_targets(basemesh)
     if rig == "rigify":
+        if style != "realistic":
+            from .toon import prefit_rigify
+            prefit_rigify(basemesh,style,face)
         basemesh = _generate_rigify(basemesh, name)
     from .util import is_helper
     new = [o for o in bpy.data.objects
@@ -441,6 +451,11 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         from .face import _ensure_face
         result["face_rig"] = "shape keys (ARKit 52 + visemes 22)" if _ensure_face(basemesh) \
             or basemesh.data.shape_keys else None
+    if style != "realistic":
+        from .toon import stylize
+        result["stylized"] = stylize(basemesh, [o for o in new if o.type == "MESH"],
+                                     root if root.type == "ARMATURE" else None, style)
+        result.update(_describe(basemesh))
     from .util import scene_bounds
     lo, hi = scene_bounds([o for o in new if o.type == "MESH"])
     result.update({
@@ -450,7 +465,10 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         "height_m": round(hi.z - lo.z, 3) if lo else None,
         "parts": sorted(o.name for o in new if o.type == "MESH" and o is not basemesh),
     })
-    if materials == "enhanced":
+    if style != "realistic":
+        result["materials"] = result["stylized"]["materials"]
+        result["recommended_render_style"] = "anime"
+    elif materials == "enhanced":
         from .materials import upgrade_materials
         result["materials"] = upgrade_materials(root.name)
     else:

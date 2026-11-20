@@ -105,8 +105,11 @@ async def delete_objects(names: list[str]) -> dict:
 # --- files --------------------------------------------------------------------
 @mcp.tool()
 async def import_model(path: str) -> dict:
-    """Import .glb/.gltf/.fbx/.obj/.stl/.ply/.usd(z)/.bvh into the current scene.
-    Returns the names of the new objects."""
+    """Import .glb/.gltf/.fbx/.obj/.stl/.ply/.usd(z)/.bvh/.vrm into the scene.
+    VRM 0.x/1.0 needs VRM Add-on for Blender (scripts/install_vrm.sh); maps declared
+    humanoid bones and authored face morphs for char3d animation. Keep its rig.
+    VRM models carry their own licences; the user is responsible for permission.
+    Returns the names of the new objects and VRM mapping report when applicable."""
     return await run("import_model", path=path)
 
 
@@ -1063,7 +1066,8 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
                                  subdiv: int = 0, location: list[float] = [0, 0, 0],
                                  face: bool = True, beard: str | None = None,
                                  outfit: Outfit | None = None, seed: int = 0,
-                                 materials: Literal["enhanced", "mpfb"] = "enhanced") -> dict:
+                                 materials: Literal["enhanced", "mpfb"] = "enhanced",
+                                 style: Literal["realistic", "anime", "cartoon", "chibi"] = "realistic") -> dict:
     """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
     eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
     gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
@@ -1080,12 +1084,15 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
     rig incl. face controls, ~930 bones; slower, ~9 s). face=True loads ARKit face shapes +
     visemes and adds teeth/tongue so set_expression / lip_sync / auto_blink work.
     materials="enhanced" preserves textures and improves skin/eyes/hair/fabric shading;
-    "mpfb" keeps original shaders. upgrade_materials can switch existing characters."""
+    "mpfb" keeps original shaders. upgrade_materials can switch existing characters.
+    style chooses MPFB body proportions: realistic (unchanged default), anime (6.75
+    heads), cartoon (4.75), chibi (2.8, 82% stature). Stylized bodies retain rig/morphs
+    and use original flat toon materials. Result suggests render_style('anime'); no global change."""
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
                      clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face,
-                     beard=beard, outfit=outfit, seed=seed, materials=materials)
+                     beard=beard, outfit=outfit, seed=seed, materials=materials, style=style)
 
 
 @mcp.tool()
@@ -1105,6 +1112,20 @@ Expression = Literal["neutral", "smile", "big_smile", "laugh", "sad", "angry", "
                      "surprised", "fear", "disgust", "smirk", "wink_left", "wink_right",
                      "eyes_closed", "pout", "kiss", "thinking", "shout", "sleepy", "look_left",
                      "look_right", "look_up", "look_down", "tongue_out"]
+
+
+@mcp.tool()
+async def face_from_photo(character: str, image: str, strength: float = 1.0,
+                          texture: bool | None = None, consent: bool = False) -> dict:
+    """Fit MPFB face traits from one frontal JPEG/PNG under workspace imports/.
+    Requires consent=True: only your own face or a person who gave permission.
+    Runs locally with installed OpenSeeFace ONNX CPU models, never uploads/downloads.
+    texture=None defaults on for realistic, off for stylized characters. Generated
+    UV texture/traits persist in saved .blend/exports; source photo is not copied.
+    Returns projected fit error, modifier values, estimated skin/eye/hair colours.
+    Install missing models with scripts/install_face_landmarks.sh; no OpenCV/torch."""
+    return await run('face_from_photo', character=character, image=image,
+                     strength=strength, texture=texture, consent=consent)
 
 
 @mcp.tool()
