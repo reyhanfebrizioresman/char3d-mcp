@@ -86,7 +86,7 @@ def detect(rgb, directory, session_factory=None):
     nose = points[30]
     if abs(nose[0]-(eye1[0]+eye2[0])/2) > eye_span*.3 or abs(eye2[1]-eye1[1])>eye_span*.25:
         raise ValueError('Photo must be frontal, level and unoccluded; turn toward the camera')
-    return dict(landmarks=points.tolist(),confidence=confidence.tolist(),box=[x0,y0,x1,y1],
+    return dict(landmarks=points.tolist(),confidence=confidence.tolist(),box=[int(x0), int(y0), int(x1), int(y1)],
                 dimensions=[w,h],depth='2D landmarks; MPFB prior supplies unseen 3D depth')
 
 

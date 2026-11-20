@@ -1,5 +1,6 @@
 """Offline toon/VRM/photo contracts, synthetic fitting and mocked ONNX tensors."""
 from pathlib import Path
+import json
 import math
 import subprocess
 import sys
@@ -171,6 +172,7 @@ def main():
                     return [output,output[:,:1].copy()]
                 return [heat[None]]
         detection=detect(np.full((300,300,3),.5,dtype=np.float32),modeldir,MockSession)
+        assert json.loads(json.dumps(detection))['box'] == detection['box']
         assert len(detection['landmarks'])==66 and min(detection['confidence'])>.9 and len(inputs)==2
     rng=np.random.default_rng(17)
     base=rng.normal(size=(40,3))*.05
