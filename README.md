@@ -242,8 +242,16 @@ Hasil menambah `avoided`, `detours`, `path_points` (termasuk awal), `body_radius
 `clearance_m`, `planning_seconds`, dan `warnings`. Clearance mengukur jarak minimum
 root yang disampel ke footprint mentah/tepi terrain; null jika tidak ada rintangan
 atau `avoid=False`. Footprint convex tiap mesh bersifat konservatif. Rintangan tidak
-bergerak selama perencanaan; tidak ada collision solver khusus tangan/kaki/anggota
-tubuh atau prediksi gerakan karakter lain.
+bergerak selama perencanaan; perencana rute tidak memprediksi gerakan karakter lain.
+
+`resolve_collisions()` memperbaiki benturan pada animasi yang sudah dibake: tangan/
+lengan, prop yang dipegang, lutut, offset dada kecil, dan garment longgar. Proxy tubuh
+mengikuti ukuran mesh; furnitur memakai BVH segitiga. Pass otomatis berjalan setelah
+gesture, aksi, interaksi, duduk, dialog dan script (`collisions=False` untuk mematikan).
+Root/kaki, wajah, jari dan target kontak dipertahankan. Hasil melaporkan penetrasi
+sebelum/sesudah, frame koreksi, konflik yang dilewati dan waktu proses. Gunakan
+`report_only=True` untuk mengukur saja. Ini bukan simulasi cloth penuh atau collision
+setiap jari/vertex; benturan besar atau kontak terlindungi masih perlu penataan ulang.
 
 ## Sutradara AI — dari ide menjadi treatment dan naskah
 

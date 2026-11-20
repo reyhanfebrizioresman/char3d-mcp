@@ -266,7 +266,8 @@ async def apply_pose(armature: str, pose: Pose, frame: int | None = None,
 async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int = 2,
                   speed: float = 1.0, amplitude: float = 1.0, in_place: bool = False,
                   foot_lock: bool | None = None, blend_frames: int | None = None,
-                  bpm: float | None = None, phase: Literal["full", "down", "hold", "up"] = "full") -> dict:
+                  bpm: float | None = None, phase: Literal["full", "down", "hold", "up"] = "full",
+                  collisions: bool = True) -> dict:
     """Keyframe a procedural motion clip on any humanoid rig. walk/run move the character
     forward (-Y) unless in_place. speed > 1 = faster, amplitude scales the motion.
     Chain clips with start_frame = previous result's next_start_frame.
@@ -277,17 +278,39 @@ async def animate(armature: str, clip: Clip, start_frame: int = 1, cycles: int =
     is, 0 = hard cut); the feet finish their step and stay planted through the blend.
     Dance clips accept bpm=30..240 (four beats/cycle; speed multiplies cadence).
     kneel phase: full/down/hold/up. type requires sit_on; drink/phone_call/read_book
-    require a held cup/phone/book in either hand. list_animations reports all metadata."""
+    require a held cup/phone/book in either hand. list_animations reports all metadata.
+    Action clips run bounded collision repair last; collisions=False disables it."""
     return await run("animate", armature=armature, clip=clip, start_frame=start_frame,
                      cycles=cycles, speed=speed, amplitude=amplitude, in_place=in_place,
-                     foot_lock=foot_lock, blend_frames=blend_frames, bpm=bpm, phase=phase)
+                     foot_lock=foot_lock, blend_frames=blend_frames, bpm=bpm, phase=phase, collisions=collisions)
+
+
+@mcp.tool()
+async def resolve_collisions(characters: list[str] | None = None,
+                             frame_start: int | None = None, frame_end: int | None = None,
+                             parts: str | list[str] = 'all', clearance: float = 0.01,
+                             max_iterations: int = 8, report_only: bool = False) -> dict:
+    """Repair bounded collisions on baked humanoid performance. Meter units.
+    Skin-fitted posed body proxies, evaluated furniture BVHs and held prop samples
+    drive two-bone limb IK; wrist orientation, fingers, root, feet, face, attachments
+    and camera are retained. parts: all/arms/props/legs/torso/clothes or a list.
+    Corrections ease over .2s; large/unreachable/protected-contact conflicts report
+    skipped reasons. report_only measures without writing keys or garment setup.
+    Returns per-part before/after penetration, corrected frames, skips and timings.
+    Automatic after gestures, interaction, seating, action motions, dialog/script;
+    each authoring tool accepts collisions=False. Re-run after later motion edits.
+    Proxies and sampled elastic garment chains are not exact mesh/finger physics."""
+    return await run('resolve_collisions', characters=characters, frame_start=frame_start,
+                     frame_end=frame_end, parts=parts, clearance=clearance,
+                     max_iterations=max_iterations, report_only=report_only)
 
 
 @mcp.tool()
 async def secondary_motion(character: str, parts: list[str] = ['hair'],
                             frame_start: int | None = None, frame_end: int | None = None,
                             stiffness: float = 0.5, damping: float = 0.5, gravity: float = 1.0,
-                            wind: list[float] | None = None, clear: bool = False) -> dict:
+                            wind: list[float] | None = None, clear: bool = False,
+                            collisions: bool = True) -> dict:
     """Bake deterministic hair and loose garment motion as skin bones (glTF/FBX).
     Run LAST, after body motion, seating and talk_motion. parts accepts 'hair',
     'clothes' (all eligible garments), or skinned garment object/asset names.
@@ -297,11 +320,12 @@ async def secondary_motion(character: str, parts: list[str] = ['hair'],
     them. stiffness/damping: 0..1; gravity >= 0; wind: world XYZ acceleration.
     Omitted wind uses set_weather wind; rebake after changing weather.
     Conservative leg capsules and neighbouring tips constrain cloth; hair uses
-    head/neck/shoulder/back capsules. Not per-vertex or full fabric physics. Returns
+    head/neck/shoulder/back capsules. collisions=True adds scene BVHs and posed peer/arm
+    colliders to cloth; incompatible scene contacts remain reported. Not full fabric physics. Returns
     per-garment chains, tip lag, clearance, skipped reasons and total bake_seconds."""
     return await run('secondary_motion', character=character, parts=parts,
                      frame_start=frame_start, frame_end=frame_end, stiffness=stiffness,
-                     damping=damping, gravity=gravity, wind=wind, clear=clear)
+                     damping=damping, gravity=gravity, wind=wind, clear=clear, collisions=collisions)
 
 
 @mcp.tool()
@@ -667,16 +691,17 @@ async def add_prop(kind: Prop, location: list[float] | None = None, rotation_z: 
 @mcp.tool()
 async def sit_on(character: str, seat: str, start_frame: int | None = None,
                  transition_frames: int = 20, seat_index: int = 0,
-                 hands: Literal["thighs", "lap", "armrests", "none"] = "thighs") -> dict:
+                 hands: Literal["thighs", "lap", "armrests", "none"] = "thighs",
+                 collisions: bool = True) -> dict:
     """Sit a humanoid on a chair/sofa/bench/stool root or part, or a mesh's top surface.
     Metadata follows moved/rotated/scaled furniture; sofa and bench have two positions.
     Aligns the character to the seat front, measures buttock contact and solves flat feet.
     start_frame=None appends after the rig action; ease into sitting and hold to scene end.
     hands: thighs, lap, armrests (seat must have them), none. Layer talk_motion,
     talk_gestures or set_hand_pose afterwards. Static level seats and flat floors only;
-    no obstacle avoidance or hand/desk collision solving. Returns contact/IK errors/timing."""
+    bounded hand/desk collision repair (collisions=False disables it). Returns contact/IK errors/timing."""
     return await run("sit_on", character=character, seat=seat, start_frame=start_frame,
-                     transition_frames=transition_frames, seat_index=seat_index, hands=hands)
+                     transition_frames=transition_frames, seat_index=seat_index, hands=hands, collisions=collisions)
 
 
 @mcp.tool()
@@ -721,7 +746,7 @@ async def interact(a: str, b: str,
                    kind: Literal["handshake", "hug", "high_five", "fist_bump", "handover", "pat_shoulder"],
                    start_frame: int | None = None, prop: str | None = None,
                    approach: bool = True, hold_seconds: float | None = None,
-                   side: Literal["right", "left"] = "right") -> dict:
+                   side: Literal["right", "left"] = "right", collisions: bool = True) -> dict:
     """Two humanoids approach, reach a shared contact, hold and retract.
     Supports basic/Rigify/MPFB and different heights; finger poses skip mannequins.
     None start appends after both actions. Existing animation before start is kept.
@@ -731,9 +756,9 @@ async def interact(a: str, b: str,
     transfers its live palm attachment to b at contact, preserving its world transform.
     Returns approach/reach/contact/release/end frames, next_start_frame, moved characters,
     contact_error_m and hug penetration_m (sampled chest/arm proxies, not mesh collision).
-    hold_seconds overrides the kind's hold duration (0..30). No cloth collision solving."""
+    hold_seconds overrides the kind's hold duration (0..30). Bounded proxy/BVH collision repair runs last; collisions=False disables it."""
     return await run("interact", a=a, b=b, kind=kind, start_frame=start_frame, prop=prop,
-                     approach=approach, hold_seconds=hold_seconds, side=side)
+                     approach=approach, hold_seconds=hold_seconds, side=side, collisions=collisions)
 
 
 @mcp.tool()
@@ -1504,7 +1529,7 @@ async def talk_gestures(character: str, frame_start: int | None = None,
                         style: Literal["calm", "presenter", "energetic"] = "presenter",
                         hands: Literal["both", "right", "left"] = "both",
                         intensity: float = 1.0, seed: int = 5, fingers: bool = True,
-                        semantic: bool = True, cues: list[dict] | None = None) -> dict:
+                        semantic: bool = True, cues: list[dict] | None = None, collisions: bool = True) -> dict:
     """Speech-timed hand gestures: while talking the arms move into a speaking posture
     (hands in front of the belly) and hit beats, open-palm, sweep and point gestures on
     stressed words (stroke lands on the syllable), then relax back to the base animation in
@@ -1527,7 +1552,7 @@ async def talk_gestures(character: str, frame_start: int | None = None,
     Mixamo/Rigify; mannequins have none - they still get the arm motion)."""
     return await run("talk_gestures", character=character, frame_start=frame_start,
                      frame_end=frame_end, style=style, hands=hands, intensity=intensity,
-                     seed=seed, fingers=fingers, semantic=semantic, cues=cues)
+                     seed=seed, fingers=fingers, semantic=semantic, cues=cues, collisions=collisions)
 
 
 # --- Mode bebas: closed declarative world recipes -----------------------------
@@ -1622,7 +1647,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           look: str | dict | None = None,
                           body_language: bool = True, style: str | None = None,
                           life: float = 1.0, music: str | None = "auto",
-                          treatment: dict | None = None) -> dict:
+                          treatment: dict | None = None, collisions: bool = True) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
     camera="directed" (emosi/emotional) follows emotional intensity, adds OTS and
@@ -1700,7 +1725,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     r = await run("script_to_scene", script=prepared, name=name, environment=environment,
                   lighting=lighting, camera=camera, subtitles=subtitles,
                   language=language, seed=seed, build=build, sound=sound, look=look,
-                  body_language=body_language, style=style, life=life, music=music)
+                  body_language=body_language, style=style, life=life, music=music, collisions=collisions)
     r["plan"]["warnings"] = list(dict.fromkeys(parse_warnings + r["plan"].get("warnings", [])))
     r["voices"] = casting
     r["generated_files"] = report["generated_files"]
@@ -1877,7 +1902,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
                  gestures: Literal["calm", "presenter", "energetic"] | None = "presenter",
                  expression: Expression | None = "smile", language: str | None = None,
                  voice: bool = False, tts_engine: str = "piper",
-                 voices: dict | None = None, seed: int = 0, body_language: bool = False, life: float = 1.0) -> dict:
+                 voices: dict | None = None, seed: int = 0, body_language: bool = False, life: float = 1.0, collisions: bool = True) -> dict:
     """A conversation between 2-4 characters (realistic humans with faces work best), in one
     call. lines = [{"speaker": "Ana_rig", "audio": "audio/ana1.wav"},
                    {"speaker": "Budi_rig", "text": "Wah, ide yang bagus!"}, ...]
@@ -1924,7 +1949,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     d = await run("dialog", lines=prepared, characters=characters or speakers, stage=stage,
                   layout=layout, distance=distance, start_frame=start_frame, gap_s=gap_s,
                   camera=camera, shot=shot, gestures=gestures, expression=expression, language=language,
-                  body_language=body_language, life=life, seed=seed)
+                  body_language=body_language, life=life, seed=seed, collisions=collisions)
     d.update(voices=casting, generated_files=report["generated_files"], cache_hits=report["cache_hits"])
     d["warnings"] = list(dict.fromkeys(d.get("warnings", []) + report["warnings"]))
     d["timings"] = {"tts": report["tts_seconds"], "total": round(time.perf_counter() - started, 4)}

@@ -372,7 +372,7 @@ def _step_back(rigs, maps, heights, end, fps):
 
 @command("interact")
 def interact(a, b, kind, start_frame=None, prop=None, approach=True, hold_seconds=None,
-             side="right"):
+             side="right", collisions=True):
     """Bake a paired reach/contact/retract with shared world-space contact sites."""
     from .script_scene import _bones_only
     if kind not in KINDS:
@@ -585,6 +585,16 @@ def interact(a, b, kind, start_frame=None, prop=None, approach=True, hold_second
         transfer = None
         if held:
             transfer = transfer_prop(rigs[0], rigs[1], held, side, contact)
+        from .collision import record_contact, automatic
+        for i, rig in enumerate(rigs):
+            for ss in ('LR' if kind == 'hug' else s):
+                if kind == 'pat_shoulder' and i:
+                    continue
+                record_contact(rig, ss, contact, release, 'interaction:'+kind,
+                               other=rigs[1-i].name,
+                               part='chest' if kind == 'hug' else None)
+        collision_report = automatic(collisions, [r.name for r in rigs], reach, end,
+                                      parts=['arms', 'props', 'torso', 'clothes'])
         return {"a": rigs[0].name, "b": rigs[1].name, "kind": kind,
                 "frames": {"approach": [start, reach-1] if reach > start else None,
                            "reach": reach, "contact": contact, "release": release, "end": end,
@@ -597,7 +607,8 @@ def interact(a, b, kind, start_frame=None, prop=None, approach=True, hold_second
                 "grip_gap_m": round(grip_gap, 5) if held else None,
                 "bones": {r.name: n for r, n in zip(rigs, names)},
                 "contact_measure": "grip/back/shoulder site error" if kind in ("handover", "hug", "pat_shoulder") else "shared palm/knuckle point error",
-                "limits": "sampled chest/arm proxies; no mesh, cloth or dynamic collision solver"}
+                "collisions": collision_report,
+                "limits": "skin-fitted body proxies and scene BVHs; protected contacts and large conflicts may need restaging; no full cloth or finger collision simulation"}
     finally:
         _restore_history(history, split=changed)
         sc.frame_set(saved_frame)

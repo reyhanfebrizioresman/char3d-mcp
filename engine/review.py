@@ -29,7 +29,7 @@ def articulation_present(curves, start, end, fps=24):
 def safe_fixes(issues):
     """One batch, restricted to reversible tool operations; merge shared mix fixes."""
     import copy
-    allowed={'auto_blink','duck_music','auto_sfx','add_subtitles','camera_shot','add_title'}
+    allowed={'auto_blink','duck_music','auto_sfx','add_subtitles','camera_shot','add_title','resolve_collisions'}
     selected={}
     for finding in issues:
         if not finding['auto_fixable']:continue
@@ -45,6 +45,10 @@ def safe_fixes(issues):
                 previous['amount_db']=min(previous.get('amount_db',-12),args.get('amount_db',-12))
             elif tool=='auto_sfx':
                 previous['kinds']=sorted(set(previous.get('kinds',[])) | set(args.get('kinds',[])))
+                if previous.get('characters') is not None and args.get('characters') is not None:
+                    previous['characters']=sorted(set(previous['characters']) | set(args['characters']))
+                else:previous.pop('characters',None)
+            elif tool=='resolve_collisions':
                 if previous.get('characters') is not None and args.get('characters') is not None:
                     previous['characters']=sorted(set(previous['characters']) | set(args['characters']))
                 else:previous.pop('characters',None)

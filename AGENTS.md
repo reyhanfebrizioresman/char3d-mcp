@@ -46,7 +46,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
   four, ok, grip)
 - Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
-  `retarget_animation`, `lock_feet`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
+  `retarget_animation`, `lock_feet`, `resolve_collisions`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
@@ -115,8 +115,9 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   unmarked items are treated as unisex. Explicit `clothes` (including `[]`) overrides
   the preset. `warnings` reports unavailable categories or overlaps (two tops, suit+top,
   two shoes, etc.) without rejecting explicit combinations. Presets use name/tag style
-  hints and available fallbacks, not a clothing collision solver. Hats may clip hair;
-  broad skirts and extreme joint bends may intersect. Check posed Eevee views.
+  hints and available fallbacks. The later collision pass constrains eligible loose garments;
+  the picker itself does not fit collisions. Hats/hair, broad skirts and extreme bends
+  may still intersect or produce skipped conflicts. Check posed Eevee views.
 - MPFB proxy interpolation can leave gaps on some skeletons (e.g. 10 vertices in
   `faydaen_hair_1` on Mixamo). Only unweighted part vertices are filled from the nearest
   weighted vertex on that part (body fallback if the whole part lacks weights);
@@ -374,7 +375,8 @@ No dynamic cloth/hair collision or fiber/vascular simulation is implied.
 hand geometry, so shapes look the same on every skeleton. Shapes: relaxed, open, palm,
 beat, point, fist, thumbs_up, peace, three, four, ok, grip. Pair with arm poses, e.g. `apply_pose(rig,
 "point_forward")` + `set_hand_pose(rig, "point", side="right")`; `keyframe=True, frame=N`
-to animate. Mannequins from `create_human` have no fingers.
+to animate. Mannequins from `create_human` have no fingers. The collision pass
+preserves finger keys; it does not resolve individual finger contacts.
 
 ## Interactions
 `interact(a, b, kind, start_frame=None, prop=None, approach=True, hold_seconds=None,
@@ -423,7 +425,81 @@ heads looking toward the partner.
   dialog coverage at its next shot.
 - Inspect Eevee front three-quarter and side views at contact and during reach.
   Extreme proportions, tight clothing and nearby furniture may intersect; there is
-  no dynamic collision, cloth or full-body contact solver.
+  bounded baked collision repair (see **Collision pass**) preserves contact targets.
+  There is no dynamic full-body or material-accurate cloth solver; inspect remaining skips.
+
+## Collision pass
+
+`resolve_collisions(characters=None, frame_start=None, frame_end=None, parts="all",
+clearance=0.01, max_iterations=8, report_only=False)` measures and repairs baked
+performances in meters. None characters selects visible humanoid rigs; a body/rig
+name list selects a subset, with other visible humanoids still acting as colliders.
+Ranges are inclusive, at most 24000 frames. Parts accepts all, arms, props, legs,
+torso, clothes, or a list. Clearance is 0..0.1 m; iterations is 1..32.
+
+- Evaluated rest skin fits posed head/chest/abdomen/pelvis ellipsoids and neck/limb
+  capsules, including hands/feet. Basic, Rigify, MPFB and recognizable humanoid rigs
+  use their measured dimensions and bone frames, including stylized proportions.
+  Uniform rig scale is supported. Adjacent shoulder/armpit envelopes may overlap
+  naturally and are excluded from self upper-arm/torso checks.
+- Static visible furniture, desks, tables, armrests, laptop parts and terrain use
+  evaluated triangle BVHs at the first frame. Closed meshes use parity for inside;
+  open surfaces are two-sided. Held props use deterministic surface samples plus
+  envelopes for other hands, including historical live attachment owners.
+- Arms/props first receive small wrist-target push-outs and outward/up elbow poles,
+  using the shared two-bone IK with hierarchy-level batching. Wrist world orientation
+  and finger keys remain. Knees can change pole while ankle position/rotation stays
+  fixed. Chest offsets are capped at 3 cm and compensate both wrist targets. Hips,
+  roots, soles, seat anchors, face/lip keys, attachments and camera are retained.
+  Elbows retain authored high poses; newly raised elbows stop within 5 cm of the
+  shoulder (also capped by measured height) to preserve natural phone/face contacts.
+- Corrections have anticipatory, quintic .2 s shoulders and ease around protected
+  contacts. Wrist/elbow corrections over 8% of measured height, unreachable targets,
+  constraint residuals and root/seat conflicts are skipped with reasons. Saved heart,
+  temple/chin, lip/ear, keyboard/book and paired interaction contact intervals protect the wrist;
+  elbows can still change. Sparse authored curves outside the range keep their
+  original Bezier segments. New body authoring invalidates overwritten contact records.
+  An evaluated IK failure, increased penetration or a new held-prop jump rejects
+  the character's physical correction over the whole interval, retaining the original
+  continuous performance and reporting the rejection rather than inserting a pop.
+- Loose garments re-bake their owned elastic chains with scene BVHs and posed peer/
+  arm colliders, retaining the last cloth stiffness/damping/gravity/wind settings
+  separately from hair. Sampled
+  evaluated garment vertices independently report remaining scene penetration.
+  The final leg enclosure has priority when furniture and body constraints conflict;
+  remaining garment/furniture intersections are reported for restaging.
+- Results contain per-character/part counts, maximum penetration before/after (m),
+  corrected frame lists, grouped skipped conflicts (frames/reasons), displacement
+  limit skips, wall-stage timings and total CPU time. Counts are sampled point/collider
+  pairs inside the clearance shell, including near contacts, not triangle counts;
+  penetration maxima measure physical overlap. Final metrics re-read the baked poses.
+  report_only changes no keys, contact metadata, garment setup, project or camera.
+
+Automatic after talk_gestures, action animate (including type/drink), interact,
+sit_on, dialog and script_to_scene; each accepts collisions=False. Orchestrators
+run once after performance; script cloth bakes once in this final pass. Re-run after
+later pose/attachment/furniture edits. review_scene adds sampled precise static-BVH
+and body-envelope checks; fix=True batches one bounded pass for the affected cast.
+
+Limits: body envelopes and discrete samples are approximations, not exact continuous
+mesh contact or full-body dynamics. Fingers, hair/furniture contact, moving furniture,
+nonuniform rig scale, exact garment surfaces and full cloth/self collision are not
+solved. Existing deep intersections, pinned garment regions, extreme mixed heights,
+protected contacts and unsuitable seat placement can remain. Inspect the explicit
+skips and side/three-quarter Eevee images; a clean proxy result does not guarantee
+that every rendered vertex clears. No network, downloads, handlers or physics caches.
+
+Verify only on **9970**, workspace `$PWD/output`, one owned Blender at a time:
+`tests/test_collide.py` prints `COLLIDE UNIT OK`; `tests/e2e_smoke.py --collide-only`
+checks faults, invariants and a 720-frame/two-MPFB CPU benchmark. Resume faults with
+CHAR3D_COLLIDE_RESUME=interactions|cloth|bench; bench reuses its saved input project.
+`tests/collide_visuals.py` renders saved before/after Eevee pairs without loading MPFB's
+builder. Results/sheets: output/collide/; full record: output/collide_result.md.
+Regression selectors: --interaction-only, --secondary-only, --script-only,
+--review-only --serial-video and --motion-only --motion-bake-only. Optional
+CHAR3D_COLLIDE_SHAPE_ONLY=1 uses <=384 px workbench for regression stills; material
+collision evidence is rendered separately by collide_visuals. Keep 9876 untouched,
+never install into the shared .venv, and shut down the owned engine after checks.
 
 ## Facial animation
 Works on `create_realistic_human` characters (face=True) and any mesh with ARKit
@@ -569,7 +645,8 @@ from the `voice` speech switch.
   calm, presenter (default), energetic; `hands="right"` for one-handed talkers. Layered on
   the arm (and finger) bones only (works with any body clip underneath). Fingers follow
   each gesture (relaxed → beat half-fist / open palm / index point) on rigs with fingers. Frame with `medium` or
-  `medium_full` so hands are visible.
+  `medium_full` so hands are visible. A bounded collision pass runs afterwards by default;
+  collisions=False disables it. Semantic heart/temple contacts retain their wrist targets.
 - **Meaning gestures** (`semantic=True`, default): words with a meaning get an iconic gesture
   instead of a beat — numbers satu..lima / one..five (fingers counted, palm forward),
   saya/I (hand on chest), kamu/you (palm-up offer), ini/itu/this/that (point), besar/semua/big
@@ -977,9 +1054,10 @@ Recipe: `new_scene()` → `script_to_scene(script, build=False)` →
 `script_to_scene(script, language="id")` →
 `render_frames([line.start + 5, ...], camera="scene", engine_name="eevee", size=512)` →
 inspect the frames → `save_project("morning.blend")` → `render_video(quality="draft", wait=True)`.
-Limits inherit the component tools: no obstacle/desk/arm collision avoidance, static
-seats, one held prop per hand, rule-based text pronunciation and approximate text/audio alignment.
-Outfit/accessory selection does not solve garment/hair/seat intersections; inspect posed Eevee frames.
+Limits inherit the component tools: bounded proxy/BVH collision repair can skip conflicts;
+static seats, one held prop per hand, rule-based text pronunciation and approximate
+text/audio alignment remain. Outfit/accessory selection does not fit geometry. The final
+collision/garment bake reduces supported intersections; inspect posed Eevee frames and skips.
 Declare characters before using them; invalid references fail with a clear error.
 
 ## Films (multi-scene)
@@ -1227,12 +1305,14 @@ music attenuation and speech balance, audio/lip coverage, contact Foley, ambienc
 and a quiet turn; shot length/variation/mid-word cuts; projected scale, face/eye
 position, visibility, jump cuts and dialog side; subtitle hold/CPS/face overlap,
 title duration, sampled luminance/contrast; blink/articulation/expression/motion,
-sole/torso/held-grip proxies. OTS review also checks rear-head orientation and measured
+sole/torso/held-grip proxies, skin-fitted limb distances and sampled garment/prop
+penetration against evaluated furniture triangles. OTS review also checks rear-head orientation and measured
 foreground width. `limited_coverage` warns only for scenes >20 s with >=4 shots,
 all static, and >=75% at one size. This is one normal camera warning (8 category
 points, about 1–2 overall points), with no automatic artistic edit; a single held
 master, shorter scenes, varied sizes or a motivated move are exempt.
-`fix=True` runs at most one call per tool/target for
+`fix=True` calls resolve_collisions once for the affected cast and records skipped
+reasons. It runs at most one call per tool/target for
 safe blink, ducking, missing Foley/ambience, subtitle grouping/hold, native camera
 re-fitting or title hold fixes, and reviews once. An undersized native shot is re-fitted
 with its subject, move and dialog side retained; a jump cut changes the incoming view
@@ -1397,8 +1477,9 @@ mouth/eye/forehead targets (mannequins use proportional face locations). Dance r
 whole phrase once to avoid accumulated BPM drift; `cycle_frames_exact` reports its period.
 `clear_animation` removes action/NLA animation while preserving structural rig drivers;
 new motions select FK controls on Rigify before solving contacts.
-There is no collision/cloth solver; large skirts, extreme builds and furniture can still
-intersect. Traditional dance is an
+Action motions run the bounded collision pass after contact IK (collisions=False opts out).
+Large skirts, extreme builds and furniture can still intersect with explicit skipped reasons.
+There is no full fabric simulation. Traditional dance is an
 original general hand-led phrase, not a reconstruction of a named regional tradition.
 
 ### Core animation and navigation
@@ -1465,7 +1546,8 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
     footprints/terrain edges), `planning_seconds`, and `warnings`. Clearance is null
     without obstacles or with avoidance disabled. Curved-only corrections count as a
     detour too. Obstacles are conservative convex slices per evaluated mesh, static at
-    start; this does not solve moving-character, hand, foot, or arbitrary limb collisions.
+    start; the route planner does not predict moving characters or arbitrary limbs.
+    The baked collision pass can repair bounded limb conflicts afterwards; it never re-routes roots.
 - `import_mocap(path, armature)` — .bvh/.fbx/.glb motion (CMU, Mixamo "without skin",
   Rokoko...). Matches names, T/A rest pose, facing and body size automatically;
   the imported source skeleton is deleted afterwards. If `mapped` is missing bones,
@@ -1538,7 +1620,9 @@ rerun after changing those animations. Range defaults to the scene (inclusive); 
 - Limits: these are short elastic skin chains, not material-accurate fabric.
   Head/neck/shoulder/back capsules are conservative proxies fitted inside the rest
   groom. Collisions constrain chain centers with thickness at sampled segment points,
-  not every surface vertex; no exact body-mesh, arm, seat/prop or full self-collision. Extreme
+  not every surface vertex. Loose cloth also queries evaluated seat/desk/armrest/terrain
+  BVHs and posed peer/own-arm proxies (collisions=False disables these added colliders).
+  There is no exact body-mesh, held-prop, finger or full self-collision simulation. Extreme
   poses, existing mesh intersections and very wide hair cards can still clip. Bakes
   start at rest at the range start, so a partial bake can change continuity there.
   Uniform rig scale, translation and rotation are supported; nonuniform scaling/shear
@@ -1609,8 +1693,9 @@ low-poly geometry and simple materials, suitable for CPU Eevee.
   furniture/lights and unused owned data, preserving characters, cameras and lighting rigs.
   Set calls replace prior sets/props. The central -Y camera path is open; backdrops are
   open at the front/sides/top, designed for frontal medium/wide shots. Static furniture
-  does not follow walking characters or solve hands/desk collisions or arbitrary
-  camera orbits. Use explicit character subjects for lighting and camera framing.
+  does not follow walking characters. The later bounded collision pass snapshots its
+  evaluated triangles for hands/desk clearance; arbitrary camera orbits still need inspection.
+  Use explicit character subjects for lighting and camera framing.
 - Recipe: `set_environment("podcast_studio", subject=["Maya_rig"])` →
   `set_lighting("studio", subject=["Maya_rig"])` →
   `camera_shot(subject=["Maya_rig"], shot="wide", angle=8)` →
@@ -1649,12 +1734,15 @@ highest surface and index 0. Set roots enumerate their seat positions too.
   release, then restores scene actions/constraints. Exporting the character includes its
   held props; glTF receives transform animation, not a constraint or physics simulation.
 - Limits: static level seats and one flat floor; mesh fallback uses the highest vertices
-  (not arbitrary concave seats). No obstacle, clothing, armrest/desk collision or automatic
-  seat occupancy solving. Very high/low seats can exceed limb reach. Prop pickup/release
+  (not arbitrary concave seats). The baked collision pass handles bounded armrest/desk
+  and eligible garment conflicts; seat occupancy and approach placement remain manual.
+  Very high/low seats can exceed limb reach. Prop pickup/release
   intervals must be sequential; a new hold can start at/after the previous release. Use one held
   prop per hand at a time. Upright holds own wrist roll/flex; extreme arm poses can require
-  a pronounced wrist bend or still intersect the body/prop. There is no arm/prop collision
-  solver or automatic elbow lift; choose a suitable arm pose for drinking/raised microphones.
+  a pronounced wrist bend or still intersect the body/prop. Collision repair can move
+  the wrist target or lift its elbow while keeping grip/wrist orientation; unreachable,
+  excessive or protected lip/hand contacts stay reported. Call resolve_collisions after
+  manual attachment/pose edits and inspect drinking/raised-microphone poses.
 
 ## Weather
 `set_weather(kind="clear", intensity=0.5, wind=None, seed=0)` replaces owned weather.

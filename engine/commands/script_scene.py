@@ -101,11 +101,15 @@ def _skeleton(command_name, params):
         return dispatch(command_name, params)
 
 
+from .collision import deferred
+
+
 @command("script_to_scene")
+@deferred
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="directed",
                     subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
                     body_language=True, character_seeds=None, style=None, life=1., music="auto",
-                    previous_shot_size=None):
+                    previous_shot_size=None, collisions=True):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -678,8 +682,11 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 "duration_s": (beat["frames"][1] - beat["frames"][0] + 1) / fps, "name": prefix + f"Title{i}"})
     with timed("secondary_motion"), _bones_only():
         for char in characters.values():
-            dispatch("secondary_motion", {"character": char["rig"], "parts": ["hair", "clothes"],
-                                          "frame_start": 1, "frame_end": final})
+            dispatch("secondary_motion", {"character": char["rig"], "parts": ["hair"] if collisions else ["hair", "clothes"],
+                                          "frame_start": 1, "frame_end": final, "collisions": collisions})
+    from .collision import automatic
+    with timed('collisions'):
+        result['collisions'] = automatic(collisions, cast, 1, final, outer=True)
     dispatch("set_timeline", {"frame_start": 1, "frame_end": final})
     if sound:
         with timed("sound"):

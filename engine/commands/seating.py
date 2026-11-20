@@ -256,7 +256,7 @@ def _bake(rig, smap, initial, target, feet, front, f0, transition, standing=Fals
 
 
 @command("sit_on")
-def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0, hands="thighs"):
+def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0, hands="thighs", collisions=True):
     started = time.perf_counter()
     if hands not in ("thighs", "lap", "armrests", "none"):
         raise ValueError("hands must be thighs, lap, armrests or none")
@@ -340,13 +340,15 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
     rig["c3d_seated"] = json.dumps({"seat": seat, "front": list(front), "floor": floor,
                                     "center": list(center), "seat_index": seat_index})
     rig["c3d_seat_active"] = True
+    from .collision import automatic
+    collision_report = automatic(collisions, [rig.name], f0, info['frames'][1])
     contact = _contact_height(rig, center, front, samples)
     return {"character": rig.name, "seat": seat, "seat_index": seat_index, "hands": hands,
             "seat_surface_z": round(center.z, 5), "buttock_z": round(contact, 5),
             "seat_center": vec(center), "seat_front": vec(front),
             "contact_error_m": round(contact-center.z, 5), "floor": floor,
             "feet": {s: vec(p) for s, (p, q) in feet.items()}, **info,
-            "bake_seconds": round(time.perf_counter()-started, 3)}
+            "collisions": collision_report, "bake_seconds": round(time.perf_counter()-started, 3)}
 
 
 @command("stand_up")

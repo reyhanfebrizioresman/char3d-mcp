@@ -32,3 +32,4 @@ from . import music  # noqa: E402,F401
 
 from . import credits, review  # noqa: E402,F401
 from . import photo  # noqa: E402,F401
+from . import collision  # noqa: E402,F401

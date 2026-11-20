@@ -52,6 +52,9 @@ def _ik_knee(H, A, l1, l2, pole):
     u = d_vec.normalized()
     cos_a = max(-1.0, min(1.0, (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d)))
     perp = pole - u * pole.dot(u)
+    if perp.length < 1e-8:
+        fallback = Vector((1, 0, 0)) if abs(u.x) < .8 else Vector((0, 1, 0))
+        perp = fallback-u*fallback.dot(u)
     perp.normalize()
     return H + l1 * (u * cos_a + perp * math.sqrt(max(0.0, 1 - cos_a * cos_a)))
 

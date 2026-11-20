@@ -844,7 +844,7 @@ def _motion_evaluation(fn):
 @command("animate")
 @_motion_evaluation
 def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
-            in_place=False, foot_lock=None, blend_frames=None, bpm=None, phase="full"):
+            in_place=False, foot_lock=None, blend_frames=None, bpm=None, phase="full", collisions=True):
     """Key a procedural clip on any humanoid rig starting at start_frame.
     foot_lock: None = auto (walk/run/jump, not in_place), True/False to force.
     blend_frames: crossfade from the pose the rig has at start_frame-1 when there is earlier
@@ -935,6 +935,8 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
 
     blend = None if blend_frames is None else int(blend_frames)
     prev = _sample_pose(rig, start) if blend != 0 else None
+    from .collision import forget_contacts
+    forget_contacts(rig,start,end)
     info = _drive(rig, author, start, end, start, in_place=in_place, canonical=True)
     _extend_range(end)
     # Contact IK can substantially change the arms beyond the proxy pose.
@@ -963,6 +965,23 @@ def animate(armature, clip, start_frame=1, cycles=2, speed=1.0, amplitude=1.0,
             info.update(bpm=bpm, effective_bpm=round(4*60*fps_scale*24/sample_period, 5),
                         cycle_frames_exact=sample_period)
         info["phase"] = phase
+        from .collision import automatic, record_contact
+        if clip in ('thinking', 'facepalm', 'cover_mouth', 'cry', 'arms_crossed', 'drink', 'phone_call', 'read_book', 'type'):
+            sides = 'LR' if clip in ('cry', 'arms_crossed') else 'R'
+            if clip in ('drink', 'phone_call', 'read_book'):
+                from .motion import held_prop
+                prop = held_prop(rig, {'drink':'cup','phone_call':'phone','read_book':'book'}[clip], start)
+                sides = 'L' if prop['c3d_hold_hand'] == 'left' else 'R'
+            if clip in ('read_book','type'):sides='LR'
+            lo, hi = ((.3,.65) if clip == 'drink' else (0.,1.) if clip in ('phone_call','read_book','type') else (.27,.72))
+            contact_start=max(start+round(n*lo),info.get('crossfade',{}).get('frames',[0,-1])[1]+1)
+            for side in sides:
+                record_contact(rig, side, contact_start, start+round(n*hi), 'motion:'+clip,
+                               other='scene:keyboard' if clip=='type' else None,
+                               part=('upper_arm.'+('R' if side=='L' else 'L') if clip == 'arms_crossed'
+                                     else 'held:'+prop.name if clip=='read_book' else None if clip=='type' else 'head'))
+        info['collisions'] = automatic(collisions, [rig.name], start, end,
+                                      parts=['arms', 'props', 'legs', 'clothes'])
         return {"armature": rig.name, "clip": clip, "frames": [start, end], "cycle_frames": T,
                 "next_start_frame": end+1, **info}
     if lock:
@@ -1070,6 +1089,8 @@ def clear_animation(armature, reset_pose=True):
             rig.animation_data.nla_tracks.remove(track)
     if "c3d_seat_events" in rig:
         del rig["c3d_seat_events"]
+    if 'c3d_collision_contacts' in rig:
+        del rig['c3d_collision_contacts']
     if reset_pose:
         rig["c3d_seat_active"] = False
         for pb in rig.pose.bones:
