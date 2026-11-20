@@ -84,8 +84,17 @@ def _input(tree, target, source):
 
 
 def _styled_material(original, cfg, engine, materials, groups, images, filtered):
-    if original and original.get('c3d_toon_role')=='skin':
-        cfg={**cfg,'_toon_skin':True,'_toon_head_height':original.get('c3d_toon_head_height',.23)}
+    toon_skin=original and original.get('c3d_toon_role')=='skin'
+    enhanced_skin=original and original.get('c3d_material_role')=='skin'
+    if toon_skin or enhanced_skin:
+        # The same scan must keep its pigment when a toon look is applied to
+        # either a realistically proportioned mesh or a flattened toon mesh.
+        gain=original.get('c3d_toon_scan_style_gain',1.)
+        if enhanced_skin:
+            profile=json.loads(original.get('c3d_material_profile','{}'))
+            gain=max(.00001,profile.get('albedo_gain',1.))**-.5
+        cfg={**cfg,'_toon_skin':True,'_toon_head_height':original.get('c3d_toon_head_height',.23),
+             '_toon_scan_style_gain':gain}
     mat = original.copy() if original else bpy.data.materials.new('__c3d_style_material')
     materials.append(mat)
     mat.use_nodes = True
@@ -122,7 +131,13 @@ def _styled_material(original, cfg, engine, materials, groups, images, filtered)
             consumers = [link.to_socket for link in bsdf.outputs['BSDF'].links]
             if consumers:
                 if cfg.get('_toon_skin') and cfg['style'] in ('anime','animated_film'):
-                    _toon_skin_response(tree,bsdf)
+                    _toon_skin_response(tree,bsdf,cfg.get('_toon_scan_style_gain',1.))
+                    if cfg.get('_skin_aovs'):
+                        color_name,mask_name=cfg['_skin_aovs']
+                        color_out=tree.nodes.new('ShaderNodeOutputAOV');color_out.aov_name=color_name
+                        _input(tree,color_out.inputs['Color'],bsdf.inputs['Base Color'])
+                        mask_out=tree.nodes.new('ShaderNodeOutputAOV');mask_out.aov_name=mask_name
+                        mask_out.inputs['Value'].default_value=1.
                 styled = (_animated_shader(tree, bsdf, cfg, mat.name, engine)
                           if cfg['style'] == 'animated_film' else _styled_shader(tree, bsdf, cfg, engine))
                 for socket in consumers:
@@ -132,19 +147,18 @@ def _styled_material(original, cfg, engine, materials, groups, images, filtered)
     return mat
 
 
-def _toon_skin_response(tree,bsdf):
+def _toon_skin_response(tree,bsdf,style_gain=1.):
     """Illustrative pigment response under the compressed light ramps.
 
-    A monotone lift of dark albedo keeps dark tones distinct. Compensating
-    saturation prevents the scene grade from turning warm scans burnt orange.
-    This operates only in temporary toon-skin shader copies.
+    A bounded monotone value lift keeps dark tones readable. Every RGB channel
+    receives the same scalar; pigment hue/saturation are never desaturated.
     """
     nodes,links=tree.nodes,tree.links
-    color=nodes.new('ShaderNodeHueSaturation');color.inputs['Saturation'].default_value=.85
-    _input(tree,color.inputs['Color'],bsdf.inputs['Base Color'])
-    luminance=nodes.new('ShaderNodeRGBToBW');links.new(color.outputs[0],luminance.inputs[0])
+    source=nodes.new('ShaderNodeVectorMath');source.operation='SCALE'
+    _input(tree,source.inputs[0],bsdf.inputs['Base Color']);source.inputs['Scale'].default_value=style_gain
+    luminance=nodes.new('ShaderNodeRGBToBW');links.new(source.outputs[0],luminance.inputs[0])
     target=nodes.new('ShaderNodeMath');target.operation='MULTIPLY_ADD'
-    links.new(luminance.outputs[0],target.inputs[0]);target.inputs[1].default_value=.65;target.inputs[2].default_value=.075
+    links.new(luminance.outputs[0],target.inputs[0]);target.inputs[1].default_value=.65;target.inputs[2].default_value=.09
     floor=nodes.new('ShaderNodeMath');floor.operation='MAXIMUM';floor.inputs[1].default_value=.001
     links.new(luminance.outputs[0],floor.inputs[0])
     gain=nodes.new('ShaderNodeMath');gain.operation='DIVIDE';links.new(target.outputs[0],gain.inputs[0]);links.new(floor.outputs[0],gain.inputs[1])
@@ -153,7 +167,7 @@ def _toon_skin_response(tree,bsdf):
     maximum=nodes.new('ShaderNodeMath');maximum.operation='MINIMUM';maximum.inputs[1].default_value=2.2
     links.new(minimum.outputs[0],maximum.inputs[0])
     scale=nodes.new('ShaderNodeVectorMath');scale.operation='SCALE'
-    links.new(color.outputs[0],scale.inputs[0]);links.new(maximum.outputs[0],scale.inputs['Scale'])
+    links.new(source.outputs[0],scale.inputs[0]);links.new(maximum.outputs[0],scale.inputs['Scale'])
     links.new(scale.outputs[0],bsdf.inputs['Base Color'])
 
 
@@ -339,9 +353,9 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
         not bsdf.inputs['Subsurface Weight'].is_linked and bsdf.inputs['Subsurface Weight'].default_value > .12)
     hair = any(w in name for w in ('hair', 'beard', 'ponytail', 'braid', 'bob0', 'short0', 'long0', 'afro', 'eyebrow'))
     color = nodes.new('ShaderNodeHueSaturation')
-    color.inputs['Saturation'].default_value = 1 + (.22 if eye else -.10 if skin else .10)*k
+    color.inputs['Saturation'].default_value = 1 if cfg.get('_toon_skin') else 1 + (.22 if eye else -.10 if skin else .10)*k
     _input(tree, color.inputs['Color'], bsdf.inputs['Base Color'])
-    color.inputs['Value'].default_value = 1 + (.05 if skin else 0)*k
+    color.inputs['Value'].default_value = 1 if cfg.get('_toon_skin') else 1 + (.05 if skin else 0)*k
     links.new(color.outputs[0], bsdf.inputs['Base Color'])
     if skin and cfg.get('_head') and not cfg.get('_toon_skin'):
         _blush(tree, bsdf, cfg['_head'], k)
@@ -486,14 +500,20 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
     links.new(ao.outputs['AO'], contact.inputs[2])
     painted_color=contact.outputs[0]
     if cfg.get('_toon_skin'):
-        # Illustration fill: retain pigment while keeping eyes/brows/mouth
-        # legible in the lower light masses. Other materials keep their ramp.
-        bounce=nodes.new('ShaderNodeVectorMath');bounce.operation='SCALE'
-        _input(tree,bounce.inputs[0],bsdf.inputs['Base Color'])
-        bounce.inputs['Scale'].default_value=.40
-        minimum=nodes.new('ShaderNodeVectorMath');minimum.operation='MAXIMUM'
-        links.new(painted_color,minimum.inputs[0]);links.new(bounce.outputs[0],minimum.inputs[1])
-        painted_color=minimum.outputs[0]
+        # Recover one illumination value. Per-channel palette/floor operations
+        # otherwise turn warm flat pigment grey/pink. Keep the form and AO but
+        # apply their scalar to the original pigment, with an albedo-relative fill.
+        lit=nodes.new('ShaderNodeRGBToBW');links.new(painted_color,lit.inputs[0])
+        base=nodes.new('ShaderNodeRGBToBW');_input(tree,base.inputs[0],bsdf.inputs['Base Color'])
+        denominator=nodes.new('ShaderNodeMath');denominator.operation='MAXIMUM';denominator.inputs[1].default_value=.00001
+        links.new(base.outputs[0],denominator.inputs[0])
+        ratio=nodes.new('ShaderNodeMath');ratio.operation='DIVIDE'
+        links.new(lit.outputs[0],ratio.inputs[0]);links.new(denominator.outputs[0],ratio.inputs[1])
+        minimum=nodes.new('ShaderNodeMath');minimum.operation='MAXIMUM';minimum.inputs[1].default_value=.40
+        links.new(ratio.outputs[0],minimum.inputs[0])
+        pigment=nodes.new('ShaderNodeVectorMath');pigment.operation='SCALE'
+        _input(tree,pigment.inputs[0],bsdf.inputs['Base Color']);links.new(minimum.outputs[0],pigment.inputs['Scale'])
+        painted_color=pigment.outputs[0]
     soft = nodes.new('ShaderNodeEmission')
     links.new(painted_color, soft.inputs['Color'])
     painted = soft.outputs[0]
@@ -697,6 +717,23 @@ def _compositor(sc, cfg, images, tree):
             mask[:rows, :, :3] = mask[-rows:, :, :3] = 0
         image = _mix(tree, image, texture('__c3d_style_bars', mask))
     output = output or nodes.new('NodeGroupOutput')
+    if cfg.get('_skin_aovs'):
+        # The scene's per-channel contrast can crush a dark pigment's blue
+        # channel, while highlights lose saturation. Keep its graded value but
+        # restore pigment H/S on the actual skin coverage, including AA edges.
+        layers=nodes.new('CompositorNodeRLayers');layers.scene=sc
+        pigment=nodes.new('CompositorNodeSeparateColor');pigment.mode='HSV'
+        shaded=nodes.new('CompositorNodeSeparateColor');shaded.mode='HSV'
+        links.new(layers.outputs[cfg['_skin_aovs'][0]],pigment.inputs[0])
+        links.new(image,shaded.inputs[0])
+        restored=nodes.new('CompositorNodeCombineColor');restored.mode='HSV'
+        links.new(pigment.outputs[0],restored.inputs[0]);links.new(pigment.outputs[1],restored.inputs[1])
+        links.new(shaded.outputs[2],restored.inputs[2])
+        if 'Alpha' in restored.inputs and 'Alpha' in shaded.outputs:
+            links.new(shaded.outputs['Alpha'],restored.inputs['Alpha'])
+        skin=nodes.new('ShaderNodeMix');skin.data_type='RGBA'
+        links.new(layers.outputs[cfg['_skin_aovs'][1]],skin.inputs[0])
+        links.new(image,skin.inputs[6]);links.new(restored.outputs[0],skin.inputs[7]);image=skin.outputs[2]
     links.new(image, output.inputs.get('Image') or output.inputs[0])
     return tree
 
@@ -714,6 +751,25 @@ def applied_style(sc):
         return
     cfg = cfg or dict(style='cinematic', strength=1., outline=False)
     slots, materials, meshes, hulls, images, groups = [], [], [], [], [], []
+    skin_aovs=[]
+    # Explicit artistic colour grades still take precedence over the default
+    # pigment protection (including a deliberate monochrome override).
+    default_grade=DEFAULTS.get(cfg['style'],{})
+    lock_pigment=all(cfg.get('grade',{}).get(k,default_grade.get(k,v))==default_grade.get(k,v)
+                     for k,v in dict(saturation=1.,temperature=0.,tint=0.,teal_orange=False).items())
+    if cfg['style'] in ('anime','animated_film') and lock_pigment and any(
+            slot.material and (slot.material.get('c3d_toon_role')=='skin' or slot.material.get('c3d_material_role')=='skin')
+            for obj in sc.objects if obj.type=='MESH' and not obj.hide_render for slot in obj.material_slots):
+        names=[]
+        for base,kind in (('__c3d_skin_pigment','COLOR'),('__c3d_skin_coverage','VALUE')):
+            name=base;index=0
+            while any(layer.aovs.get(name) for layer in sc.view_layers):
+                index+=1;name=base+str(index)
+            names.append(name)
+            for layer in sc.view_layers:
+                aov=layer.aovs.add();aov.name=name;aov.type=kind;skin_aovs.append((layer,aov))
+        cfg={**cfg,'_skin_aovs':names}
+        post={**post,'_skin_aovs':names}
     lights, helpers, worlds = [], [], []
     compositor = None
     old_group = sc.compositing_node_group
@@ -843,6 +899,8 @@ def applied_style(sc):
         sc.render.use_compositing = True
         yield images
     finally:
+        for layer,aov in reversed(skin_aovs):
+            layer.aovs.remove(aov)
         for original, temporary in worlds:
             sc.world = original
             bpy.data.worlds.remove(temporary)

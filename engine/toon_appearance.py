@@ -2,6 +2,22 @@
 import numpy as np
 
 
+def scan_pigment(rgb, reference):
+    """Carry the realistic scan exposure correction into portable flat albedo.
+
+    A common positive scalar changes linear HSV value only. It preserves RGB
+    ratios, unlike channel clipping or a saturation/tint adjustment. Reference
+    texels are sampled exactly as for the enhanced realistic material; labels
+    such as race are never used for the correction. Photo/recipe paint bypasses
+    this scan-only step because its colours already contain source lighting.
+    """
+    from .materials import skin_profile
+    gain=float(skin_profile(reference)['albedo_gain'])
+    result=np.asarray(rgb,dtype=float)*gain
+    gain*=min(1.,1/max(1.,float(np.max(result))))
+    return np.asarray(rgb,dtype=float)*gain,gain
+
+
 def downsample_rgba(pixels, limit=128):
     """Area means, including non-power-of-two textures; no row-stride aliasing."""
     p=np.asarray(pixels,dtype=np.float32)

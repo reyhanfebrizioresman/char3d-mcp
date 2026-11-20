@@ -408,6 +408,12 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     before = set(bpy.data.objects)
     basemesh = HumanService.deserialize_from_dict(info, settings)
     if style != "realistic":
+        # Match enhanced realistic scan calibration before macro baking changes
+        # the mesh-space texel sites used by its legacy exposure sampler.
+        from .materials import _sample_skin,_eye_frame
+        parts=[o for o in bpy.data.objects if o not in before and o.type=='MESH']
+        reference=_sample_skin(basemesh,basemesh.material_slots[0].material,_eye_frame(parts,basemesh)[0])
+        basemesh['c3d_toon_scan_reference']=list(reference)
         # Freeze the chosen phenotype before loading facial animation targets.
         # MPFB's live macro keys otherwise add their original unscaled deltas.
         from bl_ext.user_default.mpfb.services.targetservice import TargetService

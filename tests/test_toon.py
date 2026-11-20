@@ -18,7 +18,7 @@ from engine.looks import validate_look
 from unittest.mock import patch
 import json,os
 from engine.photo_landmarks import detect, model_files, model_directory, decode_heatmaps
-from engine.toon_appearance import downsample_rgba,visible_albedo
+from engine.toon_appearance import downsample_rgba,visible_albedo,scan_pigment
 from engine.script_plan import parse_script
 
 
@@ -86,6 +86,19 @@ def main():
     iris = iris_pixels()
     assert iris.shape==(256,256,4) and np.isfinite(iris).all()
     assert (iris[128,128,:3]<.03).all() and (iris[180,90,:3]>.9).all()
+    # Bright scan normalization must never clip red independently or change
+    # pigment hue/saturation; one value scalar also preserves tone ordering.
+    import colorsys
+    previous=0.
+    for value in np.linspace(.001,1.,300):
+        rgb=np.array([value,value*.62,value*.37])
+        mapped,gain=scan_pigment(rgb,rgb)
+        assert np.max(abs(mapped-rgb*gain))<1e-12
+        assert mapped.max()>previous;previous=mapped.max()
+        assert np.max(abs(np.array(colorsys.rgb_to_hsv(*rgb))[:2]-np.array(colorsys.rgb_to_hsv(*mapped))[:2]))<1e-12
+    for rgb in ([.86,.51,.36],[.78,.51,.37],[.147,.047,.023]):
+        mapped,gain=scan_pigment(rgb,rgb)
+        assert gain>0 and np.max(abs(mapped/mapped.max()-np.asarray(rgb)/max(rgb)))<1e-12
     # A 1024-wide atlas with a white first column used to turn a blue shirt
     # white. Unused UV margins and a small orange print must remain distinct.
     pixels=np.ones((1024,1024,4),np.float32)

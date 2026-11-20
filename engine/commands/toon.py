@@ -91,9 +91,13 @@ def anatomy(body, meshes, points=None):
 def stylize(body, meshes, rig, style):
     prefit = body.get('c3d_toon_prefit')
     if prefit:
-        skin = tuple(json.loads(prefit)['skin'])
+        fitted=json.loads(prefit)
+        skin = tuple(fitted['skin'])
+        reference=fitted.get('skin_reference',skin)
     else:
         skin = sampled_skin(body)
+        from .materials import _sample_skin,_eye_frame
+        reference=tuple(body.get('c3d_toon_scan_reference')) if body.get('c3d_toon_scan_reference') is not None else _sample_skin(body,body.material_slots[0].material,_eye_frame(meshes,body)[0])
         fit_proportions(body,meshes,rig,style)
     smooth_head(body)
     round_jaw(body)
@@ -108,8 +112,17 @@ def stylize(body, meshes, rig, style):
     calibrate_bilabials(body)
     simplify_brows(body,meshes)
     ink_lids(body,meshes)
-    if style=='cartoon':skin=tuple(np.clip(np.asarray(skin)*[1.025,.99,.92],0,.9))
-    material_report = toon_materials(body, meshes, skin=skin,hair=body.get('c3d_toon_requested_hair_rgb'))
+    from ..toon_appearance import scan_pigment
+    pigment,gain=scan_pigment(skin,reference)
+    material_report = toon_materials(body, meshes, skin=tuple(pigment),hair=body.get('c3d_toon_requested_hair_rgb'))
+    # Native PBR/export uses the same scan correction as realistic skin. The
+    # unlit/cel shaders retain half that log exposure correction, applied only
+    # to temporary shader copies; photo/recipe paint has no scan compensation.
+    style_gain=gain**-.5
+    for slot in body.material_slots:
+        if slot.material and slot.material.get('c3d_toon_role')=='skin':
+            slot.material['c3d_toon_scan_style_gain']=style_gain
+    material_report.update(scan_value_gain=gain,toon_value_gain=style_gain,scan_reference_rgb=list(reference))
     head_surface(body)
     bottom, top, chin, _ = anatomy(body, meshes)
     body['c3d_head_ratio'] = float((top-bottom)/(top-chin))
@@ -189,8 +202,10 @@ def prefit_rigify(body,style,face=True):
         from .face import _ensure_face
         _ensure_face(body)
     skin = sampled_skin(body)
+    from .materials import _sample_skin,_eye_frame
+    reference=tuple(body.get('c3d_toon_scan_reference')) if body.get('c3d_toon_scan_reference') is not None else _sample_skin(body,body.material_slots[0].material,_eye_frame(meshes,body)[0])
     fit_proportions(body,meshes,rig,style,refit=False)
-    body['c3d_toon_prefit'] = json.dumps(dict(style=style,skin=skin))
+    body['c3d_toon_prefit'] = json.dumps(dict(style=style,skin=skin,skin_reference=reference))
 
 
 def calibrate_blinks(body, meshes):
@@ -304,7 +319,8 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
     from ..materials import srgb_to_linear
     frame = _eye_frame(meshes, body)
     skin = skin or _sample_skin(body, body.material_slots[0].material, frame[0])
-    skin = np.clip(skin, 0., .8)
+    skin = np.asarray(skin,dtype=float)
+    skin *= min(1.,1/max(1.,float(np.max(skin))))
     hair = hair or _hair_color(meshes, body) or (.035, .023, .02)
     hair=tuple(np.asarray(hair)*max(1.,.025/max(.0001,max(hair))))
     atlas = image('c3d_toon.original_iris.'+body.name, iris_pixels(color=iris or (.16, .38, .64)))
@@ -324,7 +340,9 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                            -.5*((p[:, 2]-ez+.15*h)/(.10*h))**2)
             from ..toon import smooth
             blush *= (1-smooth_front(p[:, 1], centers))*smooth((p[:,2]-chin)/(.16*h))
-            colors = np.asarray(skin)[None, :]*(1-blush[:, None]*.16)+np.array([.65,.16,.18])*blush[:, None]*.16
+            # Soft cheek value modulation, without mixing a fixed pink pigment.
+            colors = np.asarray(skin)[None, :]*(1+blush[:,None]*.08)
+            colors /= np.maximum(1.,colors.max(axis=1,keepdims=True))
             tex = uv_image(obj, colors)
         elif role == 'eyes':
             tex = atlas
@@ -407,12 +425,6 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                     coords_node = mat.node_tree.nodes.new('ShaderNodeUVMap')
                     coords_node.uv_map = 'c3d_toon_iris'
                     mat.node_tree.links.new(coords_node.outputs[0],node.inputs['Vector'])
-            if role=='skin':
-                # Restrained portable ambient bounce, confined to toon skin.
-                # Scene key/fill still supply its directional form.
-                bsdf.inputs['Emission Strength'].default_value=.08
-                if tex:mat.node_tree.links.new(node.outputs['Color'],bsdf.inputs['Emission Color'])
-                else:bsdf.inputs['Emission Color'].default_value=(*color,1)
             if role=='mouth' and tex:
                 mat.node_tree.links.new(node.outputs['Alpha'],bsdf.inputs['Alpha'])
                 mat.surface_render_method='DITHERED'

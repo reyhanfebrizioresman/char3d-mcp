@@ -191,12 +191,20 @@ render style. `animated_film` also works. Rest deformation is not an MPFB macro
 editor: recreate the character to change its phenotype/style afterwards.
 GLB carries proportions, skinning, morphs and flat textures; outlines/cel bands
 remain Blender scene render effects.
-Toon skin samples fitted cheek UVs, has restrained portable ambient bounce, and
-uses a higher shadow band in anime. Temporary toon-skin shaders compensate the
-grade's saturation and lift dark pigments with a bounded monotone response;
-light, medium and dark inputs remain distinct. Animated-film toon skin has an albedo-relative
-fill floor, gentler face-form gradient and shorter, weaker facial AO. Other materials and realistic humans
-keep their existing render response; global exposure/lights are unchanged.
+Toon skin samples fitted cheek UVs and captures the realistic scan exposure
+reference before MPFB macro baking. A common RGB scalar normalizes the portable
+PBR albedo; cel shaders retain half the log exposure correction in temporary
+shader copies. There is no red-channel cap, additive skin emission or fixed pink
+mix. Cheek variation changes value only. The bounded dark-pigment lift and anime
+shadow band retain readability. Animated-film uses an albedo-relative scalar fill,
+gentler face-form gradient and shorter, weaker facial AO. Both enhanced realistic
+and toon skin use the same colour path when a toon render look is requested.
+Temporary skin pigment/coverage passes preserve pigment hue/saturation through
+the default scene grade while retaining its shaded value; they are removed after
+rendering, including on failure. Explicit artistic colour-grade overrides win.
+Normal realistic PBR rendering, global exposure/lights and other materials remain
+unchanged. Photo/look pigment bypasses scan normalization because it already
+contains the source illumination.
 The face's silhouette shell omits the internal bridge so it cannot draw a deep
 nose stroke. Rebuild existing characters for geometry, hair and texture changes;
 rerendering an old packed blend alone retains its old meshes/assets. Head render
@@ -204,6 +212,12 @@ subdivision increases Eevee cost; exported base topology remains native HM08.
 `tests/toon_round4.py` records the lighting/colour matrix, five-angle alpha-aware
 eye visibility, 512 px facial checks, garment colour comparisons and podcast
 stills. Use only port 9971, with one owned engine at a time.
+`tests/toon_round4b.py` compares actual Caucasian/Asian/African scans in realistic,
+anime and animated-film studio-film portraits. It checks hue within 0.04 turns,
+saturation at least 0.75 of realistic, tone gaps above 0.02 Y-prime, and a dark
+anime cheek above 0.33. `--case native` verifies packed-material replay, preservation
+of existing AOVs and an explicit monochrome override. Results are under
+`output/toon_round4b/`; use `--case before|after|garments` then `--case check`.
 Keep `face=True` for facial animation; a stylized `face=False` build must be
 recreated rather than loading unfitted facial targets onto its frozen proportions.
 
