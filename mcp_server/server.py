@@ -448,7 +448,7 @@ Move = Literal["static", "push_in", "dolly_in", "dolly_out", "pull_out", "orbit_
                "pan_left", "pan_right", "tilt_up", "tilt_down", "zoom_in", "crash_zoom",
                "dolly_zoom", "handheld", "tracking", "tracking_side", "drone_reveal"]
 ShotSize = Literal["extreme_wide", "wide", "full", "medium_full", "medium", "medium_close",
-                   "close_up", "extreme_close_up"]
+                   "close_up", "extreme_close_up", "over_shoulder", "ots"]
 Light = Literal["studio", "soft", "dramatic", "sunset", "noon", "overcast", "night", "neon",
                 "silhouette", "horror"]
 
@@ -470,7 +470,7 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                       avoid_occlusion: Literal["auto"] | bool = "auto",
                       action_line: list[str] | None = None, require_composition: bool = False,
                       angle_limits: list[float] | None = None, face_coverage: bool = False,
-                      coverage_turns: list[dict] | None = None) -> dict:
+                      coverage_turns: list[dict] | None = None, foreground: str | None = None) -> dict:
     """Create a cinematic shot camera for frames start..end, framed on `subject` (mesh or
     armature names; default = everything) even while it moves. angle: 0 = in front,
     90 = subject's left, 180 = behind. elevation: degrees (negative = low angle, heroic).
@@ -489,6 +489,12 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
     False retains original framing. face_coverage=True follows the live head-facing
     direction while action_line/angle_limits constrain the camera side; coverage_turns
     optionally identifies the active speaker. Review repairs preserve these settings.
+    shot="over_shoulder" ("ots") takes one facing subject plus foreground=partner,
+    or subject=[facing_subject, partner]. Partner foreground is intentional; subject
+    face/eyes must remain clear. The near shoulder joint anchors a rear head/shoulder
+    foreground, roughly 20–35% of frame width, with a 50–85mm default lens. Returns
+    foreground_composition plus sampled occlusion.foreground width/area/head angles.
+    Cinematic focus tracks the subject's evaluated eye mesh when available.
     Returns
     occlusion fractions, frame_coverage_before/after, normalized face_screen eye
     positions (top-left origin), subject_scale, shot_size, adjustments and timing.
@@ -499,7 +505,7 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
                      handheld=handheld, roll=roll, depth_of_field=depth_of_field,
                      f_stop=f_stop, name=name, avoid_occlusion=avoid_occlusion,
                      action_line=action_line, require_composition=require_composition,
-                     angle_limits=angle_limits, face_coverage=face_coverage, coverage_turns=coverage_turns)
+                     angle_limits=angle_limits, face_coverage=face_coverage, coverage_turns=coverage_turns, foreground=foreground)
 
 
 @mcp.tool()
@@ -1535,7 +1541,7 @@ async def direct_scene(idea: str, generator: str = "auto", language: str = "id",
 @mcp.tool()
 async def script_to_scene(script: dict | str, name: str | None = None,
                           environment: str | None = None, lighting: str = "studio",
-                          camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
+                          camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] = "directed",
                           subtitles: bool = True, language: str = "auto", seed: int = 0,
                           build: bool = True, sound: bool = True, voice: bool = True,
                           tts_engine: str = "piper", voices: dict | None = None,
@@ -1545,6 +1551,9 @@ async def script_to_scene(script: dict | str, name: str | None = None,
                           treatment: dict | None = None) -> dict:
     """Turn a short dict screenplay or Indonesian/English text into a renderable scene.
 
+    camera="directed" (emosi/emotional) follows emotional intensity, adds OTS and
+    visible listener reactions, and returns emotion_curve plus shot reasons.
+    Explicit KAMERA/CAMERA cues override it; mixed retains speaker-only coverage.
     style="animated_film" or GAYA:/STYLE: animasi unifies the render look.
     life=1 enables seeded additive face life; 0 disables it (range 0..2).
     Optional look="golden_hour" or SUASANA:/LOOK:/MOOD: senja selects atmosphere.
@@ -1633,7 +1642,7 @@ async def script_to_scene(script: dict | str, name: str | None = None,
 @mcp.tool()
 async def script_to_film(script: dict | str, name: str | None = None,
                          environment: str | None = None, lighting: str = "studio",
-                         camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
+                         camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] = "directed",
                          subtitles: bool = True, language: str = "auto", seed: int = 0,
                          build: bool = True, sound: bool = True, voice: bool = True,
                          tts_engine: str = "piper", voices: dict | None = None,
@@ -1643,6 +1652,8 @@ async def script_to_film(script: dict | str, name: str | None = None,
                           treatment: dict | None = None) -> dict:
     """Build a film from ADEGAN/SCENE headers or {title, characters, scenes:[...]}.
 
+    Directed coverage is the default: per-scene emotion curves/reactions are saved
+    in the manifest, with a wider opening after a close ending in the previous scene.
     Each scene has name, environment, look, weather, lighting, card, transition_in,
     beats and optional cast. Declarations persist across scenes. [Ana berganti baju
     formal] / [Ana changes into formal] changes her outfit for this and later scenes.
@@ -1751,19 +1762,21 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
 @mcp.tool()
 async def stage_dialog(characters: list[str], layout: Literal["angled", "face_to_face",
                        "side_by_side"] = "angled", distance: float = 1.3,
-                       cheat_deg: float = 35.0, center: list[float] | None = None) -> dict:
+                       cheat_deg: float = 35.0, center: list[float] | None = None,
+                       camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] | None = None) -> dict:
     """Place 2-4 characters for a conversation (left to right in the given order): they face
     each other, "cheated" cheat_deg toward the camera side (-Y) so faces stay visible
-    (angled); face_to_face = exact profile; side_by_side = both toward camera. distance in m."""
+    (angled); face_to_face = exact profile; side_by_side = both toward camera. distance in m.
+    Optional camera="directed" covers existing timed speech, or establishes the cast."""
     return await run("stage_dialog", characters=characters, layout=layout, distance=distance,
-                     cheat_deg=cheat_deg, center=center or [0.0, 0.0])
+                     cheat_deg=cheat_deg, center=center or [0.0, 0.0], camera=camera)
 
 
 @mcp.tool()
 async def dialog(lines: list[dict], characters: list[str] | None = None, stage: bool = True,
                  layout: Literal["angled", "face_to_face", "side_by_side"] = "angled",
                  distance: float = 1.3, start_frame: int = 1, gap_s: float = 0.35,
-                 camera: Literal["mixed", "singles", "two_shot", "none"] = "mixed",
+                 camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] = "mixed",
                  shot: Literal["medium_full", "medium", "medium_close", "close_up"] = "medium",
                  gestures: Literal["calm", "presenter", "energetic"] | None = "presenter",
                  expression: Expression | None = "smile", language: str | None = None,
@@ -1782,7 +1795,9 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     Then: characters are staged facing each other (stage=False keeps your placement),
     everyone looks at whoever talks (the talker at the person they answer), listeners nod on
     stressed words, each speaker gestures on their own words (gestures=None: off), blinks,
-    a light base expression, an idle clip on rigs without animation, and cameras: "mixed" =
+    a light base expression, an idle clip on rigs without animation, and cameras:
+    "directed" (emosi/emotional) uses emotional sizes/moves, OTS and readable listener
+    reactions over speaker audio, returning a curve and per-shot reasons. "mixed" =
     two-shot for the first line then a clean single of each speaker, cut 4 frames before
     they talk (same side of the live head-to-head action line). Gaze samples live
     head positions; singles follow actual face direction after walks/sits/turns.

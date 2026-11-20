@@ -129,7 +129,8 @@ def _shot_name():
 @command("list_camera_moves")
 def list_camera_moves():
     return {"moves": {k: v[1] for k, v in MOVES.items()},
-            "shot_sizes": {k: f"frames ~{v[0]}x subject height, {v[2]}mm" for k, v in SHOTS.items()}}
+            "shot_sizes": {**{k: f"frames ~{v[0]}x subject height, {v[2]}mm" for k, v in SHOTS.items()},
+                           'over_shoulder': 'OTS: facing subject, rear head/shoulder foreground; 50–85mm'}}
 
 
 @command("camera_shot")
@@ -137,11 +138,26 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
                 angle=20.0, elevation=5.0, intensity=1.0, ease="ease_in_out", lens=None,
                 handheld=0.0, roll=0.0, depth_of_field=None, f_stop=2.8, name=None,
                 avoid_occlusion="auto", angle_limits=None, action_line=None, require_composition=False,
-                face_coverage=False, coverage_turns=None):
+                face_coverage=False, coverage_turns=None, foreground=None):
     """Create a baked shot and cut marker, preserving composition while clearing faces.
     False keeps old framing. angle_limits/action_line constrain internal dialog coverage.
     """
-    if shot not in SHOTS:
+    ots = shot in ('ots', 'over_shoulder')
+    if ots:
+        shot = 'over_shoulder'
+        if subject and len(subject) == 2 and foreground is None:
+            subject, foreground = subject[:1], subject[1]
+        if not subject or len(subject) != 1 or not foreground or foreground == subject[0]:
+            raise ValueError('over_shoulder needs one subject and a different foreground partner (or subject=[subject, partner])')
+        from .talk import _rig_of
+        foreground = _rig_of(foreground).name
+        subject = [_rig_of(subject[0]).name]
+        if foreground == subject[0]:
+            raise ValueError('over_shoulder needs two different characters')
+        action_line = action_line or [subject[0], foreground]
+        face_coverage = True
+        require_composition = True
+    if not ots and shot not in SHOTS:
         raise ValueError(f"shot must be one of {list(SHOTS)}")
     if move not in MOVES:
         raise ValueError(f"move must be one of {list(MOVES)}")
@@ -169,6 +185,8 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     for marker in bindings:
         marker.camera = cam
     cam["c3d_shot"] = {"subject": subject, "shot": shot, "move": move}
+    if ots:
+        cam['c3d_foreground'] = foreground
     cam["c3d_focus_turns"] = json.dumps(coverage_turns or [])
     if depth_of_field is not None:
         cam["c3d_dof_explicit"] = bool(depth_of_field)
@@ -188,7 +206,8 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     def design(size):
         frac_h, aim_frac, default_lens = SHOTS[size]
         base_lens = float(lens or default_lens)
-        probe = VisibilityProbe(targets, size, H, None if face_coverage else angle_limits, action_line)
+        probe = VisibilityProbe(targets, size, H, None if face_coverage else angle_limits, action_line,
+                                foreground=foreground if ots else None)
         if face_coverage and len(probe.rigs) == 1:
             probe.face_limit = 45.0
         samples = set(sample_frames(start, end, sc.render.fps / sc.render.fps_base))
@@ -258,6 +277,14 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
                 pos = aim + direction * dist
                 pos.z += math.sin(el) * dist
 
+                if ots:
+                    from .ots import layout, eye_point
+                    focus = eye_point(next(iter(probe.rigs)))
+                    pos,aim,ots_rot,lens_mm,ots_info = layout(next(iter(probe.rigs)),
+                        bpy.data.objects[foreground],normal,focus,H,probe.sensor,
+                        back=.75,side=.30,lens=lens)
+                    cam['c3d_ots_shoulder'] = ots_info['shoulder']
+
             if "to_face" in p:   # zooms drift the aim from the shot's focus up to the face
                 aim = aim + Vector((0, 0, (0.92 - aim_frac) * H * max(0.0, p["to_face"])))
             rot = (aim - pos).to_track_quat("-Z", "Y").to_euler("XYZ", prev_rot or Euler())
@@ -276,12 +303,13 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
                 probe.capture(f, pos, aim, rot, lens_mm)
         return trajectory, probe
 
-    trajectory, probe = design(shot)
+    framing_size = 'medium_close' if ots else shot
+    trajectory, probe = design(framing_size)
     adjustment, occlusion = probe.resolve(avoid_occlusion is not False, elevation, require_composition=require_composition)
-    used_size = shot
+    used_size = framing_size
     wider = {"extreme_close_up": "close_up", "close_up": "medium_close",
              "medium_close": "medium", "medium": "medium_full"}
-    if avoid_occlusion is not False and "warning" in occlusion and shot in wider:
+    if not ots and avoid_occlusion is not False and "warning" in occlusion and shot in wider:
         wider_trajectory, wider_probe = design(wider[shot])
         wider_adjustment, wider_report = wider_probe.resolve(True, elevation, require_composition=True)
         # A one-step fallback has to pass composition too, even if its face was
@@ -329,7 +357,12 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
         start_frame=start, end_frame=end, angle=angle, elevation=elevation, intensity=intensity,
         ease=ease, lens=lens, handheld=handheld, roll=roll, depth_of_field=depth_of_field,
         f_stop=f_stop, name=name, action_line=action_line, angle_limits=angle_limits,
-        face_coverage=face_coverage, coverage_turns=coverage_turns))
+        face_coverage=face_coverage, coverage_turns=coverage_turns, foreground=foreground))
+    if ots:
+        # Repairs must preserve the intended foreground composition.
+        args = json.loads(cam['c3d_shot_args'])
+        args['shot'] = 'over_shoulder'
+        cam['c3d_shot_args'] = json.dumps(args)
 
     # timeline: cut to this camera at its start frame
     replaced = []
@@ -347,6 +380,10 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             "next_start_frame": end + 1, "subject_height": round(H, 3),
             "occlusion": occlusion, "shot_size": used_size,
             "replaced_shots_at_start_frame": replaced,
+            **({'foreground_composition': dict(partner=foreground, shoulder=cam['c3d_ots_shoulder'],
+                width_range=[min(v['width'] for v in occlusion['foreground']),max(v['width'] for v in occlusion['foreground'])],
+                area_range=[min(v['area'] for v in occlusion['foreground']),max(v['area'] for v in occlusion['foreground'])],
+                head_angle_min=min(v['head_angle'] for v in occlusion['foreground']))} if ots else {}),
             "lens_mm": [round(lenses[0], 1), round(lenses[-1], 1)]}
 
 

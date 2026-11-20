@@ -88,14 +88,14 @@ def _shots(sc, level):
         if b<a: continue
         size=meta.get('shot_size',meta.get('shot','medium')); names=list(meta.get('subject') or [])
         if size not in SHOTS:size='medium'
-        allowed={'subject','shot','move','start_frame','end_frame','angle','elevation','intensity','ease','lens','handheld','roll','depth_of_field','f_stop','name','action_line','face_coverage','coverage_turns','angle_limits'}
+        allowed={'subject','shot','move','start_frame','end_frame','angle','elevation','intensity','ease','lens','handheld','roll','depth_of_field','f_stop','name','action_line','face_coverage','coverage_turns','angle_limits','foreground'}
         args={k:v for k,v in args.items() if k in allowed}
         missing=[n for n in names if n not in bpy.data.objects]
         names=[n for n in names if n in bpy.data.objects]
         subjects=_subjects(names) if names or not missing else []
         lo,hi=scene_bounds(subjects) if subjects else (None,None)
         H=max(.1,hi.z-lo.z) if lo is not None else 1.75
-        probe=VisibilityProbe(subjects,size,H)
+        probe=VisibilityProbe(subjects,size,H,foreground=cam.get('c3d_foreground'))
         samples=[]; angles=[]; side=0
         for f in sorted({a,(a+b)//2,b} if level!='quick' else {(a+b)//2}):
             sc.frame_set(f)
@@ -131,14 +131,15 @@ def _shots(sc, level):
             # A camera reused by return-to-coverage markers must keep its other
             # intervals. Give this repair its own local camera in that case.
             repair_name=cam.name+f'_Review{a}' if sum(s['camera']==cam.name for s in raw_shots)>1 else cam.name
-            repair=[call('camera_shot',**dict(args,name=repair_name,subject=names,shot=size,start_frame=a,end_frame=b,
+            repair=[call('camera_shot',**dict(args,name=repair_name,subject=names,shot='over_shoulder' if cam.get('c3d_foreground') else size,start_frame=a,end_frame=b,
                          action_line=line if len(line)>1 else None,require_composition=True,avoid_occlusion='auto'))]
         items.append(dict(name=raw['marker'],camera=cam.name,frames=[a,b],subject=names,
                           size=size,move=meta.get('move','static'),samples=samples,missing_subjects=missing,
                           deliberate=bool(cam.get('c3d_deliberate_cut',False)),
                           angle=angles[0] if angles else 0,angle_end=angles[-1] if angles else 0,
                           action_side=side,occlusion=measured.get('face',0),face_angle=measured.get('face_angle',0),repair=repair,
-                          distinct_moves=meta.get('move','static')))
+                          distinct_moves=meta.get('move','static'),
+                          foreground_samples=measured.get('foreground',[]),foreground_shoulder=cam.get('c3d_ots_shoulder')))
     return items
 
 
@@ -273,7 +274,8 @@ def _scene_once(level,sheet,engine,size,frames,asr):
     t=time.perf_counter();issues,words,contacts,states=_performance(sc,shots,level); performance_s=time.perf_counter()-t
     if not shots:
         issues.append(issue('missing_camera','camera','error','No shot camera is available for review.'))
-    issues+=rhythm(shots,fps,words,(sc.frame_end-sc.frame_start+1)/fps)+camera_checks(shots)
+    duration=(sc.frame_end-sc.frame_start+1)/fps
+    issues+=rhythm(shots,fps,words,duration)+camera_checks(shots,duration)
     t=time.perf_counter();mix,stems,entries,errors=_mix(sc)
     metrics=audio_metrics(mix);issues+=sound_checks(metrics)
     for error in errors:

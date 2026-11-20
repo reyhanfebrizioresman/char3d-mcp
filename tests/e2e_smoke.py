@@ -2361,7 +2361,9 @@ SARI: Terima kasih. Hari ini kita bahas tiga ide baru.
 DIMAS: Bagus sekali! Saya tidak sabar mendengarnya.
 '''
     await call('new_scene')
-    built = await data('script_to_scene', script=script, language='id', seed=3)
+    # This regression measures continuous speaker visibility in legacy coverage;
+    # directed listener inserts are exercised separately by --emocam-only.
+    built = await data('script_to_scene', script=script, language='id', seed=3, camera='mixed')
     assert len(built['plan']['guest_chairs']) == 1, built['plan']
     assert any('guest chair' in w for w in built['warnings']), built['warnings']
     sit = next(b for b in built['plan']['beats'] if b.get('do') == 'sit')
@@ -4085,6 +4087,11 @@ async def _review_checks(call):
     await run(call, text_of)
 
 
+async def _emocam_checks(call):
+    from emocam_checks import run
+    await run(call, text_of)
+
+
 async def main():
     server_args = ["-m", "mcp_server.server"]
     if "--audio-only" in sys.argv and os.environ.get("CHAR3D_AUDIO_NO_ASR"):
@@ -4113,6 +4120,8 @@ async def main():
                 return await render(s, args)
             if any(flag in sys.argv for flag in ("--cinematic-only", "--render-style-only", "--outdoor-only", "--world-only", "--script-only")):
                 print("CHECK", tool, flush=True)
+            if tool == 'render_frames' and os.environ.get('CHAR3D_TEST_WORKBENCH'):
+                args.update(engine_name='workbench', size=min(384, args.get('size', 384)))
             if tool == "render_frames" and args.get("engine_name") == "eevee" and os.environ.get("CHAR3D_TEST_SAMPLES"):
                 samples = max(1, int(os.environ["CHAR3D_TEST_SAMPLES"]))
                 setup = await s.call_tool("run_blender_python", {"code":
@@ -4131,7 +4140,8 @@ async def main():
             await call("engine_shutdown")
             print("AUDIO E2E OK", flush=True)
             return
-        for flag, section in (("--review-only", _review_checks),
+        for flag, section in (("--emocam-only", _emocam_checks),
+                              ("--review-only", _review_checks),
                               ("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),
                               ("--mpfb-only", _materials_realistic_checks),

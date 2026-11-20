@@ -46,6 +46,9 @@ def cameras(plan, characters, shots, prefix, warnings):
                     start_frame=lo, end_frame=max(lo+1, hi), name=prefix+f'Cue{i:02d}',
                     action_line=cast[:2] if len(cast)>1 else None, require_composition=True,
                     face_coverage=beat['move'] in ('static','push_in','dolly_in','dolly_out','handheld'))
+        if beat['shot'] == 'over_shoulder':
+            if len(args['subject']) == 1:
+                args['foreground'] = next((n for n in cast if n != args['subject'][0]), None)
         report = dispatch('camera_shot', args)
         # A requested orbit/reveal can cross the dialog line during its travel.
         # Retain the side, then visibly report the reduced move rather than crossing it.
@@ -61,6 +64,9 @@ def cameras(plan, characters, shots, prefix, warnings):
                 warnings.append('Camera cue reduced to static to keep the dialog action-line side.')
         bpy.data.objects[report['camera']]['c3d_deliberate_cut'] = bool(beat.get('deliberate',False))
         report['director_cue'] = True
+        report['reason'] = dict(role='explicit', emotion='authored', intensity=beat.get('intensity', .25),
+                                detail='explicit camera cue overrides automatic coverage')
+        bpy.data.objects[report['camera']]['c3d_shot_reason'] = json.dumps(report['reason'])
         beat['result'] = report
         shots.append(report)
     # Return the effective cut intervals, not coverage cameras hidden by an override.

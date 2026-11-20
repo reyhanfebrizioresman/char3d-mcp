@@ -2,7 +2,7 @@
 import re
 
 SIZES = ('extreme_wide', 'wide', 'full', 'medium_full', 'medium', 'medium_close',
-         'close_up', 'extreme_close_up')
+         'close_up', 'extreme_close_up', 'over_shoulder')
 MOVES = ('static', 'push_in', 'dolly_in', 'dolly_out', 'pull_out', 'orbit_left',
          'orbit_right', 'arc', 'crane_up', 'crane_down', 'truck_left', 'truck_right',
          'pan_left', 'pan_right', 'tilt_up', 'tilt_down', 'zoom_in', 'crash_zoom',
@@ -43,6 +43,7 @@ def direction(text):
     pieces = [s.strip() for s in value.split(',')]
     first = pieces.pop(0)
     size_forms = {display_size(s): s for s in SIZES} | {s.replace('_', ' '): s for s in SIZES} | {s: s for s in SIZES}
+    size_forms.update(ots='over_shoulder', **{'over-the-shoulder': 'over_shoulder'})
     match = re.fullmatch(r'(' + '|'.join(re.escape(s).replace(r'\ ', r'[ -_]') for s in sorted(size_forms, key=len, reverse=True)) +
                          r')(?:\s+(two[ -]shot|dua tokoh))?(?:\s+(.+))?', first, re.I)
     if not match:
@@ -72,6 +73,7 @@ def normalize(beat, ids):
     if 'deliberate' in beat and type(beat['deliberate']) is not bool:
         raise ValueError('camera deliberate must be boolean')
     shot = token(beat.get('shot', 'medium'))
+    shot = 'over_shoulder' if shot in ('ots', 'over_the_shoulder') else shot
     if shot in ('otomatis', 'auto'):
         beat['shot'] = 'auto'
         return

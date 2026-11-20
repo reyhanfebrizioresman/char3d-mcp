@@ -685,6 +685,24 @@ optional per line `pause_s` / `delay_s`). It:
   speaker (`shot` size) cut 4 frames before they speak, on the same side of the live
   head-to-head action line (initially -Y; 180° rule);
   `singles`, `two_shot`, `none` (then frame it yourself with `camera_shot`).
+  `directed` (aliases `emosi`, `emotional`) edits from the sentence-emotion curve:
+  establishing groups, OTS/singles, tighter peaks, listener inserts over continuing
+  speaker audio, and a wider ending echo. `dialog` keeps its `mixed` default.
+  `stage_dialog(..., camera="directed")` optionally covers existing timed speech;
+  without speech it establishes the staged cast. Omit camera for placement only.
+  Directed results include `emotion_curve`, visible `reactions`, and each shot's
+  `reason` (role/emotion/intensity/phase). Explicit camera cues always override it.
+  An automatic insert shortened below one second by a closing cue is removed;
+  the preceding view holds until the authored closing cut.
+  Energy comes only from audible voice samples, alongside saved `char3d_emotions`,
+  line/body emotion and punctuation. This is a local heuristic, not story analysis.
+  Reactions begin about .3 s after a trigger word, on separate `__c3d_reaction_`
+  brow/eye/cheek/corner morphs; articulation, gaze, blinks and face_life stay intact.
+  Cuts use word gaps quantized to the video grid (<= half-frame boundary error),
+  protect the speaker's first second and hold at least a second. Sad/tender passages
+  hold longer; >30 s scenes reserve a five-second breath. Tight shock accents require
+  a strong explicit surprise emotion cue. Short scenes/absent word gaps can limit
+  variety or reactions; missing face targets warn. Inspect actual listener faces.
 Gaze samples the live posed head of each target at every keyed frame, including
 pelvis turns and seated height. Targets beyond 70° also receive a small chest turn
 (up to 45°); root/legs stay intact. Dialog opens heads 18° toward the camera side
@@ -703,11 +721,22 @@ listen_to=...)` exposes the same gaze/listening for hand-made scenes. Check with
 - Whisper model: `tiny` by default (~75 MB, downloaded once). Set
   `CHAR3D_WHISPER_MODEL=base` or `small` for harder audio (accents, noise).
 
+Emotional coverage verification: only port **9972**, workspace `$PWD/output`;
+`tests/test_emocam.py` prints `EMOCAM UNIT OK`. `tests/e2e_smoke.py --emocam-only`
+builds argument/reunion/good-news fixtures and compares directed/mixed coverage on
+identical saved performances. Evidence lives in `output/emocam/`; use
+`CHAR3D_EMOCAM_REUSE=1` to recut saved fixtures or `CHAR3D_EMOCAM_CASE=argument`
+(also reunion/good_news) for one case. Regression stills can use
+`CHAR3D_TEST_WORKBENCH=1` to cap them at 384 px; final emotional stills use Eevee.
+Stop the owned engine after checks; never use 9876 for verification.
+
 ## Script → scene
-`script_to_scene(script, name=None, environment=None, lighting="studio", camera="mixed",
+`script_to_scene(script, name=None, environment=None, lighting="studio", camera="directed",
 subtitles=True, language="auto", seed=0, build=True, sound=True, body_language=True, voice=True,
 tts_engine="piper", voices=None, look=None)` composes the existing tools into
-a complete scene for 1–4 characters. `build=False` returns a deterministic normalized
+a complete scene for 1–4 characters. Directed coverage is the default; explicit
+KAMERA/CAMERA cues keep priority. Results include a smoothed `emotion_curve` and
+visible listener `reactions`; `camera="mixed"` retains the original coverage. `build=False` returns a deterministic normalized
 `plan` (characters, beats with `estimated_frames`, warnings) without changing the scene,
 reading audio or transcribing it. Frame estimates use the current scene fps; walking
 and audio estimates are approximate. `seed` selects default outfits and procedural motion.
@@ -830,6 +859,9 @@ Declare characters before using them; invalid references fail with a clear error
 ## Films (multi-scene)
 `script_to_film(script, name=None, build=True, scene_index=None, ...)` reuses the
 single-scene pipeline, saving `projects/<name>/scene_01.blend`, etc., and `film.json`.
+Directed coverage is the default. Each scene stores its own `emotion_curve` and
+listener `reactions`; an opening widens after the previous scene ends close.
+Explicit camera cues retain priority across rebuilds.
 It replaces the editor scene during building; save outstanding work first.
 `build=False` returns a deterministic storyboard without Blender/file/audio/network
 changes. Single-scene scripts still work with `script_to_scene`, with their original
@@ -950,7 +982,12 @@ music attenuation and speech balance, audio/lip coverage, contact Foley, ambienc
 and a quiet turn; shot length/variation/mid-word cuts; projected scale, face/eye
 position, visibility, jump cuts and dialog side; subtitle hold/CPS/face overlap,
 title duration, sampled luminance/contrast; blink/articulation/expression/motion,
-sole/torso/held-grip proxies. `fix=True` runs at most one call per tool/target for
+sole/torso/held-grip proxies. OTS review also checks rear-head orientation and measured
+foreground width. `limited_coverage` warns only for scenes >20 s with >=4 shots,
+all static, and >=75% at one size. This is one normal camera warning (8 category
+points, about 1–2 overall points), with no automatic artistic edit; a single held
+master, shorter scenes, varied sizes or a motivated move are exempt.
+`fix=True` runs at most one call per tool/target for
 safe blink, ducking, missing Foley/ambience, subtitle grouping/hold, native camera
 re-fitting or title hold fixes, and reviews once. An undersized native shot is re-fitted
 with its subject, move and dialog side retained; a jump cut changes the incoming view
@@ -1506,6 +1543,22 @@ Without a look, None has the same behavior as the former False default.
 
 **Shots** — `camera_shot(subject, shot, move, start_frame, end_frame, angle, elevation,
 intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
+- `shot="over_shoulder"` (alias `ots`) uses one facing subject and `foreground=partner`,
+  or `subject=[facing_subject, partner]`. The camera is placed behind the near
+  upper-arm/shoulder joint, at shoulder height, on the established action-line side.
+  Default lenses stay within 50–85 mm; the subject's evaluated eye mesh supplies
+  the upper-third framing and cinematic focus (anatomical fallback on other rigs).
+  The partner's rear head/shoulder occupies roughly 20–35% of frame width.
+  `foreground_composition` and `occlusion.foreground` report the shoulder, side,
+  clipped width/area fractions and head-to-camera angle. Width uses a 64×36 mesh-ray
+  mask, not an alpha-aware raster pass; review allows a margin of two percentage points.
+  Opposite coverage selects opposite anatomical shoulders while retaining the action
+  line side. OTS-to-clean cuts still need two sizes or a 30-degree viewpoint change.
+  The foreground partner is
+  excluded only from the foreground-area budget: face/eye occlusion and solid camera
+  collision checks still include it. Tight spacing, furniture or unusual blocking can
+  prevent a safe OTS and produce a warning. Cinematic DOF focuses the facing subject;
+  directed reaction cameras rack from the speaker to the listener's live eye plane.
 - shot sizes: extreme_wide, wide, full, medium_full, medium, medium_close, close_up,
   extreme_close_up (lens picked automatically, override with `lens`).
 - moves: static, push_in, dolly_in, dolly_out, pull_out, orbit_left, orbit_right, arc,

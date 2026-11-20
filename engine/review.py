@@ -121,7 +121,7 @@ def rhythm(shots, fps, words=(), duration=0):
 SIZES = ('extreme_wide', 'wide', 'full', 'medium_full', 'medium', 'medium_close', 'close_up', 'extreme_close_up')
 
 
-def camera_checks(shots):
+def camera_checks(shots, duration=0):
     out = []; planned_sizes = {}
     for previous, current in zip(shots, shots[1:]):
         same = set(previous.get('subject', [])) == set(current.get('subject', [])) and current.get('subject')
@@ -166,11 +166,27 @@ def camera_checks(shots):
         if s.get('face_angle',0)>75:
             fix=camera_proposal(s,face_coverage=True)
             out.append(issue('face_turned','camera','warn','A subject faces away from the camera; consider face-relative coverage while retaining the action-line side.',dict(face_angle_deg=s['face_angle']),fix=fix,shot=s['name']))
+        foreground=s.get('foreground_samples') or []
+        if foreground and any(not .18<=f['width']<=.37 or f['head_angle']<115 for f in foreground):
+            out.append(issue('ots_foreground','camera','warn',
+                'The OTS partner is too thin, too large or seen in profile; inspect the rear head and shoulder composition.',
+                dict(width_range=[min(f['width'] for f in foreground),max(f['width'] for f in foreground)],
+                     minimum_head_angle=min(f['head_angle'] for f in foreground),
+                     target_width=[.20,.35],sampling_tolerance=[.18,.37]),fix=repair,**where))
         eyes = [p['eye_y'] for p in samples if 'eye_y' in p]
         if size in ('close_up', 'medium_close', 'extreme_close_up') and any(not .20 <= y <= .48 for y in eyes):
             out.append(issue('eye_line', 'camera', 'warn', 'Close-shot eyes lie outside the upper-third band.', dict(eye_y=eyes, band=[.20,.48]), **where))
     if len(shots) >= 4 and len({s.get('size') for s in shots}) < 2:
         out.append(issue('camera_variety', 'camera', 'info', 'All shots use the same size.', dict(distinct_sizes=1, distinct_moves=len({s.get('move') for s in shots}))))
+    if duration > 20 and len(shots) >= 4 and all(s.get('move') in ('static',None) for s in shots):
+        counts = {size:sum(s.get('size')==size for s in shots) for size in {s.get('size') for s in shots}}
+        dominant = max(counts, key=counts.get)
+        fraction = counts[dominant]/len(shots)
+        if fraction >= .75:
+            out.append(issue('limited_coverage','camera','warn',
+                'A long scene repeats mostly one size without a camera move; consider a motivated framing or movement change.',
+                dict(duration_s=duration,shot_count=len(shots),dominant_size=dominant,
+                     dominant_fraction=fraction,distinct_sizes=len(counts),distinct_moves=1)))
     if not any(s.get('move') not in ('static', None) for s in shots):
         out.append(issue('signature_shot', 'camera', 'info', 'No moving peak shot is recorded; consider a deliberate visual accent.'))
     return out
