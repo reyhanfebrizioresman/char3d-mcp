@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from providers import speech
 from providers.jobs import JobManager
 from providers.tts import TTS
+from providers.remote import RemoteRenders
 
 from .blender_client import ROOT, BlenderClient
 
@@ -39,6 +40,9 @@ Multi-scene: script_to_film(build=False) -> script_to_film -> open_film_scene fo
 Eevee check/edit/save -> render_film(quality="draft") -> film_render_options (owner
 chooses resolution) -> render_film. film_info reads the manifest; render_status and
 cancel_render cover the whole film. script_to_scene rejects multi-scene scripts.
+Remote video/film: target="name" from remote_targets(); first upload needs
+consent_upload=True. Paid targets return a quote first; repeat with its quote_id
+and confirm_cost=True only after the owner approves its price and budget/time caps.
 Read resource char3d://guide for the full workflow guide.
 """
 
@@ -46,6 +50,7 @@ mcp = FastMCP("char3d", instructions=INSTRUCTIONS)
 engine = BlenderClient()
 ai = JobManager(engine)
 tts = TTS(engine.workspace)
+remote = RemoteRenders(engine)
 
 View = Literal["front", "back", "left", "right", "top", "three_quarter", "three_quarter_left"]
 Engine = Literal["workbench", "eevee", "cycles"]
@@ -795,13 +800,22 @@ async def render_style(style: Literal['none', 'anime', 'toon', 'clay', 'film', '
 @mcp.tool()
 async def render_options(quality: Literal["draft", "preview", "final", "cycles"] = "final",
                          frame_start: int | None = None, frame_end: int | None = None,
-                         vertical: bool = False, calibrate: bool = False) -> dict:
+                         vertical: bool = False, calibrate: bool = False, target: str = 'local',
+                         consent_upload: bool = False, confirm_cost: bool = False,
+                         quote_id: str | None = None, max_budget_usd: float | None = None,
+                         max_hours: float | None = None) -> dict:
     """Resolution choices (480p..4k) with the estimated render time of THIS scene at the
     given quality ON THIS MACHINE. Call before a preview/final/cycles render and let the user
     pick the resolution (show size + estimated total time); then render_video(resolution=...).
     Speed is learned per machine from every finished render_video (`machine_speed`); when
     `machine_speed.measurements` is 0 the numbers are developer-machine defaults (CPU only) —
-    pass calibrate=True to render one 480p test frame now (~5-20 s) and measure."""
+    pass calibrate=True to render one 480p test frame now (~5-20 s) and measure.
+    target="name" reports that target's time/cost; remote calibration requires upload
+    consent and uses the same paid quote_id/confirm_cost flow as render_video."""
+    if target != 'local':
+        return await anyio.to_thread.run_sync(lambda: remote.options('video', target,
+            dict(quality=quality, frame_start=frame_start, frame_end=frame_end, vertical=vertical),
+            calibrate, consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours))
     return await run("render_options", quality=quality, frame_start=frame_start,
                      frame_end=frame_end, vertical=vertical, calibrate=calibrate)
 
@@ -813,7 +827,10 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
                        resolution: Resolution | None = None, vertical: bool = False,
                        width: int | None = None, height: int | None = None,
                        fps: int | None = None, wait: bool = False,
-                       subtitles: bool | None = None, credits: bool = True) -> dict:
+                       subtitles: bool | None = None, credits: bool = True, target: str = 'local',
+                       consent_upload: bool = False, confirm_cost: bool = False,
+                       quote_id: str | None = None, max_budget_usd: float | None = None,
+                       max_hours: float | None = None) -> dict:
     """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id
     and an `estimate` of the render time.
     draft = clay workbench, half res (~0.1 s/frame) for checking timing/cameras;
@@ -827,7 +844,20 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
     subtitles: None = burn in the add_subtitles captions when set up (a short second pass
     after the frames; an .srt is also written next to the video), False = without captions.
     Titles/transitions from add_title/add_transition always use the same compose pass.
-    Crossfades render extra outgoing-camera frames; duration and audio timing stay fixed."""
+    Crossfades render extra outgoing-camera frames; duration and audio timing stay fixed.
+    target="name" uses an SSH/RunPod/Vast registry target. First upload requires
+    consent_upload=True. Paid calls first return a quote without renting; repeat the
+    same arguments with its quote_id and confirm_cost=True. max_budget_usd/max_hours
+    can lower target caps. Remote jobs reattach by ID after disconnection."""
+    if target != 'local':
+        params = dict(path=path, frame_start=frame_start, frame_end=frame_end, quality=quality,
+                      resolution=resolution, vertical=vertical, width=width, height=height, fps=fps,
+                      subtitles=subtitles, credits=credits)
+        result = await anyio.to_thread.run_sync(lambda: remote.start('video', target, params,
+            consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours))
+        if wait and result.get('job_id'):
+            return await anyio.to_thread.run_sync(lambda: remote.wait(result['job_id']))
+        return result
     return await run("render_video", path=path, frame_start=frame_start, frame_end=frame_end,
                      quality=quality, resolution=resolution, vertical=vertical, width=width,
                      height=height, fps=fps, wait=wait, subtitles=subtitles, credits=credits)
@@ -1022,13 +1052,36 @@ async def credits(path: str | None = None, card: bool = False, name: str | None 
 @mcp.tool()
 async def render_status(job_id: str | None = None) -> dict:
     """Progress of a render job (frames done, ETA, output path), or all jobs."""
-    return await run("render_status", job_id=job_id)
+    if job_id and job_id.startswith('remote_'):
+        return await anyio.to_thread.run_sync(lambda: remote.report(job_id))
+    result = await run("render_status", job_id=job_id)
+    if job_id is None:
+        result['jobs'] += await anyio.to_thread.run_sync(remote.status)
+    return result
 
 
 @mcp.tool()
 async def cancel_render(job_id: str) -> dict:
     """Stop a running render job."""
+    if job_id.startswith('remote_'):
+        return await anyio.to_thread.run_sync(lambda: remote.cancel(job_id))
     return await run("cancel_render", job_id=job_id)
+
+
+@mcp.tool()
+async def remote_targets() -> dict:
+    """List ~/.config/char3d/targets.json and durable remote jobs/instances, costs and cleanup.
+    SSH uses your own config/agent. Paid RunPod/Vast jobs first return an expiring quote;
+    repeat the identical render call with quote_id and confirm_cost=True to create an instance.
+    First upload to a target requires consent_upload=True. No API key is returned."""
+    return await anyio.to_thread.run_sync(remote.list_targets)
+
+
+@mcp.tool()
+async def stop_target(name: str) -> dict:
+    """Cancel all char3d jobs and terminate their paid instances for this target.
+    Does not stop unrelated machines belonging to your account."""
+    return await anyio.to_thread.run_sync(lambda: remote.stop_target(name))
 
 
 # --- realistic humans (MPFB) --------------------------------------------------------
@@ -1722,10 +1775,19 @@ async def open_film_scene(name: str, index: int) -> dict:
 
 @mcp.tool()
 async def film_render_options(name: str | None = None, quality: Literal["draft", "preview", "final", "cycles"] = "final",
-                              vertical: bool = False, calibrate: bool = False) -> dict:
+                              vertical: bool = False, calibrate: bool = False, target: str = 'local',
+                              consent_upload: bool = False, confirm_cost: bool = False,
+                              quote_id: str | None = None, max_budget_usd: float | None = None,
+                              max_hours: float | None = None) -> dict:
     """Per-scene and total film estimates from render_options and learned machine speed.
     Offer resolution choices to the owner before preview/final; preserves editor edits.
+    Remote targets include cost; calibrate=True measures one frame of the first saved
+    scene, with upload consent and paid quote confirmation when applicable.
     """
+    if target != 'local':
+        return await anyio.to_thread.run_sync(lambda: remote.options('film', target,
+            dict(name=name, quality=quality, vertical=vertical), calibrate, consent_upload,
+            confirm_cost, quote_id, max_budget_usd, max_hours))
     return await run("film_render_options", name=name, quality=quality, vertical=vertical, calibrate=calibrate)
 
 
@@ -1735,7 +1797,9 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
                        resolution: str | None = None, width: int | None = None,
                        height: int | None = None, vertical: bool = False,
                        subtitles: bool = True, wait: bool = False, resume: bool = True,
-                       credits: bool = True) -> dict:
+                       credits: bool = True, target: str = 'local', consent_upload: bool = False,
+                       confirm_cost: bool = False, quote_id: str | None = None,
+                       max_budget_usd: float | None = None, max_hours: float | None = None) -> dict:
     """Render saved scenes serially then compose one H.264/AAC MP4 with Blender VSE.
     Choose resolution with film_render_options first for preview/final. Scene MP4s
     include voice/music/Foley; transitions fade audio, cards have a continuous silent
@@ -1743,7 +1807,18 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
     Unchanged .blend bytes + render settings reuse cached scene clips (resume=True).
     Edits must be saved. Poll render_status(job_id); cancel_render stops the whole film.
     Preserves the editor scene; only one render queue can run at a time.
+    target="name" renders clips remotely and composes locally. First-target upload
+    requires consent_upload=True; paid allocation requires a returned quote_id and a
+    subsequent confirm_cost=True call. Caps and stop_target apply to the whole job.
     """
+    if target != 'local':
+        params = dict(name=name, path=path, quality=quality, resolution=resolution, width=width,
+                      height=height, vertical=vertical, subtitles=subtitles, resume=resume, credits=credits)
+        result = await anyio.to_thread.run_sync(lambda: remote.start('film', target, params,
+            consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours))
+        if wait and result.get('job_id'):
+            return await anyio.to_thread.run_sync(lambda: remote.wait(result['job_id']))
+        return result
     return await run("render_film", name=name, path=path, quality=quality, resolution=resolution,
         width=width, height=height, vertical=vertical, subtitles=subtitles, wait=wait, resume=resume, credits=credits)
 

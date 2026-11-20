@@ -448,7 +448,7 @@ def dispatch_credits(path):
 @command("render_video")
 def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="preview",
                  width=None, height=None, fps=None, wait=False, resolution=None, vertical=False,
-                 subtitles=None, _defer=False, credits=True):
+                 subtitles=None, _defer=False, credits=True, _remote=False):
     """Render the scene camera / shot timeline to MP4 (H.264) in a background process.
 
     subtitles: None = burn in captions when add_subtitles is set up, False = never,
@@ -482,6 +482,9 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
         from pathlib import Path
         Path(path).with_suffix('.review_lines.json').write_text(json.dumps(lines), encoding='utf-8')
     job_id = f"job{len(JOBS) + 1}_{time.strftime('%H%M%S')}"
+    if _remote:
+        import uuid
+        job_id = 'snapshot_'+uuid.uuid4().hex
     jobs_dir = os.path.join(context.WORKSPACE, "jobs")
     os.makedirs(jobs_dir, exist_ok=True)
     base = os.path.join(os.path.dirname(path), f".{job_id}_")
@@ -497,7 +500,11 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
         _apply_settings(sc, quality, size, fps, start, end, base)
         from .weather import refresh_weather
         refresh_weather()
-        bpy.ops.wm.save_as_mainfile(filepath=blend, copy=True)
+        if _remote:
+            from ..remote_snapshot import save
+            remote_assets = save(blend, quality)
+        else:
+            bpy.ops.wm.save_as_mainfile(filepath=blend, copy=True)
     finally:
         r.engine, r.resolution_x, r.resolution_y = saved["engine"], saved["rx"], saved["ry"]
         r.resolution_percentage, r.fps, r.filepath = saved["pct"], saved["fps"], saved["fp"]
@@ -563,6 +570,9 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     job["model_spf"] = _model_spf(QUALITY[quality][0], QUALITY[quality][2], out_w, out_h,
                                   _scene_weight(sc)) * _effects_cost(sc, QUALITY[quality][0])
     JOBS[job_id] = job
+    if _remote:
+        job['remote_assets'] = remote_assets
+        job['blender_version'] = list(bpy.app.version)
     if _defer:
         job["status"] = "queued"
         return _report(job)
@@ -574,6 +584,41 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     return _report(job)
 
 
+@command('prepare_remote_render')
+def prepare_remote_render(kind='video', params=None):
+    """Internal MCP boundary: prepare native snapshots without starting any worker."""
+    from ..remote_snapshot import serial_job
+    params = dict(params or {}, wait=False, _remote=True)
+    if kind == 'film_calibration':
+        from .film import _read, _snapshot_editor, _restore_editor
+        from . import dispatch
+        manifest, _ = _read(params.pop('name', None))
+        origin = _snapshot_editor()
+        try:
+            dispatch('open_project', {'path': manifest['scenes'][0]['project']})
+            sc = bpy.context.scene
+            mid = (sc.frame_start+sc.frame_end)//2
+            params.update(frame_start=mid, frame_end=mid)
+            report = render_video(_defer=True, **params)
+            job = JOBS.pop(report['job_id'])
+            return dict(kind='video', job=serial_job(job), children=[serial_job(job)],
+                        blender=bpy.app.binary_path, blender_version=list(bpy.app.version))
+        finally:
+            _restore_editor(origin)
+    if kind == 'film':
+        from .film import render_film, _compose_spec
+        job = render_film(**params)
+        children = [serial_job(JOBS.pop(c)) for c in job['children']]
+        return dict(kind='film', job=job, children=children, compose=_compose_spec(job),
+                    blender=bpy.app.binary_path, blender_version=list(bpy.app.version))
+    if kind != 'video':
+        raise ValueError('kind must be video or film')
+    report = render_video(_defer=True, **params)
+    job = JOBS.pop(report['job_id'])
+    return dict(kind='video', job=serial_job(job), children=[serial_job(job)],
+                blender=bpy.app.binary_path, blender_version=list(bpy.app.version))
+
+
 def _launch(job):
     with open(job["log"], "wb") as lf:
         job["proc"] = subprocess.Popen(job["render_cmd"], stdout=lf,
@@ -583,7 +628,7 @@ def _launch(job):
 
 @command("render_options")
 def render_options(quality="final", frame_start=None, frame_end=None, vertical=False,
-                   calibrate=False):
+                   calibrate=False, _remote_estimate=False):
     """Resolution choices with estimated render time for this scene, to offer the user.
 
     Estimates use this machine's learned speed (from finished renders); calibrate=True first
@@ -608,6 +653,10 @@ def render_options(quality="final", frame_start=None, frame_end=None, vertical=F
             w, h = h, w
         options.append({"resolution": name, "size": f"{w}x{h}",
                         **_estimate(sc, quality, w, h, frames + handles)})
+        if _remote_estimate:
+            options[-1]['model_spf'] = _model_spf(QUALITY[quality][0], QUALITY[quality][2],
+                w, h, _scene_weight(sc)) * _effects_cost(sc, QUALITY[quality][0])
+            options[-1]['model_total_s'] = options[-1]['model_spf']*(frames+handles)
     engine = QUALITY[quality][0]
     from .materials import scene_cost_factor
     calib = _calibration_report()

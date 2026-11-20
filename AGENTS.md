@@ -890,6 +890,125 @@ Verify: `.venv/bin/python tests/test_film.py` prints `FILM UNIT OK`; isolated
 `CHAR3D_PORT=9996 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/e2e_smoke.py
 --film-only` checks MPFB/Piper, offsets, AAC continuity, transitions, cache and cancel.
 
+## Remote rendering
+
+`render_video(..., target="local"|"name")` and `render_film(..., target=...)`
+retain the local defaults. `render_options(..., target=...)` and
+`film_render_options(..., target=...)` report per-target time and USD estimates.
+`remote_targets()` lists configured targets and durable jobs, instance IDs, estimated
+running cost and pending cleanup; `stop_target(name)` cancels all **char3d-owned** jobs
+and terminates their rented instances. Unrelated account instances are never stopped.
+No automatic resume or replacement of a stopped/preempted paid machine occurs.
+
+Create `~/.config/char3d/targets.json` yourself, outside the repository:
+```json
+{
+  "devodo": {
+    "kind": "ssh", "host": "devodo", "jump_host": "reyhan", "user": "reyhan",
+    "remote_dir": "/opt/char3d/remote", "blender": "/opt/char3d/blender-5.2.4-linux-x64/blender",
+    "device": "cpu", "max_parallel": 1, "threads": 4, "max_hours": 4
+  },
+  "rented": {
+    "kind": "runpod", "gpu_type": "NVIDIA GeForce RTX 4090",
+    "image": "YOUR_OWN_PREPARED_BLENDER_IMAGE", "public_key": "~/.ssh/id_ed25519.pub",
+    "remote_dir": "/tmp/char3d", "blender": "/opt/blender/blender", "device": "optix",
+    "max_hourly_usd": 1, "max_budget_usd": 3, "max_hours": 2, "max_parallel": 1
+  }
+}
+```
+For Vast.ai use `kind="vast"` and its GPU name (for example `RTX 4090`). The owner
+creates/funds the provider account, configures their SSH public key and prepares the
+image. Paid adapters create on-demand single-GPU containers, without persistent volumes,
+and **terminate**, rather than merely stopping, after completion/failure/cancellation.
+Vast offers must have free inbound/outbound transfer. RunPod defaults to Secure Cloud;
+`cloud_type="COMMUNITY"` is explicit. No Colab/Kaggle/free-tier workaround is supported.
+
+Put `RUNPOD_API_KEY=...` / `VAST_API_KEY=...` only in `~/.config/char3d/env` with
+mode **600**. Runtime reads that file without shell evaluation; environment-only keys
+are deliberately ignored. Keys are sent only in HTTPS authorization headers to the
+official provider endpoint, with redirects disabled. Never put secrets in targets,
+scripts, project files or logs. Target fields are allowlisted. SSH/rsync use
+`-F ~/.ssh/config`, BatchMode and strict host-key checking; a jump uses an explicit
+ProxyCommand with the same user-only config. Password prompts are not supported.
+
+Money and upload consent are separate:
+
+1. First job on a target returns `consent_required`, describing the upload. Repeat
+   with `consent_upload=True`. Consent is stored by target configuration fingerprint;
+   changing the target requires fresh consent.
+2. A paid render returns `quote_required`: GPU, API hourly price, calibrated or
+   explicitly uncalibrated runtime, startup allowance, estimated USD total and caps.
+   **No instance is created on this call**, even with `confirm_cost=True`.
+3. Show the quote to the owner. Repeat the same arguments and caps with its
+   `quote_id` and explicit `confirm_cost=True`. Quotes expire after ten minutes and
+   are single-use. A quote renders the prepared snapshot, preserving the quoted scene.
+   Changing settings/target/limits requires another quote. Estimates from render_options
+   are advisory; the actual render supplies the confirmable quote.
+
+The provider offer is fetched again immediately before allocation; a changed offer or
+higher price requires a new confirmation. The allocated instance's rate is also checked.
+
+Both target caps and smaller per-call `max_budget_usd`/`max_hours` apply per job. Provisioning,
+transfer and render time count; 30 seconds are reserved for teardown. A detached local
+supervisor owns provider cleanup, time/budget/idle watchdogs and persistent state under
+`output/remote/`. It survives MCP exit, reattaches by job ID after a restart, and retries
+unacknowledged termination visibly as `cleanup_pending`. The remote process also has a
+credential-free time/idle watchdog. **Keep the controlling laptop awake and online.**
+No client can guarantee a provider invoice cap while the controller is powered off or
+the provider API is unavailable. Use provider account spending limits/alerts as the
+independent backstop; tax/rounding/storage and provider metering can differ. Provider
+billed seconds/cost are reported from RunPod billing history when published and from
+instance totals when exposed (history may lag and is labelled provisional); otherwise
+`cost_so_far_usd` is explicitly an elapsed-time estimate, never an invoice.
+
+Privacy: scene geometry/animation/native materials, referenced MPFB/user textures,
+images, fonts, voice/music/Foley WAVs, and title/caption images leave this machine.
+The scene must contain native baked data. Look/style overrides are saved into the
+snapshot and grain is updated by the standalone worker. No MPFB installation or
+engine package is needed on the remote host. Missing assets, linked libraries,
+external simulation caches, volumes, UDIM and image/movie texture sequences are
+rejected; convert these to supported native data first. Absolute source paths are
+remapped to content hashes. Generated SRT/CREDITS/treatment files stay local; verified
+MP4s are downloaded atomically. Films render scene clips remotely and compose locally
+using the original Blender VSE script, with original captions/music/cards/transitions.
+Remote film cache keys also include external asset bytes and target/device settings.
+
+The remote worker needs Linux, system Python **3.9+**, rsync, the **exact** Blender
+version (including patch), and Blender's system graphics/audio libraries. Use
+`scripts/install_remote_worker.sh --help` on the worker/image build; it installs only
+an explicitly supplied official Blender archive with its published checksum and
+never installs into the shared venv. CUDA/OptiX/HIP must be available in Blender's
+Cycles build. Eevee/workbench use the worker's graphics context; GPU targets reject
+software rasterizers instead of silently charging for CPU fallback. The image/host
+must provide functional EGL/graphics driver access. Detected GPU/device is reported.
+
+`render_options(target="devodo", calibrate=True, consent_upload=True)` renders one
+480p frame remotely and records target-specific speed. Paid calibration follows the
+same quote/confirm flow. `film_render_options(..., calibrate=True)` measures the first
+saved film scene and restores the editor. First-frame cold startup makes single-frame calibration
+approximate. Remote work never updates local speed calibration.
+
+Transfers use SHA-256 blobs; rsync sends only missing verified content and resumes
+partial downloads. SSH disconnects reattach to the detached worker without starting
+another render. Cancel is sent over SSH; TTL remains a fallback during disconnection.
+Completed job directories are removed; a private bounded blob cache remains (default
+`cache_bytes=1073741824`). Set a small cap to reduce retained private assets.
+`idle_timeout_s` defaults to 900; increase it for unusually slow frames. One job uses
+one Blender process at a time; `max_parallel` limits simultaneous jobs, while film
+scenes are serial. A hard host crash may require manual cleanup of the private worker
+directory. Never remove it while a worker is active.
+
+Troubleshooting: first verify `ssh -F ~/.ssh/config -o BatchMode=yes HOST` yourself,
+including known_hosts entries for rented host/port, then Python/rsync/Blender paths
+and graphics drivers. Strict host-key checking can prevent a newly rented host from
+becoming ready; add a **verified** fingerprint to known_hosts yourself. No auto-trust.
+`render_status` reports reconnection/cleanup; local downloaded logs are in
+`output/remote/jobs/<id>/`. `tests/remote_ssh_smoke.py TARGET` runs 24 draft frames,
+two Eevee frames and a tiny two-scene film/cache check against an SSH target, using
+isolated editor port **9969**. `--loopback` uses fake SSH/rsync with real Blender workers.
+`tests/test_remote.py` runs offline fake RunPod/Vast APIs and cleanup tests;
+success prints `REMOTE UNIT OK`. No paid account or real rental is used by tests.
+
 ## Directing method
 
 Judge the assembled film in this order: sound, rhythm, camera, performance; then
