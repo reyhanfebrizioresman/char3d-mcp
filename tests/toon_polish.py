@@ -22,7 +22,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'tests'))
 from e2e_smoke import isolate_mpfb,text_of
 from toon_checks import LIDS
-OUT=ROOT/'output/toon_polish'
+OUT=Path(os.environ.get('CHAR3D_TOON_REVIEW_DIR',str(ROOT/'output/toon_polish')))
 
 PROXY='''
 from engine.commands.toon import anatomy,neutral_coords,face_metrics
@@ -59,7 +59,7 @@ finally:
  for m,value in mask_states:m.show_viewport=value
 """
 
-async def run(case):
+async def run(case,smile_only=False):
     assert os.environ.get('CHAR3D_PORT')=='9971'
     source_hash=hashlib.sha256(b''.join((ROOT/p).read_bytes() for p in ('engine/toon.py','engine/commands/toon.py'))).hexdigest()
     sex,style=case.split('_');gender=0 if sex=='f' else 1
@@ -97,9 +97,19 @@ async def run(case):
             await call('apply_pose',armature='Review_rig',pose='relaxed')
             await call('set_lighting',preset='soft',subject=['Review_rig'])
             await call('render_style',style='anime')
-            front=await still('front',objects=['Review_rig'],view='front')
+            front=None if smile_only else await still('front',objects=['Review_rig'],view='front')
             shot=await call('camera_shot',subject=['ReviewBounds'],shot='medium_full',lens=85,angle=25,
                             start_frame=1,end_frame=180,avoid_occlusion=False,depth_of_field=False)
+            if smile_only:
+                assert case=='f_anime'
+                await call('set_expression',character='Review_rig',expression='smile',strength=1)
+                evidence=json.loads((OUT/(case+'.json')).read_text())
+                evidence['poses']['smile']=await still('smile',size=256,camera=shot['camera'])
+                evidence['smile_source_hash']=source_hash
+                (OUT/(case+'.json')).write_text(json.dumps(evidence,indent=2))
+                await call('save_project',path='round3_smile_'+case+'.blend')
+                print('POLISH SMILE OK',case,flush=True)
+                return
             portrait=await still('three_quarter',camera=shot['camera'])
             await call('save_project',path='polish_'+case+'.blend')
             evidence=dict(case=case,source_hash=source_hash,build=build,metrics=metrics,contract=contract,front=front,three_quarter=portrait,poses={})
@@ -221,6 +231,6 @@ def sheet():
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--case');parser.add_argument('--sheet',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--case');parser.add_argument('--sheet',action='store_true');parser.add_argument('--smile-only',action='store_true');args=parser.parse_args()
     if args.sheet:sheet()
-    else:asyncio.run(run(args.case))
+    else:asyncio.run(run(args.case,args.smile_only))

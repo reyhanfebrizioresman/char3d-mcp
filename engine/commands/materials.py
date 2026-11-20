@@ -692,13 +692,20 @@ def _fallback(original, enhanced):
     bsdf.inputs['Base Color'].default_value = tuple(flat)+(1.,) if flat is not None else original.diffuse_color
     bsdf.inputs['Roughness'].default_value = rough
     bsdf.inputs['Specular IOR Level'].default_value = .28 if role == 'skin' else .5
-    diffuse = enhanced.get('c3d_photo_base_image') or _image(original)
+    photo = enhanced.get('c3d_photo_base_image')
+    iris = enhanced.get('c3d_photo_iris_image')
+    diffuse = photo or iris or _image(original)
     if diffuse:
         node = _node(tree, 'ShaderNodeTexImage', 'export base texture')
         node.image = diffuse
+        if iris:
+            node.extension = 'EXTEND'
+            uv = _node(tree, 'ShaderNodeUVMap', 'export photo iris UV')
+            uv.uv_map = 'c3d_photo_iris'
+            tree.links.new(uv.outputs[0], node.inputs['Vector'])
         if flat is None:
             tree.links.new(node.outputs['Color'], bsdf.inputs['Base Color'])
-        if (role == 'skin' and flat is None) or enhanced.get('c3d_photo_tint'):
+        if (role == 'skin' and flat is None and not photo) or (enhanced.get('c3d_photo_tint') and not iris):
             # glTF recognizes this image * constant graph as baseColorFactor,
             # keeping the restrained reflectance correction without a bake.
             factor = _node(tree, 'ShaderNodeMix', 'export skin reflectance factor')
@@ -709,9 +716,8 @@ def _fallback(original, enhanced):
             factor.inputs[7].default_value = tuple(gain*t for t in tint)+(1.,)
             tree.links.new(node.outputs['Color'], factor.inputs[6])
             tree.links.new(factor.outputs[2], bsdf.inputs['Base Color'])
-        elif role=='skin' and flat is not None:
-            gain=profile.get('albedo_gain',1.)
-            bsdf.inputs['Base Color'].default_value=tuple(v*gain*t for v,t in zip(flat,profile.get('albedo_tint',(1,1,1))))+(1.,)
+        # Explicit photo pigment/texture replaces the scan. Its original
+        # scan-specific exposure correction must not be applied a second time.
         if role in ('hair', 'brows'):
             tree.links.new(node.outputs['Alpha'], bsdf.inputs['Alpha'])
     opacity = _image(original, 'opacity')

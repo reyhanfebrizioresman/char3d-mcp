@@ -24,8 +24,9 @@ def main():
     manifest = Path(__file__).with_name('toon_assets.tsv')
     with manifest.open() as stream:
         rows = [r for r in csv.DictReader(stream,delimiter='\t') if r['kind']==args.kind]
-    destination = (Path(os.environ.get('CHAR3D_FACE_MODEL_DIR',str(root/'output/models/face'))) if args.kind=='face'
+    destination = (Path(os.environ.get('CHAR3D_FACE_MODEL_DIR',str(Path.home()/'.local/share/char3d/face'))) if args.kind=='face'
                    else Path(os.environ.get('CHAR3D_VRM_DOWNLOAD_DIR',str(root/'output/installers'))))
+    destination=destination.expanduser()
     for row in rows:
         print(f"{row['file']} | version {row['version']} | {row['bytes']} bytes ({row['approximate_size']})")
         print(f"URL: {row['url']}\nLicence: {row['licence']}\nSHA-256: {row['sha256'] or 'UNRECORDED — owner must fill manifest'}")

@@ -163,6 +163,13 @@ actual shoulder/wrist anchors. One C1 height map spans torso, neck and head;
 the neck width blend excludes shoulders. Chibi uses 82% of the MPFB stature to
 shorten torso and limbs together while retaining 2.8 heads; other styles retain
 the source stature. Choose a proportionate low chair for its short lower legs.
+Stylized cheeks/forehead receive fixed rest smoothing on every target while
+preserving the eye/lip rims. A saved one-level render subdivision smooths the
+head; creased non-head edges retain the body surface. Viewport/export retain
+original HM08 topology with smooth normals, native weights and morphs. Native
+brow ribbons replace overlapping alpha cards. Teeth/tongue are fitted behind the
+lip plane; smile corner lift is stronger. With trousers, covered shoe uppers are
+removed consistently from every shoe shape key. Inspect other footwear/outfits.
 Hair uses packed binary cutout alpha,
 also portable to GLB, rather than stochastic intermediate strand opacity.
 `tests/toon_polish.py --case f_anime` (also f/m × all four styles) records actual
@@ -234,14 +241,17 @@ if removing the likeness. The original photo is never copied to another path.
 Install explicitly with `scripts/install_face_landmarks.sh`: OpenSeeFace
 `mnv3_detection_opt.onnx` (568,302 bytes) and `lm_model0_opt.onnx` (1,902,521 bytes),
 both BSD-2-Clause, pinned to commit `50c09741897010faad721a218b2bbe14ecad6251`.
-**The owner must fill the two SHA-256 cells in `scripts/toon_assets.tsv` before
-installation**; no weights were downloaded to determine them. `--dry-run` prints
-the plan without network/writes. Models default to `output/models/face`;
-`CHAR3D_FACE_MODEL_DIR` overrides it. `CHAR3D_FACE_PYTHON` overrides the host Python.
+The owner-verified SHA-256 values and byte sizes are recorded in
+`scripts/toon_assets.tsv`. `--dry-run` prints the plan without network/writes.
+Models default to `~/.local/share/char3d/face`; `CHAR3D_FACE_MODEL_DIR` overrides
+it. Workspace `models/face` is a fallback when the shared files are absent.
+`CHAR3D_FACE_PYTHON` overrides the host Python.
 Runtime missing-file errors give the installation hint and do not fetch models.
 
-Use a neutral, level, frontal photo with one well-lit unobscured face. The bounded
-weak-perspective fit reports projected pixel RMSE and modifier values. Unseen 3D
+Use a neutral, level, frontal photo with one well-lit unobscured face; slight yaw
+is supported. The bounded weak-perspective fit estimates yaw/pitch and reports
+projected pixel RMSE and modifier values. OpenSeeFace model0 uses 66 confidence
+planes and two 66-plane logit offset blocks on a 28×28 grid, decoded in numpy. Unseen 3D
 depth remains the MPFB prior; it is not a scan or an identity guarantee. Colour
 patch estimates can be biased by lighting, glasses, dark pupils or a background
 above the hairline. `strength=0` leaves appearance unchanged. For realistic
@@ -250,16 +260,50 @@ eyes and mouth interior from the model. For stylized characters it defaults off
 and transfers restrained shape traits plus skin/hair/eye pigment instead. Explicit
 `texture=True` enables projection on either style. Existing weights and facial
 animation deltas remain; inspect blinks/lips and refit hair after large transfers.
+Photo pigment and projected RGB bypass the original scan's exposure correction;
+they already include the photo's lighting. GLB preserves the projected skin atlas
+and recoloured iris with its explicit eye UVs. It cannot undo illumination baked
+into a photograph or infer hidden facial depth.
 Photo fitting keeps generated Rigify mechanisms at their original rest skeleton;
 large edits can need manual facial control/pivot adjustments. Morph articulation
 and re-fitted skin/contact landmark metadata are retained.
 Use original HM08 MPFB topology. Reapply after replacing/restoring materials.
 
+The result includes `traits` with provenance: geometry is fitted, pigment is
+estimated, and hair/glasses/beard catalog choices are provided or retained.
+These two ONNX models do not identify hairstyles, glasses or beards. Supply
+`traits={"hair":"bob01", "beard":null, "glasses":"catalog_name"}` to preserve
+those choices explicitly; supplied assets must already be installed. Optional
+`traits.colors_srgb` overrides skin/hair/iris pigment with finite sRGB triples.
+
+`result.look` is a versioned JSON recipe with phenotype, style, paired face
+modifier values, colours, catalog traits, fitting order and seed. Rebuild it with
+`create_realistic_human(name="Again", look=result["look"], style="anime")` or a
+script dict character `{"id":"Again", "look":recipe}`. Explicit style wins;
+wardrobe, location and rig remain caller choices. Photo textures are stored as
+hashed generated atlases under workspace `imports/face_looks/`; recipes refer to
+those workspace files rather than embedding or uploading photos. Keep those
+atlases when replaying textured looks in the same workspace. Numeric-only looks
+have no source-image dependency. `face=True` is required for recipe face fitting.
+
+`likeness_score`/`likeness` compare re-detected 66-point geometry from a neutral
+local rerender with the input landmarks, after similarity alignment and
+interocular normalization: `100*exp(-normalized_mean_error/0.20)`. This is a
+geometric review score, **not identity verification or a calibrated probability**.
+The result includes detection status/confidence, and returns null when the model
+cannot reliably re-detect the fitted face. The review restores scene visibility,
+cameras, pose, shape values and animation slots, and uses the existing render
+context to limit RAM. A high score does not identify an individual or establish
+that the single-view modifier values are unique or physically correct.
+
 Verify only on **9971**, workspace `$PWD/output`, one owned engine at a time:
 `tests/test_toon.py` prints `TOON UNIT OK`; `tests/e2e_smoke.py --toon-only`
 builds all styles, measures actual eyelid rims/mouth morphs, walks/seats/speaks,
 checks GLB morph/skin animation, descriptors and inspected Eevee stills.
-Optional model/add-on interfaces are mocked until the owner installs them.
+Offline deterministic tests still mock optional interfaces.
+`tests/toon_round3.py --face-case 0` (also 1/2) exercises the installed ONNX models
+on our own synthetic portraits; `--vrm` exports our original MPFB avatar through
+the installed add-on and imports both VRM 0.x and 1.0. No test downloads assets.
 
 ## Character materials
 

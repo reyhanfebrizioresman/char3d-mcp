@@ -95,6 +95,10 @@ def stylize(body, meshes, rig, style):
     else:
         skin = sampled_skin(body)
         fit_proportions(body,meshes,rig,style)
+    smooth_head(body)
+    lift_smile(body,meshes)
+    fit_mouth(body,meshes)
+    fit_ankles(body,meshes)
     blink_report = calibrate_blinks(body,meshes) if body.data.shape_keys else {}
     body['c3d_style'] = style
     if rig:
@@ -102,7 +106,9 @@ def stylize(body, meshes, rig, style):
     calibrate_bilabials(body)
     simplify_brows(body,meshes)
     ink_lids(body,meshes)
+    if style=='cartoon':skin=tuple(np.clip(np.asarray(skin)*[1.025,.99,.92],0,.9))
     material_report = toon_materials(body, meshes, skin=skin)
+    head_surface(body)
     bottom, top, chin, _ = anatomy(body, meshes)
     body['c3d_head_ratio'] = float((top-bottom)/(top-chin))
     return dict(style=style, head_ratio=body['c3d_head_ratio'], head_height_m=top-chin,
@@ -312,10 +318,13 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
             bsdf = mat.node_tree.nodes.get('Principled BSDF')
             color = tuple(skin) if role == 'skin' else tuple(hair) if role in ('hair','brows') else tuple(old.diffuse_color[:3])
             source = _image(old)
-            if role == 'clothes' and source:
+            if role == 'clothes' and old.get('c3d_toon_flat_color') is not None:
+                color=tuple(old['c3d_toon_flat_color'])
+            elif role == 'clothes' and source:
                 px = _pixels(source).reshape(-1,4)[::max(1,len(source.pixels)//(4*1024))]
                 color = srgb_to_linear(np.median(px[:, :3], axis=0)) if source.colorspace_settings.name=='sRGB' else tuple(np.median(px[:, :3],axis=0))
-            if obj.get('c3d_toon_lid_ink'):color=(.012,.009,.016)
+            if obj.get('c3d_toon_lid_ink') or obj.get('c3d_toon_brow_ink'):color=(.012,.009,.016)
+            mat['c3d_toon_flat_color']=[float(v) for v in color]
             mat.diffuse_color = (*color, 1)
             bsdf.inputs['Base Color'].default_value = (*color, 1)
             bsdf.inputs['Roughness'].default_value = .75
@@ -330,7 +339,7 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                     coords_node = mat.node_tree.nodes.new('ShaderNodeUVMap')
                     coords_node.uv_map = 'c3d_toon_iris'
                     mat.node_tree.links.new(coords_node.outputs[0],node.inputs['Vector'])
-            if role in ('hair','brows'):
+            if role in ('hair','brows','clothes'):
                 brow=obj.get('c3d_toon_brow_image')
                 part=obj.get('c3d_material_part',obj.name).lower()
                 if 'eyelash' in part and not obj.get('c3d_toon_lid_ink'):
@@ -339,6 +348,7 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                 else:
                     cached_cutout=old.get('c3d_toon_cutout')
                     opacity=brow or cached_cutout or _image(old,'opacity') or source
+                    if role=='clothes' and opacity and np.min(_pixels(opacity).reshape(-1,4)[:,3])>.99 and not _image(old,'opacity'):opacity=None
                     if opacity:
                         node=mat.node_tree.nodes.new('ShaderNodeTexImage');node.image=opacity
                         if brow:
@@ -403,10 +413,13 @@ def ink_lids(body, meshes):
     me.from_pydata((basis[sources]+offsets).tolist(),[],faces);me.update()
     ink=bpy.data.objects.new(body.name+'.lid_ink',me);bpy.context.collection.objects.link(ink)
     ink.parent=body.parent;ink.matrix_world=body.matrix_world.copy()
-    ink['c3d_toon_lid_ink']=True;ink['c3d_material_part']='eyelashes';ink['c3d_source']='mpfb'
+    ink['c3d_toon_sources']=json.dumps([[i] for i in sources]);ink['c3d_toon_offsets']=json.dumps(offsets.tolist())
+    ink['c3d_toon_lid_ink']=True;ink['c3d_material_part']='eyelashes';ink['c3d_source']='toon_helper'
     for key in keys:
         target=ink.shape_key_add(name=key.name,from_mix=False)
         target.data.foreach_set('co',(coords(key.data)[sources]+offsets).astype(np.float32).ravel())
+        target.slider_min=key.slider_min;target.slider_max=key.slider_max
+        target.value=key.value
     for group in body.vertex_groups:
         ink.vertex_groups.new(name=group.name)
     for v,source in enumerate(sources):
@@ -423,31 +436,58 @@ def ink_lids(body, meshes):
 
 
 def simplify_brows(body, meshes):
-    """Thin arched brows, with smooth original alpha instead of photographed hairs."""
-    _,top,chin,eyes=anatomy(body,meshes);h=top-chin
-    from .materials import _role
+    """One original skinned ribbon per brow, without overlapping alpha cards."""
     for obj in meshes:
-        if 'eyebrow' not in obj.get('c3d_material_part',obj.name).lower():continue
-        basis=coords(obj.data.shape_keys.key_blocks[0].data if obj.data.shape_keys else obj.data.vertices)
-        changed=[]
-        for data in ([obj.data.vertices]+[k.data for k in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else [obj.data.vertices]):
-            p=coords(data)
-            for sign in (-1,1):
-                selection=basis[:,0]*sign>0
-                center=np.mean(basis[selection],axis=0)
-                p[selection,2]=center[2]+(p[selection,2]-center[2])*.50
-            data.foreach_set('co',p.ravel())
-        uv=obj.data.uv_layers.get('c3d_toon_brow') or obj.data.uv_layers.new(name='c3d_toon_brow')
-        for sign in (-1,1):
-            selection=basis[:,0]*sign>0;lo=basis[selection].min(0);hi=basis[selection].max(0)
-            for loop in obj.data.loops:
-                pt=basis[loop.vertex_index]
-                if pt[0]*sign>0:uv.data[loop.index].uv=((pt[0]-lo[0])/(hi[0]-lo[0]),(pt[2]-lo[2])/max(1e-6,hi[2]-lo[2]))
-        y,x=np.mgrid[0:128,0:256];x=x/255;y=y/127
-        arc=.45+.20*np.sin(x*np.pi)
-        alpha=((abs(y-arc)<.14*np.sin(np.pi*x)**.35)&(x>.02)&(x<.98)).astype(np.float32)
-        rgba=np.ones((128,256,4),np.float32);rgba[:,:,:3]=(.035,.022,.018);rgba[:,:,3]=alpha
-        obj['c3d_toon_brow_image']=image('c3d_toon.simple_brow',rgba)
+        if 'eyebrow' in obj.get('c3d_material_part',obj.name).lower():
+            obj.hide_render=True;obj.hide_viewport=True
+    p=neutral_coords(body);_,top,chin,eyes=anatomy(body,meshes);h=top-chin
+    from ..toon import LID_PAIRS,lid_taper
+    from mathutils.bvhtree import BVHTree
+    body.data.calc_loop_triangles()
+    triangles=np.array([tuple(t.vertices) for t in body.data.loop_triangles if max(t.vertices)<13380])
+    tree=BVHTree.FromPolygons([Vector(v) for v in p],triangles.tolist(),all_triangles=True)
+    sources=[];weights=[];offsets=[];faces=[]
+    for side,pairs in LID_PAIRS.items():
+        lid=p[[i for i,j in pairs]];lo,hi=lid[:,0].min(),lid[:,0].max()
+        z=float(lid[:,2].max()+.065*h);start=len(sources)
+        for t in np.linspace(.08,.92,12):
+            x=lo+(hi-lo)*t;zz=z+.014*h*np.sin(np.pi*t)
+            hit,_normal,index,_distance=tree.ray_cast(Vector((x,-5,zz)),Vector((0,1,0)))
+            if hit is None:raise RuntimeError('Could not fit simple brow to the head surface')
+            ids=triangles[index];q=p[ids]
+            w=np.linalg.lstsq(np.vstack((q.T,np.ones(3))),np.r_[hit,1.],rcond=None)[0]
+            w=np.clip(w,0,1);w/=w.sum()
+            for edge in (-1,1):
+                sources.append(ids.tolist());weights.append(w.tolist())
+                offsets.append([0,-.003*h,edge*.002*h*float(lid_taper(t))])
+        for j in range(11):
+            k=start+2*j;faces.append((k,k+2,k+3,k+1))
+    sources=np.array(sources);weights=np.array(weights);offsets=np.array(offsets)
+    points=(p[sources]*weights[:,:,None]).sum(1)+offsets
+    me=bpy.data.meshes.new(body.name+'.simple_brows');me.from_pydata(points.tolist(),[],faces);me.update()
+    obj=bpy.data.objects.new(me.name,me);bpy.context.collection.objects.link(obj)
+    obj.parent=body.parent;obj.matrix_world=body.matrix_world.copy()
+    obj['c3d_source']='toon_helper';obj['c3d_material_part']='simple_brows';obj['c3d_toon_brow_ink']=True
+    obj['c3d_toon_sources']=json.dumps(sources.tolist());obj['c3d_toon_source_weights']=json.dumps(weights.tolist());obj['c3d_toon_offsets']=json.dumps(offsets.tolist())
+    if body.data.shape_keys:
+        for key in body.data.shape_keys.key_blocks:
+            target=obj.shape_key_add(name=key.name,from_mix=False)
+            values=(coords(key.data)[sources]*weights[:,:,None]).sum(1)+offsets
+            target.data.foreach_set('co',values.astype(np.float32).ravel())
+            target.slider_min=key.slider_min;target.slider_max=key.slider_max
+            target.value=key.value
+    for group in body.vertex_groups:obj.vertex_groups.new(name=group.name)
+    for vertex,(ids,w) in enumerate(zip(sources,weights)):
+        combined={}
+        for i,factor in zip(ids,w):
+            for group in body.data.vertices[int(i)].groups:combined[group.group]=combined.get(group.group,0)+group.weight*float(factor)
+        for group,weight in combined.items():
+            if weight>0:obj.vertex_groups[group].add([vertex],weight,'REPLACE')
+    rig=body.find_armature()
+    if rig:obj.modifiers.new('Native skin','ARMATURE').object=rig
+    mat=bpy.data.materials.new('c3d_toon.simple_brow');mat.diffuse_color=(.025,.018,.012,1);mat.use_nodes=True
+    mat.node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value=mat.diffuse_color
+    obj.data.materials.append(mat);meshes.append(obj)
 
 
 LIP_PAIRS=((520,540),(521,538),(7267,7282))
@@ -518,3 +558,170 @@ def calibrate_bilabials(body):
     gate[pairs[:,0]]=1;gate[pairs[:,1]]=0
     target[:,2]+=kernel(basis) @ coef*gate
     keys['p_b_m_21'].data.foreach_set('co',target.ravel())
+
+
+def smooth_head(body):
+    """Fixed linear rest smoothing on cheeks/forehead, preserving all lid/lip rims."""
+    from ..toon import smooth,LID_PAIRS
+    p=neutral_coords(body);_,top,chin,_=anatomy(body,[]);h=top-chin
+    edges=np.array([tuple(e.vertices) for e in body.data.edges],int)
+    edges=edges[(edges<13380).all(1)]
+    a,b=np.r_[edges[:,0],edges[:,1]],np.r_[edges[:,1],edges[:,0]]
+    weight=smooth((p[:,2]-chin)/(.1*h))*(1-smooth((p[:,2]-top+.05*h)/(.05*h)))
+    weight[13380:]=0
+    protect={i for pairs in LID_PAIRS.values() for pair in pairs for i in pair}
+    protect.update(i for pair in LIP_PAIRS for i in pair)
+    # Preserve the aperture and its two-ring neighbourhood, avoiding any blink gap.
+    for _ in range(2):
+        previous=set(protect)
+        protect.update(int(j) for i,j in zip(a,b) if i in previous)
+    weight[list(protect)]=0
+    degree=np.bincount(a,minlength=len(p));valid=degree>0
+    for data in [body.data.vertices]+([k.data for k in body.data.shape_keys.key_blocks] if body.data.shape_keys else []):
+        q=coords(data)
+        for _ in range(4):
+            sums=np.zeros_like(q);np.add.at(sums,a,q[b]);mean=sums/np.maximum(degree[:,None],1)
+            q+=(mean-q)*weight[:,None]*valid[:,None]*.34
+        data.foreach_set('co',q.astype(np.float32).ravel())
+    for face in body.data.polygons:face.use_smooth=True
+    body.data.update()
+
+
+def head_surface(body):
+    """Render subdivision, with creased body edges retaining the non-head surface.
+
+    Viewport level zero retains HM08 index correspondence, native morph export,
+    weights and photo fitting. Saved renders use one Catmull-Clark level.
+    """
+    p=neutral_coords(body);_,top,chin,_=anatomy(body,[]);h=top-chin
+    from ..toon import smooth
+    crease=body.data.attributes.get('crease_edge') or body.data.attributes.new('crease_edge','FLOAT','EDGE')
+    values=[]
+    from ..toon import LID_PAIRS
+    rims={i for pairs in LID_PAIRS.values() for pair in pairs for i in pair}
+    for edge in body.data.edges:
+        i,j=edge.vertices
+        value=1-float(smooth((min(p[i,2],p[j,2])-chin+.12*h)/(.18*h)))
+        if i>=13380 or j>=13380 or i in rims or j in rims:value=1.
+        values.append(value)
+    crease.data.foreach_set('value',np.asarray(values,np.float32))
+    mod=body.modifiers.get('__c3d_toon_head_surface') or body.modifiers.new('__c3d_toon_head_surface','SUBSURF')
+    mod.levels=0;mod.render_levels=1;mod.subdivision_type='CATMULL_CLARK'
+    body['c3d_toon_surface']='render subdivision 1; creased non-head; portable base uses smooth normals/rest smoothing'
+
+
+def fit_mouth(body,meshes):
+    """Keep teeth/tongue behind the lip plane and below the nose for all morphs."""
+    from .materials import _role
+    p=neutral_coords(body);upper,lower=p[520],p[540];center=(upper+lower)*.5
+    _,top,chin,_=anatomy(body,meshes);h=top-chin
+    mouth_parts=[o for o in meshes if _role(o,body)=='mouth']
+    body_keys=body.data.shape_keys.key_blocks if body.data.shape_keys else {}
+    for obj in mouth_parts:
+        matrix=body.matrix_world.inverted()@obj.matrix_world;m=np.array(matrix);inv=np.array(matrix.inverted())
+        base=coords(obj.data.vertices)@m[:3,:3].T+m[:3,3]
+        mid=(base.min(0)+base.max(0))*.5
+        # The broad original dentition needs a smaller vertical envelope too.
+        blocks=[(obj.data.vertices,None)]+([(k.data,k.name) for k in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else [])
+        for data,name in blocks:
+            q=coords(data)@m[:3,:3].T+m[:3,3]
+            face=coords(body_keys[name].data) if name is not None and name in body_keys else p
+            lips=np.array(LIP_PAIRS)
+            low=float(face[lips[:,1],2].min());high=float(face[lips[:,0],2].max())
+            target_center=(low+high)*.5
+            half=max(.004*h,abs(high-low)*.42)
+            q[:,0]*=.78
+            q[:,0]*=min(1.,.07*h/max(.0001,float(np.max(abs(q[:,0])))))
+            q[:,2]=np.clip(target_center+(q[:,2]-mid[2])*.48,target_center-half,target_center+half)
+            lip_plane=float(face[lips.ravel(),1].max())
+            # The stock dental proxies are ~8 cm deep: merely recessing their
+            # fronts leaves their backs outside a flattened toon jaw, visible
+            # below the chin during a nod. Keep the whole volume behind the lips.
+            q[:,1]=np.clip(q[:,1]+.025*h,lip_plane+.025*h,lip_plane+.065*h)
+            data.foreach_set('co',((q@inv[:3,:3].T+inv[:3,3]).astype(np.float32)).ravel())
+
+
+def lift_smile(body,meshes):
+    from .materials import _role
+    from ..toon import smooth
+    p=neutral_coords(body);_,top,chin,_=anatomy(body,meshes);h=top-chin
+    mouth_z=float((p[520,2]+p[540,2])*.5)
+    mouth_y=float((p[520,1]+p[540,1])*.5)
+    for obj in meshes:
+        if not obj.data.shape_keys or _role(obj,body)=='mouth':continue
+        matrix=np.array(body.matrix_world.inverted()@obj.matrix_world)
+        keys=obj.data.shape_keys.key_blocks
+        for name in ('mouthSmileLeft','mouthSmileRight'):
+            if name not in keys:continue
+            key=keys[name];base=coords(key.relative_key.data);delta=coords(key.data)-base
+            points=base@matrix[:3,:3].T+matrix[:3,3]
+            mouth=np.exp(-.5*(points[:,0]/(.15*h))**4-.5*((points[:,2]-mouth_z)/(.07*h))**2)
+            mouth*=1-smooth((points[:,1]-mouth_y-.03*h)/(.20*h))
+            authored=np.linalg.norm(delta,axis=1)*mouth
+            mean_x=float(np.dot(points[:,0],authored)/max(1e-12,authored.sum()))
+            sign=np.sign(mean_x) if abs(mean_x)>.003*h else (1 if name.endswith('Left') else -1)
+            corners=smooth(abs(points[:,0])/(.06*h))*smooth(sign*points[:,0]/(.02*h))
+            # Keep the centre steady: native centre lift can cancel the corner
+            # rise on a small mouth. The bounded, smooth curve stays on the face.
+            delta[:,2]=delta[:,2]*(1-mouth)+.05*h*corners*mouth
+            delta[:,0]*=1+.35*corners*mouth
+            delta[:,2]=np.clip(delta[:,2],-.055*h,.055*h)
+            key.data.foreach_set('co',(base+delta).ravel())
+
+
+def fit_ankles(body,meshes):
+    """Tuck stock shoe uppers under worn trousers; sole/contact stays unchanged."""
+    from .materials import _role
+    if not any('pants' in o.name.lower() or 'casualsuit' in o.name.lower() for o in meshes):return
+    for obj in meshes:
+        if not any(n in obj.name.lower() for n in ('shoes','boots')):continue
+        base=coords(obj.data.vertices)
+        centers={sign:np.median(base[base[:,0]*sign>0],axis=0) for sign in (-1,1)}
+        from ..toon import smooth
+        gate=smooth((base[:,2]-base[:,2].min()-.045)/.055)
+        for data in [obj.data.vertices]+([k.data for k in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else []):
+            p=coords(data)
+            for sign in (-1,1):
+                select=base[:,0]*sign>0;center=centers[sign]
+                p[select,:2]=center[:2]+(p[select,:2]-center[:2])*(1-.38*gate[select,None])
+            data.foreach_set('co',p.ravel())
+        # Shoe tops are covered by the trousers but can leak through authored
+        # torn-denim openings. Delete those hidden uppers in Blender edit mode,
+        # which remaps every native shape key and skin group consistently.
+        threshold=float(base[:,2].min()+np.ptp(base[:,2])*.40)
+        active=bpy.context.view_layer.objects.active
+        selected=list(bpy.context.selected_objects)
+        try:
+            for item in selected:item.select_set(False)
+            obj.select_set(True);bpy.context.view_layer.objects.active=obj
+            obj.active_shape_key_index=0
+            bpy.ops.object.mode_set(mode='EDIT')
+            import bmesh
+            bm=bmesh.from_edit_mesh(obj.data)
+            for vertex in bm.verts:vertex.select=vertex.co.z>threshold
+            bmesh.update_edit_mesh(obj.data)
+            bpy.ops.mesh.delete(type='VERT')
+        finally:
+            if obj.mode!='OBJECT':bpy.ops.object.mode_set(mode='OBJECT')
+            obj.select_set(False)
+            for item in selected:item.select_set(True)
+            bpy.context.view_layer.objects.active=active
+
+
+def sync_ink(body,meshes):
+    """Update native helper targets after a photo/rest fit; retain animation curves."""
+    for obj in meshes:
+        if not obj.get('c3d_toon_sources'):continue
+        sources=np.array(json.loads(obj['c3d_toon_sources']),int)
+        weights=np.array(json.loads(obj.get('c3d_toon_source_weights','[]')))
+        if not weights.size:weights=np.ones(sources.shape)
+        offsets=np.array(json.loads(obj['c3d_toon_offsets']))
+        keys=body.data.shape_keys.key_blocks
+        for data,source in [(obj.data.vertices,keys[0].data)]+[(k.data,keys[k.name].data) for k in obj.data.shape_keys.key_blocks if k.name in keys]:
+            values=(coords(source)[sources]*weights[:,:,None]).sum(1)+offsets
+            data.foreach_set('co',values.astype(np.float32).ravel())
+        for key in obj.data.shape_keys.key_blocks:
+            if key.name in keys:
+                source=keys[key.name]
+                key.slider_min=source.slider_min;key.slider_max=source.slider_max
+                key.value=source.value

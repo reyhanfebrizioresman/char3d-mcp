@@ -2,9 +2,10 @@
 
 No OpenCV, Pillow, torch, camera, tracker or network. RGB is decoded by Blender.
 Tensor layout follows OpenSeeFace's BSD-2 licensed model interface:
-https://github.com/emilianavt/OpenSeeFace/blob/master/tracker.py
+https://github.com/emilianavt/OpenSeeFace/blob/50c09741897010faad721a218b2bbe14ecad6251/tracker.py
 """
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -13,7 +14,40 @@ import numpy as np
 INSTALL = ('Face landmark models are missing. Run scripts/install_face_landmarks.sh '
            'after recording approved SHA-256/byte sizes in scripts/toon_assets.tsv. '
            'Expected mnv3_detection_opt.onnx and lm_model0_opt.onnx in '
-           'CHAR3D_FACE_MODEL_DIR or output/models/face. No runtime downloads.')
+           '~/.local/share/char3d/face (CHAR3D_FACE_MODEL_DIR override, workspace models/face fallback). No runtime downloads.')
+
+
+MODEL_NAMES=('mnv3_detection_opt.onnx','lm_model0_opt.onnx')
+
+def model_directory(workspace=None):
+    override=os.environ.get('CHAR3D_FACE_MODEL_DIR')
+    if override:return Path(override).expanduser()
+    shared=Path.home()/'.local/share/char3d/face'
+    if all((shared/name).is_file() for name in MODEL_NAMES):return shared
+    fallback=Path(workspace)/'models/face' if workspace is not None else None
+    if fallback and all((fallback/name).is_file() for name in MODEL_NAMES):return fallback
+    return shared
+
+
+def decode_heatmaps(values,box):
+    """OpenSeeFace model0: confidence, row offset, column offset (66 each).
+
+    Pinned tracker.py::landmarks uses logit(offset)/16, a 27-cell grid and
+    223/224 crop scaling. Return conventional image (x,y), not upstream (y,x).
+    """
+    values=np.asarray(values)
+    if values.shape==(1,198,28,28):values=values[0]
+    if values.shape!=(198,28,28) or not np.isfinite(values).all():
+        raise RuntimeError('Unexpected OpenSeeFace landmark tensor; expected 198x28x28 finite values')
+    planes=values.reshape(3,66,784)
+    index=planes[0].argmax(1);ids=np.arange(66)
+    confidence=planes[0,ids,index]
+    offsets=np.clip(planes[1:,ids,index],1e-7,1-1e-7)
+    offsets=np.log(offsets/(1-offsets))/16
+    yx=np.stack((index//28,index%28))/27+offsets
+    x0,y0,x1,y1=box
+    points=np.c_[x0+(x1-x0)*223/224*yx[1],y0+(y1-y0)*223/224*yx[0]]
+    return points,confidence
 
 
 def model_files(directory):
@@ -66,27 +100,16 @@ def detect(rgb, directory, session_factory=None):
     x1,y1 = np.minimum([w,h],np.ceil(box[2:])).astype(int)
     if x1-x0<32 or y1-y0<32:
         raise ValueError('Face is too small; use a clearer frontal photo')
-    values = landmarker.run(None,{landmarker.get_inputs()[0].name:tensor(rgb[y0:y1,x0:x1])})[0][0]
-    if values.shape != (198,28,28):
-        raise RuntimeError('Unexpected OpenSeeFace landmark tensor; expected 198x28x28')
-    heat = values[:66].reshape(66,-1)
-    index = heat.argmax(axis=1)
-    rows = np.arange(66)
-    confidence = heat[rows,index]
-    offsets = [values[k:k+66].reshape(66,-1)[rows,index] for k in (66,132)]
-    offsets = [np.log(np.clip(o,1e-7,1-1e-7)/(1-np.clip(o,1e-7,1-1e-7)))/16 for o in offsets]
-    # Model offset planes are row then column (upstream's x/y are image y/x).
-    y = y0+(y1-y0)*(223/224)*(np.floor(index/28)/27+offsets[0])
-    x = x0+(x1-x0)*(223/224)*(index%28/27+offsets[1])
-    if not np.isfinite([x,y]).all() or np.mean(confidence)<.6:
+    values = landmarker.run(None,{landmarker.get_inputs()[0].name:tensor(rgb[y0:y1,x0:x1])})[0]
+    points,confidence=decode_heatmaps(values,(x0,y0,x1,y1))
+    if np.mean(confidence)<.6:
         raise ValueError('Face landmarks are uncertain; use an unoccluded, well-lit frontal photo')
-    points = np.c_[x,y]
     eye1,eye2 = points[36:42].mean(axis=0),points[42:48].mean(axis=0)
     eye_span = max(1,np.linalg.norm(eye2-eye1))
     nose = points[30]
     if abs(nose[0]-(eye1[0]+eye2[0])/2) > eye_span*.3 or abs(eye2[1]-eye1[1])>eye_span*.25:
         raise ValueError('Photo must be frontal, level and unoccluded; turn toward the camera')
-    return dict(landmarks=points.tolist(),confidence=confidence.tolist(),box=[int(x0), int(y0), int(x1), int(y1)],
+    return dict(landmarks=points.tolist(),confidence=confidence.tolist(),box=[int(v) for v in (x0,y0,x1,y1)],
                 dimensions=[w,h],depth='2D landmarks; MPFB prior supplies unseen 3D depth')
 
 

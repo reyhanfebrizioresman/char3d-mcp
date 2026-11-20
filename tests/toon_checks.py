@@ -21,6 +21,8 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 root,body,meshes=_family(CHARACTER)
 keys=body.data.shape_keys.key_blocks
+helper_state_error=max((abs(k.value-keys[k.name].value) for o in meshes if o.get('c3d_toon_sources') and o.data.shape_keys for k in o.data.shape_keys.key_blocks if k.name in keys),default=0.)
+assert helper_state_error<.00001,helper_state_error
 for obj in meshes:
  data=[obj.data.vertices]+([key.data for key in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else [])
  assert all(np.isfinite(coords(points)).all() for points in data),obj.name
@@ -71,7 +73,7 @@ try:
   visibility[state]=visible
 finally:
  _set(_face_meshes(body),dict(eyeBlinkLeft=0.,eyeBlinkRight=0.))
-result=dict(lids=report,visible_eye_samples=visibility,rest_face_error_m=rest_error,mouth_open_m=float(np.max(np.linalg.norm(jaw,axis=1))),height_m=float(top-min(p[:13380,2])),head_ratio=float((top-min(p[:13380,2]))/(top-chin)))
+result=dict(lids=report,helper_state_error=helper_state_error,visible_eye_samples=visibility,rest_face_error_m=rest_error,mouth_open_m=float(np.max(np.linalg.norm(jaw,axis=1))),height_m=float(top-min(p[:13380,2])),head_ratio=float((top-min(p[:13380,2]))/(top-chin)))
 '''
 
 PHOTO_MOCK = '''
@@ -122,7 +124,7 @@ with patch.object(photo.subprocess,'run',return_value=SimpleNamespace(returncode
  try:photo.infer(photo.decode(filename),'mocked models')
  except RuntimeError:pass
  else:raise AssertionError('inference failure missing')
-with patch.object(photo,'model_files',return_value=[]),patch.object(photo,'infer',return_value=inference):
+with patch.object(photo,'model_files',return_value=[]),patch.object(photo,'infer',return_value=inference),patch('engine.commands.photo_review.likeness_check',return_value=dict(score=None,redetected=False,reason='Mocked ONNX unit fixture')):
  report=photo.face_from_photo(root.name,'toon_synthetic_photo.png',consent=True)
  assert report['local_only'] and not report['texture'] and report['fit_error_px']<10,report
  report_texture=photo.face_from_photo(root.name,'toon_synthetic_photo.png',strength=.3,texture=True,consent=True)
@@ -160,7 +162,13 @@ async def real_photo_checks(call,text_of,rig='game_engine'):
     asset=await data('export_asset',path='toon_photo_real_'+rig+'.glb',objects=['PhotoReal_rig'],max_influences=4)
     raw=Path(asset['path']).read_bytes();length=struct.unpack_from('<I',raw,12)[0]
     gltf=json.loads(raw[20:20+length])
-    assert any(im.get('name','').startswith('c3d_local_photo_projection') for im in gltf.get('images',[])),gltf.get('images')
+    cached=Path(report['texture']['look']['texture']['path']).stem
+    photo_images={i for i,im in enumerate(gltf.get('images',[])) if im.get('name','').startswith('c3d_local_photo_projection') or im.get('name')==cached}
+    assert photo_images,gltf.get('images')
+    assert any(gltf['textures'][m['pbrMetallicRoughness']['baseColorTexture']['index']]['source'] in photo_images for m in gltf['materials'] if m.get('pbrMetallicRoughness',{}).get('baseColorTexture'))
+    iris_images={i for i,im in enumerate(gltf.get('images',[])) if im.get('name','').startswith('c3d_photo.iris.')}
+    assert iris_images,gltf.get('images')
+    assert any(gltf['textures'][m.get('pbrMetallicRoughness',{}).get('baseColorTexture',{}).get('index',0)]['source'] in iris_images for m in gltf['materials'] if m.get('pbrMetallicRoughness',{}).get('baseColorTexture'))
     assert any('jawOpen' in m.get('extras',{}).get('targetNames',[]) for m in gltf['meshes'])
     await call('render_preview',objects=['PhotoReal_rig'],engine_name='workbench',width=320,height=320)
     output=Path(__file__).resolve().parents[1]/'output'

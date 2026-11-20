@@ -8,11 +8,11 @@ import numpy as np
 PRESETS = {
     'realistic': dict(heads=7.5, eye_width=1., eye_height=1., chin=1., cheek=1., cranium=1.,
                       nose=1., mouth=1., stature=1., body_width=1., depth=1., arm=1., hand=1., foot=1., leg=.60),
-    'anime': dict(heads=6.75, eye_width=1.55, eye_height=2.25, chin=.62, cheek=.94, cranium=1.10,
+    'anime': dict(heads=6.75, eye_width=1.65, eye_height=2.65, chin=.62, cheek=.94, cranium=1.10,
                   nose=.22, mouth=.68, stature=1., body_width=.94, depth=.92, arm=.98, hand=.90, foot=.90, leg=.63),
-    'cartoon': dict(heads=4.75, eye_width=1.52, eye_height=2.65, chin=1.05, cheek=1.10, cranium=1.12,
-                    nose=.28, mouth=.66, stature=1., body_width=.91, depth=1.05, arm=.78, hand=.80, foot=.78, leg=.52),
-    'chibi': dict(heads=2.8, eye_width=1.58, eye_height=2.9, chin=1.15, cheek=1.12, cranium=1.16,
+    'cartoon': dict(heads=4.75, eye_width=1.43, eye_height=3.05, chin=1.18, cheek=1.15, cranium=1.08,
+                    nose=.12, mouth=.75, stature=1., body_width=.91, depth=1.05, arm=.78, hand=.80, foot=.78, leg=.52),
+    'chibi': dict(heads=2.8, eye_width=1.60, eye_height=3.25, chin=1.15, cheek=1.12, cranium=1.16,
                   nose=.14, mouth=.55, stature=.82, body_width=.83, depth=1.18, arm=.90, hand=.68, foot=.65, leg=.52),
 }
 ALIASES = {'kartun': 'cartoon', 'realistis': 'realistic'}
@@ -44,15 +44,21 @@ def lid_taper(t):
     return np.maximum(0.,np.sin(np.pi*np.clip(t,0.,1.)))**.4
 
 
-def monotone(value, xs, ys):
+def monotone(value, xs, ys, endpoint_slopes=None):
     """C1 monotone cubic interpolation, with linear end extrapolation (no scipy)."""
     x,y=np.asarray(xs,float),np.asarray(ys,float)
     h=np.diff(x);d=np.diff(y)/h
     m=np.r_[d[0],(d[:-1]+d[1:])*.5,d[-1]]
+    if endpoint_slopes is not None:m[0],m[-1]=endpoint_slopes
     for i,slope in enumerate(d):
         if abs(slope)<1e-12:m[i:i+2]=0;continue
         norm=np.hypot(m[i]/slope,m[i+1]/slope)
-        if norm>3:m[i:i+2]*=3/norm
+        if norm>3:
+            if endpoint_slopes is not None and i==0:
+                m[1]=slope*np.sqrt(max(0.,9-(m[0]/slope)**2))
+            elif endpoint_slopes is not None and i==len(d)-1:
+                m[-2]=slope*np.sqrt(max(0.,9-(m[-1]/slope)**2))
+            else:m[i:i+2]*=3/norm
     v=np.asarray(value,float);i=np.clip(np.searchsorted(x,v)-1,0,len(h)-1)
     t=np.clip((v-x[i])/h[i],0,1)
     out=((2*t**3-3*t**2+1)*y[i]+(t**3-2*t**2+t)*h[i]*m[i]
@@ -122,12 +128,11 @@ class RestMap:
             near=smooth((u-.24)/.16)*(1-smooth((u-.56)/.12))*front
             headxy[:,0]+=(np.sign(original[:,0])*xmap-original[:,0])*near
             dz=(original[:,2]-ez)/h
-            zmap=monotone(dz,[-.30,-.035,0,.035,.30],[-.30,-.035*cfg['eye_height'],0,.035*cfg['eye_height'],.30])
+            zmap=monotone(dz,[-.30,-.035,0,.035,.30],[-.30,-.035*cfg['eye_height'],0,.035*cfg['eye_height'],.30],endpoint_slopes=(1.,1.))
             left=np.exp(-((original[:,0]+cx)/(.125*h))**4)
             right=np.exp(-((original[:,0]-cx)/(.125*h))**4)
             local=(1-(1-left)*(1-right))*front
-            compact=1-smooth((np.abs(dz)-.18)/.12)
-            moved_z=original[:,2]+(zmap-dz)*compact*h*local
+            moved_z=original[:,2]+(zmap-dz)*h*local
             p[:,2]=np.where(u>=0,monotone(moved_z,zx,zy),p[:,2])
             # Small smooth lower face, larger cranium. Narrow anime chin vs round
             # cartoon cheeks remain distinct at thumbnail size.
@@ -141,6 +146,8 @@ class RestMap:
             mouth=np.exp(-.5*(original[:,0]/(.13*h))**4-.5*((u-.245)/.065)**4)*front
             headxy[:,0]*=1+(cfg['mouth']-1)*mouth
             headxy[:,1]+=(plane-original[:,1])*.40*mouth
+            cheek=np.exp(-.5*((np.abs(original[:,0])-.22*h)/(.12*h))**2-.5*((u-.32)/.15)**2)*front
+            headxy[:,1]+=(ey+.015*h-original[:,1])*cheek*(.32 if self.style=='anime' else .46)
         pivot=ey+.32*h
         headxy[:,0]*=self.scale
         headxy[:,1]=pivot+(headxy[:,1]-pivot)*self.scale

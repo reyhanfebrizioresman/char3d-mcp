@@ -1155,7 +1155,8 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
                                  face: bool = True, beard: str | None = None,
                                  outfit: Outfit | None = None, seed: int = 0,
                                  materials: Literal["enhanced", "mpfb"] = "enhanced",
-                                 style: Literal["realistic", "anime", "cartoon", "chibi"] = "realistic") -> dict:
+                                 style: Literal["realistic", "anime", "cartoon", "chibi"] | None = None,
+                                 look: dict | None = None) -> dict:
     """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
     eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
     gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
@@ -1175,12 +1176,14 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
     "mpfb" keeps original shaders. upgrade_materials can switch existing characters.
     style chooses MPFB body proportions: realistic (unchanged default), anime (6.75
     heads), cartoon (4.75), chibi (2.8, 82% stature). Stylized bodies retain rig/morphs
-    and use original flat toon materials. Result suggests render_style('anime'); no global change."""
+    and use original flat toon materials. look replays a face_from_photo recipe; explicit
+    style overrides the recipe. The recipe pins phenotype, face modifiers and pigment.
+    Result suggests render_style('anime'); no global change."""
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
                      clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face,
-                     beard=beard, outfit=outfit, seed=seed, materials=materials, style=style)
+                     beard=beard, outfit=outfit, seed=seed, materials=materials, style=style, look=look)
 
 
 @mcp.tool()
@@ -1204,16 +1207,20 @@ Expression = Literal["neutral", "smile", "big_smile", "laugh", "sad", "angry", "
 
 @mcp.tool()
 async def face_from_photo(character: str, image: str, strength: float = 1.0,
-                          texture: bool | None = None, consent: bool = False) -> dict:
+                          texture: bool | None = None, consent: bool = False,
+                          traits: dict | None = None, seed: int | None = None) -> dict:
     """Fit MPFB face traits from one frontal JPEG/PNG under workspace imports/.
     Requires consent=True: only your own face or a person who gave permission.
     Runs locally with installed OpenSeeFace ONNX CPU models, never uploads/downloads.
     texture=None defaults on for realistic, off for stylized characters. Generated
     UV texture/traits persist in saved .blend/exports; source photo is not copied.
-    Returns projected fit error, modifier values, estimated skin/eye/hair colours.
+    Returns projected fit error, modifier values, estimated skin/eye/hair colours,
+    trait provenance, a reusable JSON look recipe and a local landmark likeness
+    score (not identity verification; null if re-detection fails). traits can
+    provide installed hair/beard/glasses names and colors_srgb pigment overrides.
     Install missing models with scripts/install_face_landmarks.sh; no OpenCV/torch."""
     return await run('face_from_photo', character=character, image=image,
-                     strength=strength, texture=texture, consent=consent)
+                     strength=strength, texture=texture, consent=consent, traits=traits, seed=seed)
 
 
 @mcp.tool()

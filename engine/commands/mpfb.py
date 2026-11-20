@@ -312,12 +312,34 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
                            hair=None, eyebrows="eyebrow001", eyelashes="eyelashes01",
                            eyes="high-poly", clothes=None, rig="game_engine",
                            subdiv=0, location=(0, 0, 0), face=True, beard=None,
-                           outfit=None, seed=0, materials="enhanced", style="realistic"):
+                           outfit=None, seed=0, materials="enhanced", style=None, look=None):
     """Build a realistic human with MPFB. gender 0=female..1=male; age in years;
     muscle/weight/height/proportions 0..1 (0.5 = average); race weights dict."""
     from ..materials import options
     from ..toon import style_name
-    style = style_name(style)
+    deferred_traits={}
+    if look is not None:
+        if not face:
+            raise ValueError('look recipes require face=True for the native MPFB facial targets')
+        from ..looks import validate_look
+        look=validate_look(look)
+        phenotype=look.get('phenotype',{})
+        gender=phenotype.get('gender',gender);age=phenotype.get('age',age)
+        muscle=phenotype.get('muscle',muscle);weight=phenotype.get('weight',weight)
+        height=phenotype.get('height',height);proportions=phenotype.get('proportions',proportions)
+        race=phenotype.get('race',race);seed=look.get('seed',seed)
+        assets=look.get('assets',{})
+        hair=hair if hair is not None else assets.get('hair')
+        beard=beard if beard is not None else assets.get('beard')
+        skin=assets.get('skin') or skin;eyes=assets.get('eyes') or eyes
+        eyebrows=assets.get('eyebrows') or eyebrows;eyelashes=assets.get('eyelashes') or eyelashes
+        for kind in ('hair','beard','glasses'):
+            if look.get('asset_fit',{}).get(kind)=='surface':
+                deferred_traits[kind]=hair if kind=='hair' else beard if kind=='beard' else assets.get(kind)
+        if 'hair' in deferred_traits:hair=None
+        if 'beard' in deferred_traits:beard=None
+        if assets.get('glasses') and 'glasses' not in deferred_traits:clothes=list(dict.fromkeys([*(clothes or []),assets['glasses']]))
+    style = style_name(style or (look.get('style') if look else 'realistic'))
     options(materials)
     AssetService, HumanService, _loc = _services()
     if rig == "rigify":
@@ -396,6 +418,10 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     basemesh["c3d_kind"] = "humanoid"
     basemesh["c3d_source"] = "mpfb"
     basemesh["c3d_age"] = float(age)
+    basemesh['c3d_build_look']=json.dumps(dict(version=1,style=style,seed=seed,
+        phenotype=dict(gender=gender,age=age,muscle=muscle,weight=weight,height=height,proportions=proportions,race=race),
+        assets=dict(hair=hair,beard=beard,skin=skin_name,eyes=eyes,eyebrows=eyebrows,eyelashes=eyelashes,
+                    glasses=next((n for n in chosen if metadata.get(n,{}).get('category')=='glasses'),None))))
     basemesh["c3d_skin"] = skin_name or ""
     basemesh['c3d_asset_provenance'] = json.dumps(dict(assets=list(filter(None,
         [skin_name, hair, beard, eyes, eyebrows, eyelashes, 'teeth_base' if face else None,
@@ -473,6 +499,16 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         result["materials"] = upgrade_materials(root.name)
     else:
         result["materials"] = {"quality": "mpfb", "materials_cost_factor": 1.}
+    if look is not None:
+        from .looks import apply_look,asset_traits
+        from .materials import _family
+        # Stylization creates native brow/lash meshes after the original MPFB
+        # object snapshot. Include them in the same fit/replay as the face.
+        _,_,meshes=_family(root.name)
+        if deferred_traits:asset_traits(basemesh,meshes,deferred_traits)
+        result['look']=apply_look(root,basemesh,meshes,look)
+        result.update(hair=deferred_traits.get('hair',hair),beard=deferred_traits.get('beard',beard),
+                      parts=sorted(o.name for o in meshes if o is not basemesh))
     result["mesh"]["materials"] = [slot.material.name for slot in basemesh.material_slots if slot.material]
     return result
 

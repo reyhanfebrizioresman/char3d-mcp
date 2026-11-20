@@ -253,6 +253,13 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
             raise ValueError(f"duplicate character id: {ident}")
         ids[ident.casefold()] = ident
         char["id"] = ident
+        if 'look' in char:
+            from .looks import validate_look
+            char['look']=validate_look(char['look'])
+            for k,v in char['look'].get('phenotype',{}).items():char.setdefault(k,v)
+            for k in ('hair','beard'):
+                if k in char['look'].get('assets',{}):char.setdefault(k,char['look']['assets'][k])
+            char.setdefault('style',char['look']['style'])
         char["gender"] = _number(char.get("gender", 0.5), "gender", 0, 1)
         char["age"] = _number(char.get("age", 28), "age", 1, 90)
         if 'style' in char or default_body != 'realistic':
@@ -288,7 +295,7 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
                 char[key] = _number(char.get(key, default), key, low, high)
         if "materials" in char and char["materials"] not in ("enhanced", "mpfb"):
             raise ValueError("materials must be enhanced or mpfb")
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style"}:
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style", "look"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):

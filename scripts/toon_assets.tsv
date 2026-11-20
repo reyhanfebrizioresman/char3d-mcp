@@ -1,4 +1,4 @@
 kind	file	version	bytes	sha256	url	licence	approximate_size
 vrm	VRM_Addon_for_Blender-Extension-4_10_5.zip	4.10.5	1649936	5f0dd6a277f33961cc453ca401d36ae99272f6bcd06994e8c375d2b922b44bf1	https://github.com/saturday06/VRM-Addon-for-Blender/releases/download/v4.10.5/VRM_Addon_for_Blender-Extension-4_10_5.zip	MIT OR GPL-3.0-or-later	1.6 MB
-face	mnv3_detection_opt.onnx	50c09741897010faad721a218b2bbe14ecad6251	568302		https://raw.githubusercontent.com/emilianavt/OpenSeeFace/50c09741897010faad721a218b2bbe14ecad6251/models/mnv3_detection_opt.onnx	BSD-2-Clause	555 KiB
-face	lm_model0_opt.onnx	50c09741897010faad721a218b2bbe14ecad6251	1902521		https://raw.githubusercontent.com/emilianavt/OpenSeeFace/50c09741897010faad721a218b2bbe14ecad6251/models/lm_model0_opt.onnx	BSD-2-Clause	1.81 MiB
+face	mnv3_detection_opt.onnx	50c09741897010faad721a218b2bbe14ecad6251	568302	0e8e4806766d85ab067a52c7af0dcb59eb7f9dfe580b44f20a8e6ab712d89809	https://raw.githubusercontent.com/emilianavt/OpenSeeFace/50c09741897010faad721a218b2bbe14ecad6251/models/mnv3_detection_opt.onnx	BSD-2-Clause	555 KiB
+face	lm_model0_opt.onnx	50c09741897010faad721a218b2bbe14ecad6251	1902521	43c9c58f03701cc15b8423c49b78af348a6397334d348887e0fda59013275c29	https://raw.githubusercontent.com/emilianavt/OpenSeeFace/50c09741897010faad721a218b2bbe14ecad6251/models/lm_model0_opt.onnx	BSD-2-Clause	1.81 MiB

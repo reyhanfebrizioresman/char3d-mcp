@@ -693,6 +693,16 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 
 ## Karakter anime, VRM, dan wajah dari foto
 
+Model OpenSeeFace lokal memakai `~/.local/share/char3d/face` (override
+`CHAR3D_FACE_MODEL_DIR`, fallback workspace `models/face`). Checksum ada di
+`scripts/toon_assets.tsv`; tool tidak mengunduh model. Hasil `face_from_photo`
+memuat `traits`, skor geometri `likeness_score`, dan resep JSON `look` yang bisa
+dipakai ulang lewat `create_realistic_human(..., look=resep)` atau karakter dict
+script. Skor bukan verifikasi identitas; satu foto tidak menentukan modifier 3D
+secara unik. Gaya rambut/kacamata/janggut memakai pilihan katalog yang diberikan
+atau dipertahankan, bukan ditebak oleh model landmark. Tekstur resep tetap di
+workspace `imports/face_looks/`.
+
 `create_realistic_human(..., style="anime"|"cartoon"|"chibi")` membuat proporsi
 MPFB 6,75 / 4,75 / 2,8 kepala, tetap dengan rig, baju/rambut, blink, viseme dan ekspor
 GLB. Default `realistic` tetap sama. Deskriptor `anime`, `kartun`, `chibi` berlaku
@@ -709,8 +719,7 @@ memerlukan `consent=True` untuk wajah sendiri/orang yang memberi izin, foto
 frontal lokal di `imports/`, dan dua model ONNX OpenSeeFace BSD-2-Clause
 (`scripts/install_face_landmarks.sh`). Foto tidak diunggah. Tekstur foto default
 aktif untuk realistis, nonaktif untuk gaya kartun. Installer meminta konfirmasi,
-memeriksa SHA-256/ukuran di TSV, dan menyediakan `--dry-run`; SHA model wajah
-masih harus diisi pemilik. Tidak ada unduhan otomatis atau perubahan virtualenv.
+memeriksa SHA-256/ukuran yang sudah dicatat di TSV, dan menyediakan `--dry-run`. Tidak ada unduhan otomatis atau perubahan virtualenv.
 Lihat panduan [AGENTS.md](AGENTS.md) untuk privasi, instalasi, dan batas fitting.
 
 ## Manusia realistis (MPFB)

@@ -34,8 +34,12 @@ def photo_path(workspace, image):
 
 def project(points, camera):
     """camera = scale, roll radians, image x/y translation; front is -Y."""
-    scale, roll, tx, ty = camera
-    p = np.asarray(points)[:,[0,2]]*np.array([1.,-1.])
+    scale, roll, tx, ty = camera[:4]
+    points=np.asarray(points)
+    yaw=camera[4] if len(camera)>4 else 0.
+    pitch=camera[5] if len(camera)>5 else 0.
+    depth=-points[:,0]*np.sin(yaw)+points[:,1]*np.cos(yaw)
+    p=np.c_[points[:,0]*np.cos(yaw)+points[:,1]*np.sin(yaw),-points[:,2]*np.cos(pitch)-depth*np.sin(pitch)]
     rotation = np.array([[np.cos(roll),-np.sin(roll)],[np.sin(roll),np.cos(roll)]])
     return scale*p @ rotation.T + [tx,ty]
 
@@ -52,7 +56,7 @@ def camera_fit(points, observed):
     return np.array([scale,np.arctan2(rotation[0,1],rotation[0,0]),*translation])
 
 
-def fit_modifiers(base, deltas, observed, confidence=None, camera=None, iterations=80, regularization=1e-7):
+def fit_modifiers(base, deltas, observed, confidence=None, camera=None, iterations=80, regularization=1e-7, allow_yaw=False):
     """Bounded Gauss-Newton on modifier weights and similarity camera.
 
     Coefficients -1..1 use paired MPFB decr/incr targets; the engine limits trait
@@ -71,6 +75,7 @@ def fit_modifiers(base, deltas, observed, confidence=None, camera=None, iteratio
     coeff = np.zeros(m)
     fixed = camera is not None
     camera = camera_fit(base,observed) if camera is None else np.asarray(camera,dtype=float)
+    if allow_yaw and not fixed:camera=np.r_[camera,0.,0.]
     params = coeff if fixed else np.r_[coeff,np.log(camera[0]),camera[1:]]
 
     def unpack(p):
@@ -97,6 +102,7 @@ def fit_modifiers(base, deltas, observed, confidence=None, camera=None, iteratio
         for rate in (1.,.5,.25,.125,.0625):
             trial = params+step*rate
             trial[:m] = np.clip(trial[:m],-1,1)
+            if allow_yaw and not fixed:trial[m+4:m+6]=np.clip(trial[m+4:m+6],-.30,.30)
             if np.linalg.norm(residual(trial)) <= np.linalg.norm(error):
                 params = trial;accepted = True;break
         if not accepted:
@@ -127,9 +133,38 @@ def colors(rgb, landmarks):
         return np.median(sample_rgb(rgb,np.c_[x.ravel(),y.ravel()]*radius/2+center),axis=0).tolist()
     skin = np.median([patch((p[3]+p[31])/2,span*.07),patch((p[13]+p[35])/2,span*.07)],axis=0).tolist()
     center = (p[36]+p[39])/2
-    angle = np.linspace(0,2*np.pi,32,endpoint=False)
-    ring = sample_rgb(rgb,center+np.c_[np.cos(angle),np.sin(angle)]*span*.05)
-    pigment = ring[(ring.mean(axis=1)>.04)&(ring.min(axis=1)<.7)]
-    iris = np.median(pigment if len(pigment) else ring,axis=0).tolist()
-    hair = patch(eye+[0,-span*.95],span*.10)
+    y,x=np.mgrid[-3:4,-5:6]
+    samples=sample_rgb(rgb,center+np.c_[x.ravel()*span*.018,y.ravel()*span*.010])
+    saturation=np.ptp(samples,axis=1)/np.maximum(samples.max(1),1e-6)
+    pigment=samples[(samples.mean(1)>.05)&(samples.mean(1)<.8)&(saturation>.18)]
+    iris=np.median(pigment if len(pigment) else samples,axis=0)
+    # Suppress the achromatic corneal highlight before transferring pigment.
+    # This is an artistic estimate, not illumination-calibrated reflectance.
+    if np.ptp(iris)>.06:
+        linear=np.where(iris<=.04045,iris/12.92,((iris+.055)/1.055)**2.4)
+        linear=np.maximum(0.,linear-linear.min()*.80)
+        iris=np.where(linear<=.0031308,linear*12.92,1.055*linear**(1/2.4)-.055)
+    iris=iris.tolist()
+    yy,xx=np.mgrid[.75:1.7:12j,-.30:.31:9j]
+    samples=sample_rgb(rgb,eye+np.c_[xx.ravel(),-yy.ravel()]*span)
+    saturation=np.ptp(samples,axis=1)/np.maximum(samples.max(1),1e-6)
+    distance=np.linalg.norm(samples-np.asarray(skin),axis=1)
+    pigment=samples[(distance>.12)&((saturation>.12)|(samples.mean(1)<.08))]
+    hair=np.median(pigment,axis=0).tolist() if len(pigment) else patch(eye+[0,-span*.95],span*.10)
     return dict(skin=skin,iris=iris,hair=hair)
+
+
+def likeness_geometry(reference,candidate):
+    """Similarity-aligned mean landmark error in interocular units; not biometrics."""
+    a,b=np.asarray(reference,float),np.asarray(candidate,float)
+    if a.shape!=(66,2) or b.shape!=a.shape or not np.isfinite([a,b]).all():raise ValueError('Need two finite 66x2 landmark arrays')
+    def normalized(p):
+        eyes=np.array([p[36:42].mean(0),p[42:48].mean(0)])
+        return (p-eyes.mean(0))/max(1e-6,np.linalg.norm(eyes[1]-eyes[0]))
+    a,b=normalized(a),normalized(b)
+    u,_s,vt=np.linalg.svd(b.T@a)
+    rotation=u@np.diag([1.,np.linalg.det(u@vt)])@vt
+    error=float(np.linalg.norm(b@rotation-a,axis=1).mean())
+    return dict(score=round(100*math.exp(-error/.20),3),normalized_landmark_error=round(error,6),
+                method='66-point similarity-aligned mean error / interocular distance; 100*exp(-error/0.20)',
+                identity_probability=False)

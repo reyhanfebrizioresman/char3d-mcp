@@ -13,8 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from engine.toon import PRESETS, RestMap, iris_pixels, style_name, LID_PAIRS, LOWER_RIM, UPPER_RIM, lid_taper
 from engine.vrm import BONES, bone_map, expression_map, addon_bones, addon_expressions, eye_rotation_delta
-from engine.photo_fit import validate, photo_path, project, fit_modifiers
-from engine.photo_landmarks import detect, model_files
+from engine.photo_fit import validate, photo_path, project, fit_modifiers, likeness_geometry
+from engine.looks import validate_look
+from unittest.mock import patch
+import json,os
+from engine.photo_landmarks import detect, model_files, model_directory, decode_heatmaps
 from engine.script_plan import parse_script
 
 
@@ -174,6 +177,34 @@ def main():
         detection=detect(np.full((300,300,3),.5,dtype=np.float32),modeldir,MockSession)
         assert json.loads(json.dumps(detection))['box'] == detection['box']
         assert len(detection['landmarks'])==66 and min(detection['confidence'])>.9 and len(inputs)==2
+    # Offset planes have different nonzero row/column values, so swapping them
+    # cannot pass this regression (unlike an all-0.5 mocked offset tensor).
+    tensor=np.full((198,28,28),.5,dtype=np.float32)
+    tensor[:66]=0;tensor[:66,5,21]=.95
+    tensor[66:132]=1/(1+np.exp(-16*.03))
+    tensor[132:]=1/(1+np.exp(16*.02))
+    points,confidence=decode_heatmaps(tensor,(10,20,210,180))
+    expected=[10+200*223/224*(21/27-.02),20+160*223/224*(5/27+.03)]
+    assert np.max(abs(points-expected))<1e-4 and min(confidence)>.9
+    json.dumps(detection)  # real inference previously failed on NumPy crop ints.
+    recipe=dict(version=1,style='anime',seed=37,modifiers={'chin-width':.2},colors_srgb={'skin':[.5,.4,.3]},assets={'hair':'short02'})
+    assert validate_look(json.loads(json.dumps(recipe)))==recipe
+    rejects(validate_look,dict(recipe,modifiers={'untrusted':.3}))
+    rejects(validate_look,dict(recipe,asset_fit={'hair':'untrusted'}))
+    rejects(validate_look,dict(recipe,color_strength=True))
+    rejects(validate_look,dict(recipe,colors_srgb={'hair':[float('nan'),0,0]}))
+    planned=parse_script(dict(characters=[dict(id='A',look=recipe)],beats=[dict(say='A',text='Hello')]))
+    assert planned['characters'][0]['look']==recipe and planned['characters'][0]['style']=='anime'
+    with tempfile.TemporaryDirectory() as tmp:
+        home=Path(tmp);shared=home/'.local/share/char3d/face';fallback=home/'workspace/models/face'
+        fallback.mkdir(parents=True)
+        for name in ('mnv3_detection_opt.onnx','lm_model0_opt.onnx'):(fallback/name).touch()
+        with patch('engine.photo_landmarks.Path.home',return_value=home),patch.dict(os.environ,{},clear=True):
+            assert model_directory(home/'workspace')==fallback
+            shared.mkdir(parents=True)
+            for name in ('mnv3_detection_opt.onnx','lm_model0_opt.onnx'):(shared/name).touch()
+            assert model_directory(home/'workspace')==shared
+            with patch.dict(os.environ,{'CHAR3D_FACE_MODEL_DIR':str(home/'explicit')}):assert model_directory(home/'workspace')==home/'explicit'
     rng=np.random.default_rng(17)
     base=rng.normal(size=(40,3))*.05
     deltas=rng.normal(size=(8,40,3))*.01
@@ -185,7 +216,14 @@ def main():
         fit=fit_modifiers(base,deltas,target,camera=calibration)
         assert np.max(abs(fit['coefficients']-known))<1e-4,fit
         assert fit['rmse_px']<1e-4,fit
+    tilted=np.r_[camera,.12,-.06]
+    target=project(base+np.einsum('m,mnc->nc',known,deltas),tilted)
+    fit=fit_modifiers(base,deltas,target,allow_yaw=True)
+    assert np.max(abs(fit['coefficients']-known))<1e-4 and np.max(abs(fit['camera']-tilted))<1e-4,fit
     rejects(fit_modifiers,base,deltas,np.full((40,2),np.nan))
+    landmarks=rng.normal(size=(66,2));rot=np.array([[.98,-.2],[.2,.98]])
+    same=likeness_geometry(landmarks,landmarks@rot*3+[50,90])
+    assert same['score']>99.99 and not same['identity_probability'],same
     for installer in ('install_vrm.sh','install_face_landmarks.sh'):
         result=subprocess.run(['bash',str(ROOT/'scripts'/installer),'--dry-run'],capture_output=True,text=True,check=True)
         assert 'TOON INSTALL DRY RUN OK' in result.stdout and 'Licence:' in result.stdout and 'URL:' in result.stdout

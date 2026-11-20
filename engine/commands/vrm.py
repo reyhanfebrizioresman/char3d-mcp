@@ -19,7 +19,9 @@ def import_vrm(path):
     if not modules:
         raise RuntimeError(INSTALL)
     for name in modules:
-        addon_utils.enable(name, default_set=False)
+        # VRM 4.x consults its in-memory preferences even in factory startup.
+        # Register that entry without saving user preferences to disk.
+        addon_utils.enable(name, default_set=True)
     try:
         operator = bpy.ops.import_scene.vrm
         operator.get_rna_type()
@@ -85,7 +87,11 @@ def setup(rig):
                 matched = True
             if matched:
                 key = mesh.shape_key_add(name=channel, from_mix=False)
+                key.relative_key = keys[0]
                 key.data.foreach_set('co',(basis+delta).ravel())
+                # Blender can initialize newly added keys at one. Uncontrolled
+                # vowel aliases would then all deform the imported face at once.
+                key.value = 0.0
                 created.append(channel)
         if any(k in mesh.data.shape_keys.key_blocks for k in channels) or any(k.startswith('eyeLook') for k in mesh.data.shape_keys.key_blocks.keys()):
             # _ensure_face recognizes native aliases without trying MPFB downloads.
@@ -133,6 +139,8 @@ def bone_gaze(rig,meshes,source,reserved=()):
                     continue
                 delta = eye_rotation_delta(points,center,axis,angle,weights) @ inverse[:3,:3].T
                 key = mesh.shape_key_add(name=channel,from_mix=False)
+                key.relative_key = keys[0]
                 key.data.foreach_set('co',(base+delta).astype(np.float32).ravel())
+                key.value = 0.0
                 created.append(channel)
     return created
