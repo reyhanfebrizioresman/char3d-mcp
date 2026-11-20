@@ -712,6 +712,10 @@ Mata dan iris diperbesar, bentuk wajah/hidung disederhanakan, serta anggota tubu
 cartoon/chibi diperpendek; tinggi chibi memakai 82% hasil MPFB. Garis kelopak
 mengikuti morph native; alis sederhana dan alpha rambut yang tegas mengurangi grain. `tests/toon_polish.py` membuat
 perbandingan tampilan serta pengukuran kelopak dan bibir.
+Kulit toon mendapat fill yang menjaga keterbacaan tanpa mengubah exposure global;
+warna/print baju dipertahankan lewat albedo sederhana dari UV yang dipakai.
+Varian rambut generik memilih aset yang membuka mata, dengan warna asal tetap.
+Buat ulang karakter lama untuk memperoleh perbaikan geometri, rambut dan tekstur.
 
 Impor `.vrm` memerlukan VRM Add-on for Blender (`scripts/install_vrm.sh`). Model
 VRM memiliki lisensi sendiri yang wajib dipatuhi pengguna. `face_from_photo`

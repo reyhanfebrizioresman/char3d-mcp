@@ -84,6 +84,8 @@ def _input(tree, target, source):
 
 
 def _styled_material(original, cfg, engine, materials, groups, images, filtered):
+    if original and original.get('c3d_toon_role')=='skin':
+        cfg={**cfg,'_toon_skin':True,'_toon_head_height':original.get('c3d_toon_head_height',.23)}
     mat = original.copy() if original else bpy.data.materials.new('__c3d_style_material')
     materials.append(mat)
     mat.use_nodes = True
@@ -119,6 +121,8 @@ def _styled_material(original, cfg, engine, materials, groups, images, filtered)
                 continue
             consumers = [link.to_socket for link in bsdf.outputs['BSDF'].links]
             if consumers:
+                if cfg.get('_toon_skin') and cfg['style'] in ('anime','animated_film'):
+                    _toon_skin_response(tree,bsdf)
                 styled = (_animated_shader(tree, bsdf, cfg, mat.name, engine)
                           if cfg['style'] == 'animated_film' else _styled_shader(tree, bsdf, cfg, engine))
                 for socket in consumers:
@@ -126,6 +130,31 @@ def _styled_material(original, cfg, engine, materials, groups, images, filtered)
 
     visit(mat.node_tree)
     return mat
+
+
+def _toon_skin_response(tree,bsdf):
+    """Illustrative pigment response under the compressed light ramps.
+
+    A monotone lift of dark albedo keeps dark tones distinct. Compensating
+    saturation prevents the scene grade from turning warm scans burnt orange.
+    This operates only in temporary toon-skin shader copies.
+    """
+    nodes,links=tree.nodes,tree.links
+    color=nodes.new('ShaderNodeHueSaturation');color.inputs['Saturation'].default_value=.85
+    _input(tree,color.inputs['Color'],bsdf.inputs['Base Color'])
+    luminance=nodes.new('ShaderNodeRGBToBW');links.new(color.outputs[0],luminance.inputs[0])
+    target=nodes.new('ShaderNodeMath');target.operation='MULTIPLY_ADD'
+    links.new(luminance.outputs[0],target.inputs[0]);target.inputs[1].default_value=.65;target.inputs[2].default_value=.075
+    floor=nodes.new('ShaderNodeMath');floor.operation='MAXIMUM';floor.inputs[1].default_value=.001
+    links.new(luminance.outputs[0],floor.inputs[0])
+    gain=nodes.new('ShaderNodeMath');gain.operation='DIVIDE';links.new(target.outputs[0],gain.inputs[0]);links.new(floor.outputs[0],gain.inputs[1])
+    minimum=nodes.new('ShaderNodeMath');minimum.operation='MAXIMUM';minimum.inputs[1].default_value=1.
+    links.new(gain.outputs[0],minimum.inputs[0])
+    maximum=nodes.new('ShaderNodeMath');maximum.operation='MINIMUM';maximum.inputs[1].default_value=2.2
+    links.new(minimum.outputs[0],maximum.inputs[0])
+    scale=nodes.new('ShaderNodeVectorMath');scale.operation='SCALE'
+    links.new(color.outputs[0],scale.inputs[0]);links.new(maximum.outputs[0],scale.inputs['Scale'])
+    links.new(scale.outputs[0],bsdf.inputs['Base Color'])
 
 
 def _protected_colors(root):
@@ -314,7 +343,7 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
     _input(tree, color.inputs['Color'], bsdf.inputs['Base Color'])
     color.inputs['Value'].default_value = 1 + (.05 if skin else 0)*k
     links.new(color.outputs[0], bsdf.inputs['Base Color'])
-    if skin and cfg.get('_head'):
+    if skin and cfg.get('_head') and not cfg.get('_toon_skin'):
         _blush(tree, bsdf, cfg['_head'], k)
     if eye:
         # Retain full-resolution iris/limbal detail and enhanced layered corneas.
@@ -442,21 +471,31 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
     links.new(absolute.outputs[0], form.inputs[0])
     sculpt = nodes.new('ShaderNodeMixRGB')
     sculpt.blend_type = 'MULTIPLY'
-    sculpt.inputs[0].default_value = .72 if skin else .46
+    sculpt.inputs[0].default_value = .20 if cfg.get('_toon_skin') else .72 if skin else .46
     links.new(painted_color, sculpt.inputs[1])
     links.new(form.outputs[0], sculpt.inputs[2])
     # Short-range AO restores contacts/creases after texture noise is removed.
     # No extra render pass or render-sample increase.
     ao = nodes.new('ShaderNodeAmbientOcclusion')
     ao.samples = 4
-    ao.inputs['Distance'].default_value = .12
+    ao.inputs['Distance'].default_value = min(.025,cfg.get('_toon_head_height',.23)*.08) if cfg.get('_toon_skin') else .12
     contact = nodes.new('ShaderNodeMixRGB')
     contact.blend_type = 'MULTIPLY'
-    contact.inputs[0].default_value = .28
+    contact.inputs[0].default_value = .10 if cfg.get('_toon_skin') else .28
     links.new(sculpt.outputs[0], contact.inputs[1])
     links.new(ao.outputs['AO'], contact.inputs[2])
+    painted_color=contact.outputs[0]
+    if cfg.get('_toon_skin'):
+        # Illustration fill: retain pigment while keeping eyes/brows/mouth
+        # legible in the lower light masses. Other materials keep their ramp.
+        bounce=nodes.new('ShaderNodeVectorMath');bounce.operation='SCALE'
+        _input(tree,bounce.inputs[0],bsdf.inputs['Base Color'])
+        bounce.inputs['Scale'].default_value=.40
+        minimum=nodes.new('ShaderNodeVectorMath');minimum.operation='MAXIMUM'
+        links.new(painted_color,minimum.inputs[0]);links.new(bounce.outputs[0],minimum.inputs[1])
+        painted_color=minimum.outputs[0]
     soft = nodes.new('ShaderNodeEmission')
-    links.new(contact.outputs[0], soft.inputs['Color'])
+    links.new(painted_color, soft.inputs['Color'])
     painted = soft.outputs[0]
     emission, emitted_color = bsdf.inputs['Emission Strength'], bsdf.inputs['Emission Color']
     if (emission.is_linked or emission.default_value > 0) and (emitted_color.is_linked or max(emitted_color.default_value[:3]) > 0):
@@ -503,7 +542,8 @@ def _styled_shader(tree, bsdf, cfg, engine):
             links.new(diffuse.outputs[0], rgb.inputs[0])
             ramp = nodes.new('ShaderNodeValToRGB')
             ramp.color_ramp.interpolation = 'CONSTANT'
-            for el, pos, value in zip(ramp.color_ramp.elements, (0, 0.45), (0.42, 0.78)):
+            values=(.62,.86) if cfg.get('_toon_skin') else (.42,.78)
+            for el, pos, value in zip(ramp.color_ramp.elements, (0, 0.45), values):
                 el.position, el.color = pos, (value, value, value, 1)
             el = ramp.color_ramp.elements.new(0.85)
             el.color = (1.05, 1.05, 1.05, 1)
@@ -784,6 +824,11 @@ def applied_style(sc):
                     # A reversed, expanded shell: only its back-facing silhouette shows.
                     bm = bmesh.new()
                     bm.from_mesh(shell.data)
+                    native_faces=obj.get('c3d_toon_outline_face_count',len(obj.data.polygons))==len(obj.data.polygons)
+                    omit=set(obj.get('c3d_toon_outline_omit',[])) if obj.get('c3d_source')=='mpfb' and native_faces else set()
+                    if omit:
+                        bm.faces.ensure_lookup_table()
+                        bmesh.ops.delete(bm,geom=[f for f in bm.faces if f.index in omit],context='FACES_ONLY')
                     bmesh.ops.reverse_faces(bm, faces=list(bm.faces))
                     bm.to_mesh(shell.data)
                     bm.free()

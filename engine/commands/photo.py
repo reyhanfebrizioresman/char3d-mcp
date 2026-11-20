@@ -332,6 +332,9 @@ def face_from_photo(character,image,strength=1.,texture=None,consent=False,trait
         from .looks import asset_traits
         asset_traits(body,meshes,traits)
         displace(body,meshes,delta,neutral)
+        if stylized:
+            from .toon import fit_hair
+            fit_hair(body,meshes)
         paint(body,meshes,rgb,estimate,fit,strength,use_texture)
         if stylized:
             from .toon import calibrate_blinks,calibrate_bilabials,sync_ink

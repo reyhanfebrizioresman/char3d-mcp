@@ -91,6 +91,9 @@ def apply_look(root,body,meshes,recipe):
     factor=.55 if body.get('c3d_style','realistic')!='realistic' else 1.
     delta=np.einsum('m,mnc->nc',abs(coefficients)*factor,np.array([pairs[i,1] if c>=0 else pairs[i,0] for i,c in enumerate(coefficients)]))
     if np.any(coefficients):displace(body,meshes,delta,neutral_coords(body))
+    if factor!=1:
+        from .toon import fit_hair
+        fit_hair(body,meshes)
     colors=recipe.get('colors_srgb')
     if colors and recipe.get('color_strength',1.):paint(body,meshes,None,colors,None,recipe.get('color_strength',1.),False)
     texture=recipe.get('texture')

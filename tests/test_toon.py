@@ -18,6 +18,7 @@ from engine.looks import validate_look
 from unittest.mock import patch
 import json,os
 from engine.photo_landmarks import detect, model_files, model_directory, decode_heatmaps
+from engine.toon_appearance import downsample_rgba,visible_albedo
 from engine.script_plan import parse_script
 
 
@@ -85,6 +86,23 @@ def main():
     iris = iris_pixels()
     assert iris.shape==(256,256,4) and np.isfinite(iris).all()
     assert (iris[128,128,:3]<.03).all() and (iris[180,90,:3]>.9).all()
+    # A 1024-wide atlas with a white first column used to turn a blue shirt
+    # white. Unused UV margins and a small orange print must remain distinct.
+    pixels=np.ones((1024,1024,4),np.float32)
+    pixels[128:896,128:896,:3]=[.025,.18,.50]
+    pixels[300:500,400:600,:3]=[.8,.22,.015]
+    small=downsample_rgba(pixels)
+    triangles=[[[.125,.125],[.875,.125],[.875,.875]],[[.125,.125],[.875,.875],[.125,.875]]]
+    dominant,mask=visible_albedo(small,triangles)
+    assert np.max(abs(dominant-[.025,.18,.50]))<1e-6
+    assert (small[:,:,0][mask]>.6).sum()>100,'simplified print lost'
+    irregular=np.full((37,211,4),.3,np.float32)
+    assert np.max(abs(downsample_rgba(irregular,32)-.3))<1e-6
+    for name in ('anime','cartoon','chibi'):
+        warp=RestMap(name,0,1.8,1.56,[[-.03,-.08,1.69],[.03,-.08,1.69]])
+        inner=.03-.073*.24
+        bridge=warp([[-inner,-.09,1.69],[inner,-.09,1.69]])
+        assert np.ptp(bridge[:,0])/(warp.output_top-warp.new_chin)>.035,(name,bridge)
     for desc,expected in (('gaya anime','anime'),('anime','anime'),('kartun','cartoon'),
                           ('cartoon','cartoon'),('chibi','chibi'),('realistis','realistic'),('realistic','realistic')):
         plan = parse_script('GAYA: anime\nA ('+desc+'): Halo!\nB: Hello!')

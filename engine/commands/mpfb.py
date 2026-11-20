@@ -347,6 +347,19 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     if rig not in RIGS + ("none",):
         raise ValueError(f"rig must be one of {list(RIGS) + ['none']}")
     cat = _catalog()
+    hair_adjustment=None
+    requested_hair_rgb=None
+    if style!='realistic' and look is None:
+        # Eye-safe variants of generic descriptors; explicit recipes keep assets.
+        preferred={'bob01':'toigo_curled_under_bob','bob02':'toigo_curled_under_bob',
+                   'short01':'culturalibre_hair_02'}.get(hair)
+        fallback={'bob01':'ponytail01','bob02':'ponytail01','short01':'short04'}.get(hair)
+        replacement=preferred if preferred in cat['hair'] else fallback
+        if replacement and replacement in cat['hair'] and hair in cat['hair']:
+            from .toon import asset_hair_color
+            requested_hair_rgb=asset_hair_color(cat['hair'][hair])
+            hair_adjustment=f'Stylized eye-safe hair: {hair} -> {replacement}'
+            hair=replacement
     if outfit is not None and outfit not in OUTFITS:
         raise ValueError(f"outfit must be one of {list(OUTFITS)} or None")
     if not cat["skins"]:
@@ -417,6 +430,7 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     basemesh.name = name
     basemesh["c3d_kind"] = "humanoid"
     basemesh["c3d_source"] = "mpfb"
+    if requested_hair_rgb is not None:basemesh['c3d_toon_requested_hair_rgb']=requested_hair_rgb
     basemesh["c3d_age"] = float(age)
     basemesh['c3d_build_look']=json.dumps(dict(version=1,style=style,seed=seed,
         phenotype=dict(gender=gender,age=age,muscle=muscle,weight=weight,height=height,proportions=proportions,race=race),
@@ -491,6 +505,7 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         "height_m": round(hi.z - lo.z, 3) if lo else None,
         "parts": sorted(o.name for o in new if o.type == "MESH" and o is not basemesh),
     })
+    if hair_adjustment:result['warnings'].append(hair_adjustment)
     if style != "realistic":
         result["materials"] = result["stylized"]["materials"]
         result["recommended_render_style"] = "anime"

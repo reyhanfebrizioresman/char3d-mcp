@@ -164,8 +164,9 @@ the neck width blend excludes shoulders. Chibi uses 82% of the MPFB stature to
 shorten torso and limbs together while retaining 2.8 heads; other styles retain
 the source stature. Choose a proportionate low chair for its short lower legs.
 Stylized cheeks/forehead receive fixed rest smoothing on every target while
-preserving the eye/lip rims. A saved one-level render subdivision smooths the
-head; creased non-head edges retain the body surface. Viewport/export retain
+preserving the eye/lip rims. A bounded static contour fill rounds the cheek/jaw
+notch; the same offset is added to every relative target. A saved two-level render
+subdivision smooths the head/upper neck; creased non-head edges retain the body surface. Viewport/export retain
 original HM08 topology with smooth normals, native weights and morphs. Native
 brow ribbons replace overlapping alpha cards. Teeth/tongue are fitted behind the
 lip plane; smile corner lift is stronger. With trousers, covered shoe uppers are
@@ -176,13 +177,33 @@ also portable to GLB, rather than stochastic intermediate strand opacity.
 eye/head/face ratios, blink and A/O/M/B/P lip gaps. `--sheet` composes the rendered
 female/male front/three-quarter comparison. Use port 9971 and one case at a time.
 Skin uses flat sampled albedo with soft UV blush and no pores;
-hair retains authored cutout alpha with flat pigment, and clothes
-use flat sampled colours. These PBR textures/materials export without downloading
+hair retains a reduced cutout mask and broad clump values. Generic stylized
+`bob01`/`bob02` requests choose installed `toigo_curled_under_bob` (system
+`ponytail01` fallback); `short01` chooses `culturalibre_hair_02` (`short04`
+fallback), with the requested asset's pigment retained. Results report the actual
+asset and a warning. Explicit look recipes retain their hair asset. A local
+fringe lift clears the eye window on both paths, including photo/look replay.
+Clothes retain 128 px simplified albedo/prints; their dominant pigment is sampled
+inside the material's actual UV islands, excluding unused atlas margins.
+These PBR textures/materials export without downloading
 assets. The result recommends `render_style("anime")`; it never changes global
 render style. `animated_film` also works. Rest deformation is not an MPFB macro
 editor: recreate the character to change its phenotype/style afterwards.
 GLB carries proportions, skinning, morphs and flat textures; outlines/cel bands
 remain Blender scene render effects.
+Toon skin samples fitted cheek UVs, has restrained portable ambient bounce, and
+uses a higher shadow band in anime. Temporary toon-skin shaders compensate the
+grade's saturation and lift dark pigments with a bounded monotone response;
+light, medium and dark inputs remain distinct. Animated-film toon skin has an albedo-relative
+fill floor, gentler face-form gradient and shorter, weaker facial AO. Other materials and realistic humans
+keep their existing render response; global exposure/lights are unchanged.
+The face's silhouette shell omits the internal bridge so it cannot draw a deep
+nose stroke. Rebuild existing characters for geometry, hair and texture changes;
+rerendering an old packed blend alone retains its old meshes/assets. Head render
+subdivision increases Eevee cost; exported base topology remains native HM08.
+`tests/toon_round4.py` records the lighting/colour matrix, five-angle alpha-aware
+eye visibility, 512 px facial checks, garment colour comparisons and podcast
+stills. Use only port 9971, with one owned engine at a time.
 Keep `face=True` for facial animation; a stylized `face=False` build must be
 recreated rather than loading unfitted facial targets onto its frozen proportions.
 

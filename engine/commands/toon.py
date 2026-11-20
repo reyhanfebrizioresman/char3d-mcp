@@ -96,6 +96,8 @@ def stylize(body, meshes, rig, style):
         skin = sampled_skin(body)
         fit_proportions(body,meshes,rig,style)
     smooth_head(body)
+    round_jaw(body)
+    fit_hair(body,meshes)
     lift_smile(body,meshes)
     fit_mouth(body,meshes)
     fit_ankles(body,meshes)
@@ -107,7 +109,7 @@ def stylize(body, meshes, rig, style):
     simplify_brows(body,meshes)
     ink_lids(body,meshes)
     if style=='cartoon':skin=tuple(np.clip(np.asarray(skin)*[1.025,.99,.92],0,.9))
-    material_report = toon_materials(body, meshes, skin=skin)
+    material_report = toon_materials(body, meshes, skin=skin,hair=body.get('c3d_toon_requested_hair_rgb'))
     head_surface(body)
     bottom, top, chin, _ = anatomy(body, meshes)
     body['c3d_head_ratio'] = float((top-bottom)/(top-chin))
@@ -117,16 +119,43 @@ def stylize(body, meshes, rig, style):
                 recommended_render_style='anime', materials=material_report)
 
 
+def asset_hair_color(path):
+    """Keep the requested asset's pigment when choosing an eye-safe variant."""
+    from pathlib import Path
+    from .materials import _pixels
+    from ..materials import srgb_to_linear
+    asset=Path(path)
+    material=next((line.split(maxsplit=1)[1] for line in asset.read_text().splitlines() if line.startswith('material ')),None)
+    if not material:return None
+    matpath=asset.parent/material
+    texture=next((line.split(maxsplit=1)[1] for line in matpath.read_text().splitlines() if line.startswith('diffuseTexture ')),None)
+    if not texture:return None
+    im=bpy.data.images.load(str(matpath.parent/texture),check_existing=True)
+    try:
+        px=_pixels(im).reshape(-1,4)[::251];px=px[px[:,3]>.6,:3]
+        return tuple(float(v) for v in srgb_to_linear(np.median(px,0))) if len(px) else None
+    finally:
+        if im.users==0:bpy.data.images.remove(im)
+
+
 def sampled_skin(body):
     from .materials import _image, _pixels
     from ..materials import srgb_to_linear
     source = _image(body.material_slots[0].material)
     if source:
-        # A broad atlas median excludes lips, facial hair and tiny dark texels.
-        # Fixed meter cheek ROIs are unsuitable for short MPFB phenotypes.
-        samples = _pixels(source).reshape(-1,4)[::256,:3]
-        valid = samples[(samples.max(axis=1)-samples.min(axis=1)<.65)&(samples.mean(axis=1)>.08)&(samples.mean(axis=1)<.95)]
-        rgb = np.median(valid if len(valid) else samples,axis=0)
+        # Sample fitted facial UVs, rather than unrelated atlas background,
+        # body shadows or a periodic column stride. Keep authored tone order.
+        p=neutral_coords(body);h=float(p[881,2]-p[791,2])
+        ez=float(p[[24,66,6808,6850],2].mean());ey=float(p[[24,66,6808,6850],1].mean())
+        cheek=(abs(p[:,0])>.12*h)&(abs(p[:,0])<.29*h)&(p[:,2]>ez-.23*h)&(p[:,2]<ez-.09*h)&(p[:,1]<ey+.06*h)
+        w,hh=source.size;pixels=_pixels(source).reshape(hh,w,4)
+        uv=body.data.uv_layers.active.data
+        loops=[i for i,loop in enumerate(body.data.loops) if loop.vertex_index<13380 and cheek[loop.vertex_index]]
+        if loops:
+            xy=np.array([uv[i].uv for i in loops])*[w,hh]
+            xy=np.clip(xy.astype(int),[0,0],[w-1,hh-1]);samples=pixels[xy[:,1],xy[:,0],:3]
+        else:samples=pixels.reshape(-1,4)[::251,:3]
+        rgb = np.median(samples,axis=0)
         skin = srgb_to_linear(rgb) if source.colorspace_settings.name=='sRGB' else tuple(rgb)
     else:
         skin = tuple(body.material_slots[0].material.diffuse_color[:3])
@@ -277,12 +306,13 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
     skin = skin or _sample_skin(body, body.material_slots[0].material, frame[0])
     skin = np.clip(skin, 0., .8)
     hair = hair or _hair_color(meshes, body) or (.035, .023, .02)
+    hair=tuple(np.asarray(hair)*max(1.,.025/max(.0001,max(hair))))
     atlas = image('c3d_toon.original_iris.'+body.name, iris_pixels(color=iris or (.16, .38, .64)))
     _, top, chin, centers = anatomy(body, meshes)
     changed = []
     for obj in meshes:
         role = _role(obj, body)
-        if role in ('mouth', 'accessory'):
+        if role == 'accessory':
             continue
         tex = None
         if role == 'skin':
@@ -308,7 +338,7 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                 pt = ep[loop.vertex_index]
                 center = min(centers, key=lambda c: abs(c[0]-pt[0]))
                 uv.data[loop.index].uv = ((pt[0]-center[0])/(2*radius)+.5, (pt[2]-center[2])/(2*radius)+.5)
-        for slot in obj.material_slots:
+        for slot_index,slot in enumerate(obj.material_slots):
             old = slot.material
             if not old:
                 continue
@@ -318,13 +348,51 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
             bsdf = mat.node_tree.nodes.get('Principled BSDF')
             color = tuple(skin) if role == 'skin' else tuple(hair) if role in ('hair','brows') else tuple(old.diffuse_color[:3])
             source = _image(old)
-            if role == 'clothes' and old.get('c3d_toon_flat_color') is not None:
+            if role=='mouth':
+                color=(.12,.035,.04)
+                if 'teeth' in obj.name.lower() and source:
+                    from ..toon_appearance import downsample_rgba
+                    raw=_pixels(source).reshape(source.size[1],source.size[0],4)
+                    small=downsample_rgba(raw,128)
+                    tooth=(small[:,:,0]>.6)&(small[:,:,1]>.5)&(small[:,:,2]>.45)
+                    small[:,:,:3]=np.where(tooth[:,:,None],[.66,.61,.53],[.10,.025,.033])
+                    tex=image('c3d_toon.mouth.'+obj.name,small)
+            if role=='clothes':tex=None
+            if role=='hair':
+                from ..toon_appearance import downsample_rgba
+                original=old.get('c3d_toon_hair_albedo') or source
+                if original:
+                    raw=_pixels(original).reshape(original.size[1],original.size[0],4)
+                    small=downsample_rgba(raw,128)
+                    brightness=small[:,:,:3]@[.2126,.7152,.0722]
+                    valid=small[:,:,3]>.5
+                    pivot=float(np.median(brightness[valid])) if valid.any() else .1
+                    # Broad clump values rather than photographic strand grain.
+                    variation=np.clip(brightness/max(.003,pivot),.65,1.35)
+                    pigment=np.ones_like(small);pigment[:,:,:3]=np.asarray(hair)*variation[:,:,None]
+                    tex=image('c3d_toon.hair_clumps.'+obj.name,pigment)
+            if role == 'clothes' and source and obj.data.uv_layers:
+                from ..toon_appearance import downsample_rgba,visible_albedo
+                # The old stride sampled x=0 on every 1024-wide row: atlas
+                # background replaced a blue printed shirt with white/grey.
+                original=old.get('c3d_toon_source_albedo') or source
+                pixels=_pixels(original).reshape(original.size[1],original.size[0],4)
+                linear=pixels.copy()
+                if original.colorspace_settings.name=='sRGB':
+                    linear[:,:,:3]=np.where(pixels[:,:,:3]<=.04045,pixels[:,:,:3]/12.92,((pixels[:,:,:3]+.055)/1.055)**2.4)
+                small=downsample_rgba(linear)
+                obj.data.calc_loop_triangles();uvs=obj.data.uv_layers.active.data
+                triangles=np.array([[list(uvs[i].uv) for i in tri.loops] for tri in obj.data.loop_triangles if tri.material_index==slot_index])
+                color,_=visible_albedo(small,triangles)
+                tex=image('c3d_toon.garment_albedo.'+obj.name,small)
+            elif role=='clothes' and old.get('c3d_toon_flat_color') is not None:
                 color=tuple(old['c3d_toon_flat_color'])
-            elif role == 'clothes' and source:
-                px = _pixels(source).reshape(-1,4)[::max(1,len(source.pixels)//(4*1024))]
-                color = srgb_to_linear(np.median(px[:, :3], axis=0)) if source.colorspace_settings.name=='sRGB' else tuple(np.median(px[:, :3],axis=0))
             if obj.get('c3d_toon_lid_ink') or obj.get('c3d_toon_brow_ink'):color=(.012,.009,.016)
             mat['c3d_toon_flat_color']=[float(v) for v in color]
+            if role=='skin':mat['c3d_toon_head_height']=float(top-chin)
+            if role=='hair' and original:mat['c3d_toon_hair_albedo']=original
+            if role=='clothes' and source and tex:
+                mat['c3d_toon_source_albedo']=old.get('c3d_toon_source_albedo') or source
             mat.diffuse_color = (*color, 1)
             bsdf.inputs['Base Color'].default_value = (*color, 1)
             bsdf.inputs['Roughness'].default_value = .75
@@ -339,6 +407,15 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                     coords_node = mat.node_tree.nodes.new('ShaderNodeUVMap')
                     coords_node.uv_map = 'c3d_toon_iris'
                     mat.node_tree.links.new(coords_node.outputs[0],node.inputs['Vector'])
+            if role=='skin':
+                # Restrained portable ambient bounce, confined to toon skin.
+                # Scene key/fill still supply its directional form.
+                bsdf.inputs['Emission Strength'].default_value=.08
+                if tex:mat.node_tree.links.new(node.outputs['Color'],bsdf.inputs['Emission Color'])
+                else:bsdf.inputs['Emission Color'].default_value=(*color,1)
+            if role=='mouth' and tex:
+                mat.node_tree.links.new(node.outputs['Alpha'],bsdf.inputs['Alpha'])
+                mat.surface_render_method='DITHERED'
             if role in ('hair','brows','clothes'):
                 brow=obj.get('c3d_toon_brow_image')
                 part=obj.get('c3d_material_part',obj.name).lower()
@@ -357,6 +434,9 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                         if not brow and not cached_cutout:
                             separate=_image(old,'opacity') is not None
                             pixels=_pixels(opacity).reshape(opacity.size[1],opacity.size[0],4)
+                            if role=='hair':
+                                from ..toon_appearance import downsample_rgba
+                                pixels=downsample_rgba(pixels,256)
                             mask=(pixels[:,:,:3].mean(2) if separate else pixels[:,:,3])>.32
                             rgba=np.ones_like(pixels);rgba[:,:,3]=mask.astype(np.float32)
                             node.image=image('c3d_toon.clean_cutout.'+obj.name,rgba)
@@ -366,7 +446,8 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                 mat.surface_render_method='DITHERED'
             slot.link, slot.material = 'OBJECT', mat
             changed.append(mat.name)
-    return dict(quality='toon', materials=changed, original_iris=True, pores=False)
+    return dict(quality='toon', materials=changed, original_iris=True, pores=False,
+                skin_rgb_linear=[float(v) for v in skin])
 
 
 def smooth_front(y, centers):
@@ -571,29 +652,74 @@ def smooth_head(body):
     weight[13380:]=0
     protect={i for pairs in LID_PAIRS.values() for pair in pairs for i in pair}
     protect.update(i for pair in LIP_PAIRS for i in pair)
-    # Preserve the aperture and its two-ring neighbourhood, avoiding any blink gap.
-    for _ in range(2):
-        previous=set(protect)
-        protect.update(int(j) for i,j in zip(a,b) if i in previous)
-    weight[list(protect)]=0
+    protect.update((881,791,13137))
+    # Fade the constraint over four rings. A hard protected/unprotected border
+    # beside the lids had left a notch at the cheek/jaw transition.
+    distance=np.full(len(p),5);distance[list(protect)]=0
+    for level in range(1,5):
+        near=(distance[a]<level)&(distance[b]>level)
+        distance[b[near]]=level
+    weight*=smooth(distance/4.)
     degree=np.bincount(a,minlength=len(p));valid=degree>0
     for data in [body.data.vertices]+([k.data for k in body.data.shape_keys.key_blocks] if body.data.shape_keys else []):
         q=coords(data)
-        for _ in range(4):
-            sums=np.zeros_like(q);np.add.at(sums,a,q[b]);mean=sums/np.maximum(degree[:,None],1)
-            q+=(mean-q)*weight[:,None]*valid[:,None]*.34
+        # Taubin pairs smooth without repeatedly shrinking the head silhouette.
+        for _ in range(8):
+            for amount in (.48,-.49):
+                sums=np.zeros_like(q);np.add.at(sums,a,q[b]);mean=sums/np.maximum(degree[:,None],1)
+                q+=(mean-q)*weight[:,None]*valid[:,None]*amount
         data.foreach_set('co',q.astype(np.float32).ravel())
     for face in body.data.polygons:face.use_smooth=True
     body.data.update()
+
+
+def round_jaw(body):
+    """Fill the local cheek/jaw notch without changing topology or articulation."""
+    import bmesh
+    from mathutils.bvhtree import BVHTree
+    from ..toon import smooth,LID_PAIRS
+    p=neutral_coords(body);_,top,chin,_=anatomy(body,[]);h=top-chin
+    ey=float(p[[24,66,6808,6850],1].mean());u=(p[:,2]-chin)/h
+    selected=(np.arange(len(p))<13380)&(u>=0)&(u<=1)&(abs(p[:,0])<.40*h)&(p[:,1]<ey+.40*h)
+    bm=bmesh.new()
+    try:
+        vertices=[bm.verts.new(Vector(v)) for v in p[selected]]
+        bmesh.ops.convex_hull(bm,input=vertices,use_existing_faces=False);bm.normal_update()
+        hull=BVHTree.FromBMesh(bm)
+        weight=smooth((u-.025)/.10)*(1-smooth((u-.34)/.19))
+        weight*=smooth((abs(p[:,0])-.10*h)/(.12*h))*(1-smooth((abs(p[:,0])-.33*h)/(.06*h)))
+        weight*=1-smooth((p[:,1]-ey-.12*h)/(.20*h));weight[13380:]=0
+        for pairs in LID_PAIRS.values():
+            weight[list({i for pair in pairs for i in pair})]=0
+        delta=np.zeros_like(p)
+        for i in np.flatnonzero(weight>.001):
+            point,normal,index,distance=hull.find_nearest(Vector(p[i]))
+            if point is not None:
+                delta[i]=(np.asarray(point)-p[i])*weight[i]*min(1.,.05*h/max(1e-9,distance))
+    finally:bm.free()
+    for data in [body.data.vertices]+([key.data for key in body.data.shape_keys.key_blocks] if body.data.shape_keys else []):
+        data.foreach_set('co',(coords(data)+delta).astype(np.float32).ravel())
+    body['c3d_toon_jaw_round_m']=float(np.max(np.linalg.norm(delta,axis=1)))
 
 
 def head_surface(body):
     """Render subdivision, with creased body edges retaining the non-head surface.
 
     Viewport level zero retains HM08 index correspondence, native morph export,
-    weights and photo fitting. Saved renders use one Catmull-Clark level.
+    weights and photo fitting. Saved renders use two Catmull-Clark levels.
     """
     p=neutral_coords(body);_,top,chin,_=anatomy(body,[]);h=top-chin
+    eye_y=float(p[[24,66,6808,6850],1].mean())
+    omit=[]
+    for face in body.data.polygons:
+        if any(i>=13380 for i in face.vertices):continue
+        center=p[list(face.vertices)].mean(0)
+        if abs(center[0])<.23*h and center[1]<eye_y+.035*h and chin+.30*h<center[2]<top-.15*h:
+            omit.append(face.index)
+    # Facial ink is authored by lids/brows and the mouth contour. The expanded
+    # silhouette shell must not leak a black stroke down a tiny nose bridge.
+    body['c3d_toon_outline_omit']=omit
+    body['c3d_toon_outline_face_count']=len(body.data.polygons)
     from ..toon import smooth
     crease=body.data.attributes.get('crease_edge') or body.data.attributes.new('crease_edge','FLOAT','EDGE')
     values=[]
@@ -602,12 +728,39 @@ def head_surface(body):
     for edge in body.data.edges:
         i,j=edge.vertices
         value=1-float(smooth((min(p[i,2],p[j,2])-chin+.12*h)/(.18*h)))
+        neck=smooth((min(p[i,2],p[j,2])-chin+.42*h)/(.30*h))
+        neck*=1-smooth((max(abs(p[i,0]),abs(p[j,0]))-.23*h)/(.10*h))
+        value*=1-float(neck)
         if i>=13380 or j>=13380 or i in rims or j in rims:value=1.
         values.append(value)
     crease.data.foreach_set('value',np.asarray(values,np.float32))
     mod=body.modifiers.get('__c3d_toon_head_surface') or body.modifiers.new('__c3d_toon_head_surface','SUBSURF')
-    mod.levels=0;mod.render_levels=1;mod.subdivision_type='CATMULL_CLARK'
-    body['c3d_toon_surface']='render subdivision 1; creased non-head; portable base uses smooth normals/rest smoothing'
+    mod.levels=0;mod.render_levels=2;mod.subdivision_type='CATMULL_CLARK'
+    body['c3d_toon_surface']='render subdivision 2; creased non-head; portable base uses smooth normals/rest smoothing'
+
+
+def fit_hair(body,meshes):
+    """Shorten only front fringe over the eye window; retain skin/morph weights."""
+    from .materials import _role
+    from ..toon import smooth,LID_PAIRS
+    p=neutral_coords(body);_,top,chin,eyes=anatomy(body,meshes,p);h=top-chin
+    ez=float(np.mean(eyes,0)[2]);ey=float(np.mean(eyes,0)[1])
+    outer=max(abs(float(p[i,0])) for pairs in LID_PAIRS.values() for pair in pairs for i in pair)
+    for obj in meshes:
+        if _role(obj,body)!='hair':continue
+        m=np.array(body.matrix_world.inverted()@obj.matrix_world);inv=np.linalg.inv(m)
+        source=coords(obj.data.shape_keys.key_blocks[0].data if obj.data.shape_keys else obj.data.vertices)
+        q=source@m[:3,:3].T+m[:3,3]
+        front=1-smooth((q[:,1]-ey-.015*h)/(.10*h))
+        window=1-smooth((abs(q[:,0])-outer-.035*h)/(.12*h))
+        # Uneven tips keep a broad clump edge; the lowest point clears the brow.
+        floor=ez+h*(.16+.012*np.cos(q[:,0]/h*38))
+        lift=np.maximum(0,floor-q[:,2])*front*window
+        delta=np.zeros_like(q);delta[:,2]=lift;delta=delta@inv[:3,:3].T
+        for data in [obj.data.vertices]+([k.data for k in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else []):
+            data.foreach_set('co',(coords(data)+delta).astype(np.float32).ravel())
+        obj['c3d_toon_fringe_lift_m']=float(lift.max())
+        obj.data.update()
 
 
 def fit_mouth(body,meshes):
@@ -637,7 +790,7 @@ def fit_mouth(body,meshes):
             # The stock dental proxies are ~8 cm deep: merely recessing their
             # fronts leaves their backs outside a flattened toon jaw, visible
             # below the chin during a nod. Keep the whole volume behind the lips.
-            q[:,1]=np.clip(q[:,1]+.025*h,lip_plane+.025*h,lip_plane+.065*h)
+            q[:,1]=np.clip(q[:,1]+.045*h,lip_plane+.045*h,lip_plane+.09*h)
             data.foreach_set('co',((q@inv[:3,:3].T+inv[:3,3]).astype(np.float32)).ravel())
 
 
@@ -663,9 +816,16 @@ def lift_smile(body,meshes):
             corners=smooth(abs(points[:,0])/(.06*h))*smooth(sign*points[:,0]/(.02*h))
             # Keep the centre steady: native centre lift can cancel the corner
             # rise on a small mouth. The bounded, smooth curve stays on the face.
-            delta[:,2]=delta[:,2]*(1-mouth)+.05*h*corners*mouth
+            delta[:,2]=delta[:,2]*(1-mouth)+.032*h*corners*mouth
             delta[:,0]*=1+.35*corners*mouth
             delta[:,2]=np.clip(delta[:,2],-.055*h,.055*h)
+            # The stock smile's broad cheek pull reintroduced the contour notch
+            # at full expression. Keep articulation at the lips, soften it at
+            # the outer cheek/jaw silhouette on every fitted proxy.
+            profile=smooth((abs(points[:,0])-.16*h)/(.10*h))
+            profile*=np.exp(-((points[:,2]-mouth_z)/(.25*h))**4)
+            profile*=1-smooth((points[:,1]-mouth_y-.03*h)/(.20*h))
+            delta*=1-.85*profile[:,None]
             key.data.foreach_set('co',(base+delta).ravel())
 
 

@@ -281,14 +281,18 @@ result=.92*(shin+max(0,ankle))/.515
         png=binary[view.get('byteOffset',0):view.get('byteOffset',0)+view['byteLength']]
         with av.open(io.BytesIO(png)) as decoded:
             pixel=next(decoded.decode(video=0)).to_ndarray(format='rgb24')[0,0]
-        color=np.array(built['stylized']['sampled_skin_rgb'])
+        # Compare the exported texture with the actual bounded pigment, not
+        # the raw scan sample (bright scans can exceed the material's .8 cap).
+        color=np.array(built['stylized']['materials']['skin_rgb_linear'])
         expected=np.where(color<=.0031308,color*12.92,1.055*color**(1/2.4)-.055)*255
         assert np.max(abs(pixel-expected))<4,(pixel,expected)
         await call('save_project',path='toon_'+style+'.blend')
         evidence[style]=dict(build=built,measurements=measurements,stills=[front,quarter],wave=wave,walk=walk,seat=seat,blink=blink,export=glb)
         (output/'toon_checks.json').write_text(json.dumps(evidence,indent=2))
     await call('new_scene')
-    script='GAYA: anime\nMUSIK: none\nANA (perempuan, anime, rambut pendek): Halo!\nBUDI (pria, kartun, rambut pendek): Hai!'
+    # Give the directed coverage enough speech for its minimum shot length;
+    # this fixture verifies body descriptors, not sub-second camera cuts.
+    script='GAYA: anime\nMUSIK: none\nANA (perempuan, anime, rambut pendek): Halo semuanya, senang bertemu dengan kalian!\nBUDI (pria, kartun, rambut pendek): Hai juga, mari kita berbincang bersama hari ini.'
     scene=await data('script_to_scene',script=script,name='ToonScene',voice=False,sound=False,music=None,subtitles=False)
     inspect=await data('run_blender_python',code="result={o.name:o.get('c3d_style') for o in bpy.context.scene.objects if o.type=='ARMATURE' and not o.get('c3d_role')}")
     assert {'anime','cartoon'}<=set(inspect['result'].values()),inspect

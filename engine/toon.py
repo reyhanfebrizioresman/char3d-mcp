@@ -119,26 +119,31 @@ class RestMap:
             # Exact, broad, monotone remaps at the actual eyelid coordinates.
             # Horizontal and vertical opening scales are independently authored.
             front=1-smooth((original[:,1]-ey-.025)/(.20*h))
+            eye_front=1-smooth((original[:,1]-ey-.015*h)/(.10*h))
             cx=float(np.mean(np.abs(self.eyes[:,0])))
-            ex=cx*.97
             width=.073*h
+            # Enlarging lids by squeezing the inner canthi onto the sagittal
+            # plane makes a pinched vertical nasal groove. Move sockets apart
+            # with their inserts instead, retaining a broad smooth bridge.
+            ex=cx+width*(cfg['eye_width']-1)*.35
             ax=np.abs(original[:,0])
             xmap=monotone(ax,[0,cx-width,cx,cx+width,.43*h],
                          [0,ex-width*cfg['eye_width'],ex,ex+width*cfg['eye_width'],.46*h])
-            near=smooth((u-.24)/.16)*(1-smooth((u-.56)/.12))*front
+            near=smooth((u-.24)/.16)*(1-smooth((u-.56)/.12))*eye_front
             headxy[:,0]+=(np.sign(original[:,0])*xmap-original[:,0])*near
             dz=(original[:,2]-ez)/h
             zmap=monotone(dz,[-.30,-.035,0,.035,.30],[-.30,-.035*cfg['eye_height'],0,.035*cfg['eye_height'],.30],endpoint_slopes=(1.,1.))
             left=np.exp(-((original[:,0]+cx)/(.125*h))**4)
             right=np.exp(-((original[:,0]-cx)/(.125*h))**4)
-            local=(1-(1-left)*(1-right))*front
+            local=(1-(1-left)*(1-right))*eye_front
             moved_z=original[:,2]+(zmap-dz)*h*local
             p[:,2]=np.where(u>=0,monotone(moved_z,zx,zy),p[:,2])
             # Small smooth lower face, larger cranium. Narrow anime chin vs round
             # cartoon cheeks remain distinct at thumbnail size.
             jaw=monotone(u,[0,.32,.65,1],[cfg['chin'],cfg['cheek'],cfg['cranium'],cfg['cranium']])
             headxy[:,0]*=jaw
-            nose=np.exp(-.5*(original[:,0]/(.065*h))**4-.5*((u-.38)/.12)**4)*front
+            nose=np.exp(-.5*(original[:,0]/(.075*h))**4-.5*((u-.34)/.095)**4)*front
+            nose*=1-smooth((u-.43)/.10)
             headxy[:,0]*=1+(cfg['nose']**.5-1)*nose
             # Compress protrusion and nostril depth toward a smooth facial plane.
             plane=ey-.035*h+.10*h*(original[:,0]/(.35*h))**2
@@ -147,15 +152,16 @@ class RestMap:
             headxy[:,0]*=1+(cfg['mouth']-1)*mouth
             headxy[:,1]+=(plane-original[:,1])*.40*mouth
             cheek=np.exp(-.5*((np.abs(original[:,0])-.22*h)/(.12*h))**2-.5*((u-.32)/.15)**2)*front
-            headxy[:,1]+=(ey+.015*h-original[:,1])*cheek*(.32 if self.style=='anime' else .46)
+            headxy[:,1]+=(ey+.015*h-original[:,1])*cheek*(.10 if self.style=='anime' else .18)
         pivot=ey+.32*h
         headxy[:,0]*=self.scale
         headxy[:,1]=pivot+(headxy[:,1]-pivot)*self.scale
         # Broad neck blend with a radial gate below the jaw: shoulders retain
         # torso width while the neck has continuous position AND tangent.
-        blend=smooth((u+.35)/.55)
+        blend=smooth((u+.35)/.35)
         radial=np.exp(-(original[:,0]/(.25*h))**4)
-        blend*=smooth(u/.16)+(1-smooth(u/.16))*radial
+        jaw_blend=smooth((u+.06)/.08)
+        blend*=jaw_blend+(1-jaw_blend)*radial
         p[:,:2]=bodyxy*(1-blend[:,None])+headxy*blend[:,None]
         return p
 
