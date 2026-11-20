@@ -867,6 +867,32 @@ def _repair_torsos(bodies, rigs, frames, clearance, reports, skip):
     return failed
 
 
+def _seat_contact_samples(rigs, first, last):
+    from .seating import _body_samples, _contact_height
+
+    scene = bpy.context.scene
+    samples = {}
+    with evaluated_skin(rigs):
+        for rig in rigs:
+            if not rig.get('c3d_seat_active') or not rig.get('c3d_seated'):
+                continue
+            seat = json.loads(rig['c3d_seated'])
+            events = json.loads(rig.get('c3d_seat_events', '[]'))
+            settled = max((event['end'] for event in events if event['kind'] == 'sit'
+                           and event['seat'] == seat['seat']), default=first)
+            if settled > last:
+                continue
+            center, front = Vector(seat['center']), Vector(seat['front'])
+            scene.frame_set(max(first, settled))
+            body = _body_samples(rig, anim.semantic_map(rig))
+            contacts = {}
+            for frame in sorted({max(first, settled), last}):
+                scene.frame_set(frame)
+                contacts[frame] = _contact_height(rig, center, front, body)
+            samples[rig.name] = (center, front, body, contacts)
+    return samples
+
+
 @command('resolve_collisions')
 def resolve_collisions(characters=None, frame_start=None, frame_end=None, parts='all',
                        clearance=.01, max_iterations=8, report_only=False, _sample_step=1):
@@ -916,6 +942,8 @@ def resolve_collisions(characters=None, frame_start=None, frame_end=None, parts=
         geometry = surfaces(rigs)
         all_rigs = [b.rig for b in bodies]
         window = [] if report_only else _window_snapshot(rigs,f0,f1)
+        seat_samples = (_seat_contact_samples(rigs, f0, f1)
+                        if not report_only and selected & {'arms', 'legs', 'torso'} else {})
         timing['fit'] = time.perf_counter()-started
         from .script_scene import _bones_only
         samples, bases, prop_samples, prop_roots = {}, {}, {}, {}
@@ -1114,6 +1142,23 @@ def resolve_collisions(characters=None, frame_start=None, frame_end=None, parts=
                                 key.interpolation = 'LINEAR'
         if 'torso' in selected and not report_only:
             failed_rigs.update(_repair_torsos(bodies, rigs, frames, clearance, reports, skip))
+        if seat_samples:
+            from .seating import _contact_height
+            with evaluated_skin(rigs):
+                for rig in rigs:
+                    if rig.name not in seat_samples:
+                        continue
+                    center, front, body, contacts = seat_samples[rig.name]
+                    for frame, before in contacts.items():
+                        sc.frame_set(frame)
+                        try:
+                            error = abs(_contact_height(rig, center, front, body) - before)
+                        except ValueError:
+                            error = math.inf
+                        if error > .003:
+                            failed_rigs.add(rig.name)
+                            skip(rig, 'seat', frame, 'body correction moved the seat contact',
+                                 target_error=error if math.isfinite(error) else 0.)
         timing['bake'] = time.perf_counter()-t
         t = time.perf_counter()
         # Re-measure evaluated bones after keying, including all newly moved peer
