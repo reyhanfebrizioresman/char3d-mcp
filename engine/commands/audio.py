@@ -288,12 +288,65 @@ def add_audio(path, start_frame=1, volume=1.0, channel=None, name=None,
             "seconds": round((end - start) / (sc.render.fps / sc.render.fps_base), 2), "path": path}
 
 
+def _source_activity(path):
+    import aud
+
+    sound = aud.Sound(path)
+    rate = int(sound.specs[0])
+    samples = np.asarray(sound.data(), dtype=np.float32)
+    if not len(samples):
+        return []
+    # Short, broadband RMS windows keep quiet consonants and handle stereo
+    # recordings where opposite-polarity channels would cancel in the downmix.
+    step = max(1, round(.02 * rate))
+    power = np.square(samples)
+    if power.ndim == 2:
+        power = power.mean(axis=1)
+    blocks = np.add.reduceat(power, np.arange(0, len(power), step))
+    sizes = np.minimum(step, len(power) - np.arange(len(blocks)) * step)
+    level = np.sqrt(blocks / sizes)
+    gate = max(1e-4, min(.003, float(level.max()) * .02))
+    return [(a * step / rate, min(b * step, len(samples)) / rate)
+            for a, b in _segments(level > gate, rate / step, merge_gap_s=.5)]
+
+
 def _speech_ranges(sc):
-    """Union of unmuted voice-strip spans and every character's lip-sync word times."""
-    ranges = [(float(s.frame_final_start), float(s.frame_final_end)) for s in _sound_strips(sc)
-              if s.get("char3d_audio_kind", "voice") == "voice" and not s.mute]
-    ranges += [(a, b) for obj in sc.objects for _word, a, b in load_words(obj)]
-    gap = 0.5 * sc.render.fps / sc.render.fps_base
+    """Detect active voice audio and retain timing for lips animated without sound."""
+    fps = sc.render.fps / sc.render.fps_base
+    ranges, activity, recorded = [], {}, {}
+    for strip in _sound_strips(sc):
+        if strip.get("char3d_audio_kind", "voice") != "voice":
+            continue
+        start, end = float(strip.frame_final_start), float(strip.frame_final_end)
+        origin = float(strip.frame_start)
+        speaker = strip.get("char3d_speaker")
+        if speaker:
+            recorded.setdefault(speaker, []).append((min(origin, start),
+                                                      max(end, origin + strip.frame_duration)))
+        if strip.mute or (strip.volume == 0 and _volume_curve(strip) is None):
+            continue
+        if not strip.sound or len(getattr(strip, "retiming_keys", ())):
+            ranges.append((start, end))
+            continue
+        path = bpy.path.abspath(strip.sound.filepath)
+        if path not in activity:
+            try:
+                activity[path] = _source_activity(path)
+            except (OSError, RuntimeError, ValueError):
+                activity[path] = None
+        spans = activity[path]
+        if spans is None:
+            ranges.append((start, end))
+            continue
+        origin -= float(getattr(strip, "sound_offset", 0)) * fps
+        ranges.extend((max(start, math.floor(origin + a * fps + 1e-6)),
+                       min(end, math.ceil(origin + b * fps - 1e-6))) for a, b in spans)
+    for obj in sc.objects:
+        speaker = obj.parent if obj.parent and obj.parent.type == "ARMATURE" else obj
+        clip_spans = recorded.get(speaker.name, ())
+        ranges.extend((a, b) for _word, a, b in load_words(obj)
+                      if not any(max(a, start) < min(b, end) for start, end in clip_spans))
+    gap = .5 * fps
     merged = []
     for a, b in sorted(ranges):
         a, b = max(a, sc.frame_start), min(b, sc.frame_end + 1)

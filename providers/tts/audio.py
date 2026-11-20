@@ -4,8 +4,10 @@ from pathlib import Path
 
 import numpy as np
 
+from engine.music.dsp import true_peak
+
 SAMPLE_RATE = 48000
-DSP_VERSION = "psola-formant-normalize-2"
+DSP_VERSION = "psola-formant-normalize-3"
 
 
 def read(path):
@@ -232,12 +234,22 @@ def normalize(samples, sample_rate=SAMPLE_RATE):
     if not len(active):
         raise ValueError("TTS returned silent audio")
     x = x[max(0, int(active[0]) * block):min(len(x), (int(active[-1]) + 1) * block)]
-    voiced = envelope[active]
-    rms = float(np.sqrt(np.mean(voiced ** 2)))
-    x *= min(.12 / max(rms, 1e-9), .89 / max(float(np.max(np.abs(x))), 1e-9))
+    voiced_rms = float(np.sqrt(np.mean(envelope[active] ** 2)))
+    # Ease loud syllables toward the rest of the line before applying makeup gain.
+    # Interpolated gain preserves the shape and duration of internal pauses.
+    first, last = int(active[0]), int(active[-1]) + 1
+    levels = envelope[first:last]
+    gain = np.sqrt(np.minimum(1., (1.5 * voiced_rms) / np.maximum(levels, 1e-9)))
+    x *= np.interp(np.arange(len(x)), (np.arange(len(gain)) + .5) * block, gain)
+    active_gain = gain[active - first]
+    rms = float(np.sqrt(np.mean((envelope[active] * active_gain) ** 2)))
     fade = min(round(sample_rate * .008), len(x) // 2)
     if fade:
         ramp = np.sin(np.linspace(0, np.pi / 2, fade)) ** 2
         x[:fade] *= ramp
         x[-fade:] *= ramp[::-1]
-    return np.pad(x, (round(sample_rate * .04),) * 2).astype(np.float32)
+    x = np.pad(x, (round(sample_rate * .04),) * 2)
+    # Leave headroom for other stems and for peaks between PCM samples.
+    peak = true_peak(x[:, None])
+    x *= min(.12 / max(rms, 1e-9), 10 ** (-2 / 20) / max(peak, 1e-9))
+    return x.astype(np.float32)

@@ -1390,9 +1390,9 @@ async def auto_music(mood: str = "auto", duration: float | None = None,
 async def duck_music(music_strip: str | None = None, amount_db: float = -12,
                      attack: float = 0.15, release: float = 0.4) -> dict:
     """Lower music during speech using volume keys. music_strip=None selects all music;
-    a strip name selects that track and its repeats. Speech is the union of unmuted voice
-    strip spans (untagged legacy strips count as voice) and all stored lip-sync word times;
-    gaps <= 0.5 s are merged. amount_db <= 0 is relative to the original track volume;
+    a strip name selects that track and its repeats. Ducks for audible parts of voice
+    strips, including legacy untagged strips, and lip-sync words without a voice strip.
+    Gaps <= 0.5 s are merged. amount_db <= 0 is relative to the original track volume;
     attack seconds leads speech, release seconds follows it. Fades are preserved.
     Replaces selected music volume curves; safe to rerun after changing speech/timeline.
     Returns affected strips and merged speech_ranges in frames."""

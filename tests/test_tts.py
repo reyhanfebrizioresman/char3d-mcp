@@ -221,6 +221,27 @@ class AudioTests(unittest.TestCase):
             audio.normalize(np.zeros(1000))
 
 
+    def test_normalization_softens_loud_syllable_and_preserves_internal_pause(self):
+        rate = audio.SAMPLE_RATE
+        sine = np.sin(2 * np.pi * 200 * np.arange(2 * rate) / rate)
+        sine[:rate] *= .05
+        sine[rate:rate + rate // 2] = 0
+        sine[rate + rate // 2:] *= .25
+        sine[rate * 3 // 2 + 100:rate * 3 // 2 + 700] *= 3
+        # Add a brief high-crest transient near the louder syllable.
+        sine[int(rate * 1.6)] = .95
+        result = audio.normalize(sine)
+        pad = round(rate * .04)
+        self.assertEqual(len(result), 2 * rate + 2 * pad)
+        silent = result[pad + rate + 100:pad + rate * 3 // 2 - 100]
+        self.assertLess(np.max(np.abs(silent)), .001)
+        self.assertLessEqual(audio.true_peak(result[:, None]), 10 ** (-2 / 20) + 1e-7)
+        src = np.max(np.abs(sine[rate * 3 // 2:rate * 3 // 2 + 1000])) / .05
+        out = np.max(np.abs(result[pad + rate * 3 // 2:pad + rate * 3 // 2 + 1000]))
+        out /= np.max(np.abs(result[pad + 1000:pad + rate - 1000]))
+        self.assertLess(out, .85 * src)
+
+
 class BackendTests(unittest.TestCase):
     def test_f5_chunks_share_one_model_thread_and_preserve_exceptions(self):
         import threading

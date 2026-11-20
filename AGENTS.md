@@ -610,9 +610,10 @@ from the `voice` speech switch.
   track, not each repeat. Result `strips` lists all repeats; `strip` is the first.
 - Run `duck_music(music_strip=None, amount_db=-12, attack=0.15, release=0.4)` after adding
   speech: music drops by the given dB relative to its original volume. Attack seconds
-  lead speech and release seconds follow it. Speech is the union of unmuted voice-strip
-  spans (legacy untagged strips count as voice) and all `char3d_words` lip-sync word times;
-  gaps <= 0.5 s merge. Split voice strips at long silent pauses for music to recover there.
+  lead speech and release seconds follow it. Audible voice regions respect strip trims;
+  gaps <= 0.5 s merge so the bed recovers in longer pauses. Legacy untagged strips
+  still count as voice. Word timing is used where the speaker has no matching strip.
+  Unreadable or retimed voice strips use their visible timeline span.
   Sfx/music do not count as speech. None ducks all music; a strip name selects its entire
   loop group. Fades remain; rerunning replaces that music's volume keys without cumulative
   attenuation. Rerun after changing speech; recreate loops if extending the timeline.
@@ -850,8 +851,8 @@ voice_reference=None, reference_text=None)` returns `path` relative to
 0.5..2 multiplier; `pitch` is -12..12 semitones relative to the raw voice. `output`
 optionally copies the cached WAV to another `.wav` path inside `imports/`.
 All engines normalize to 48 kHz mono 16-bit PCM, target active RMS ~-18.4 dBFS with
-a -1 dBFS peak ceiling, short fades and 40 ms silence pads. Peak limiting can reduce
-RMS for high-crest audio. Cache keys cover engine/version/model, voice, exact text,
+gentle syllable compression, a -2 dB true-peak ceiling, short fades and 40 ms
+silence pads. Peak limiting can reduce RMS for high-crest audio. Cache keys cover engine/version/model, voice, exact text,
 language, rate, pitch and DSP version under `imports/audio/tts/`.
 
 `script_to_scene(..., voice=True, tts_engine="piper")` casts deterministically per

@@ -21,6 +21,47 @@ def decode(path):
         return np.concatenate([f.to_ndarray().mean(axis=0) for f in frames]), rate
 
 
+async def check_dialogue_ducking(data, call, workspace):
+    await call('new_scene', frame_end=120)
+    rate = 48000
+    position = np.arange(4 * rate) / rate
+    signal = .25 * np.sin(2 * np.pi * 220 * position)
+    signal *= ((.4 <= position) & (position < .9)) | ((2.4 <= position) & (position < 2.9))
+    fixture = workspace / 'imports' / 'dialogue_pause.wav'
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(fixture), 'wb') as wav:
+        wav.setparams((2, 2, rate, 0, 'NONE', 'not compressed'))
+        # Antiphase stereo still contains speech.
+        wav.writeframes((np.column_stack((signal, -signal)) * 32767).astype('<i2').tobytes())
+
+    speaker = (await data('add_primitive', kind='cube', name='VoiceOwner'))['name']
+    bed = await data('add_audio', path=fixture.name, kind='music', loop=True, volume=.3)
+    voice = await data('add_audio', path=fixture.name, start_frame=13)
+    await call('run_blender_python', code=f'''
+from engine.commands.audio import _sound_strips
+from engine.commands.semantic import store_words
+sc = bpy.context.scene
+voice = next(s for s in _sound_strips(sc) if s.name == {voice['strip']!r})
+voice.frame_final_start, voice.frame_final_end = 24, 81
+voice['char3d_speaker'] = {speaker!r}
+store_words(bpy.data.objects[{speaker!r}], [('pause', 48, 52)], 24, 81)
+''')
+    ducking = await data('duck_music', music_strip=bed['strip'])
+    assert ducking['speech_ranges'] == [[24, 35], [70, 81]], ducking
+    inspection = await data('run_blender_python', code=f'''
+from engine.commands.audio import _sound_strips, _volume_curve
+strips = _sound_strips(bpy.context.scene)
+bed = next(s for s in strips if s.name == {bed['strip']!r})
+result = [_volume_curve(bed).evaluate(f) for f in (29, 53, 76)]
+next(s for s in strips if s.name == {voice['strip']!r}).mute = True
+''')
+    assert np.allclose(inspection['result'], [.3 * 10 ** (-12 / 20), .3, .3 * 10 ** (-12 / 20)])
+    assert not (await data('duck_music'))['speech_ranges'], 'muted dialogue must leave music at full gain'
+    await call('remove_audio', name=voice['strip'])
+    assert (await data('duck_music'))['speech_ranges'] == [[48, 52]]
+    print('DIALOGUE DUCK OK | stereo, trim, pause, mute and words-only', flush=True)
+
+
 async def run(call, text_of):
     assert os.environ.get('CHAR3D_PORT') in ('9974', '9975'), 'music integration requires an isolated test port'
 
@@ -28,6 +69,7 @@ async def run(call, text_of):
         return json.loads(text_of(await call(tool, **args))[-1])
 
     await data('scene_info')
+    await check_dialogue_ducking(data, call, Path(os.environ.get('CHAR3D_WORKSPACE', ROOT / 'output')))
     await call('new_scene', frame_end=2)
     clothes = ['female_casualsuit01', 'shoes01']
     script = dict(characters=[dict(id='Ana', gender=0, hair=None, clothes=clothes)], beats=[
