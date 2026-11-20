@@ -104,6 +104,17 @@ def run():
     shock=plan_coverage([dict(speaker='A',start=1,end=220,text='Wah!')],['A','B'],1,232,
         emotions={'A':[dict(frames=[1,220],emotion='surprised',strength=1.,source='cue',sentence='Wah!')]})
     assert sum(s['move']=='crash_zoom' for s in shock['shots'])==1
+    assert not any(s['size']=='extreme_close_up' and s['subject']=='A' for s in shock['shots']), 'talking face stays whole'
+    for result in (angry,tender):
+        seen={}
+        for shot in result['shots']:
+            who=shot['subject']
+            if who is None:continue
+            signature=(shot['size'],shot['move'],shot['reason']['role']=='OTS')
+            if who in seen and shot['frames'][0]-seen[who][0]<=12*24:
+                assert signature!=seen[who][1],(shot,seen[who])
+            seen[who]=(shot['frames'][0],signature)
+        assert sum(s['size']=='extreme_close_up' for s in result['shots'])<=1
     print('EMOCAM UNIT OK')
 
 if __name__=='__main__':

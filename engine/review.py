@@ -29,7 +29,8 @@ def articulation_present(curves, start, end, fps=24):
 def safe_fixes(issues):
     """One batch, restricted to reversible tool operations; merge shared mix fixes."""
     import copy
-    allowed={'auto_blink','duck_music','auto_sfx','add_subtitles','camera_shot','add_title','resolve_collisions'}
+    allowed={'auto_blink','duck_music','auto_sfx','add_subtitles','camera_shot','add_title',
+             'resolve_collisions','layout_overlays'}
     selected={}
     for finding in issues:
         if not finding['auto_fixable']:continue
@@ -52,7 +53,17 @@ def safe_fixes(issues):
                 if previous.get('characters') is not None and args.get('characters') is not None:
                     previous['characters']=sorted(set(previous['characters']) | set(args['characters']))
                 else:previous.pop('characters',None)
-    return list(selected.values())
+            elif tool=='camera_shot':
+                # One replay must satisfy visibility, mouth and repeat repairs.
+                for flag in ('require_composition','face_coverage'):
+                    previous[flag]=bool(previous.get(flag) or args.get(flag))
+                sizes=('extreme_wide','wide','full','medium_full','medium','medium_close','close_up','extreme_close_up')
+                if args.get('shot') in sizes and previous.get('shot') in sizes:
+                    previous['shot']=min((previous['shot'],args['shot']),key=sizes.index)
+                    previous['lens']=None
+    actions=list(selected.values())
+    # Timing/font repairs can replace configs; enable collision avoidance last.
+    return [a for a in actions if a['tool']!='layout_overlays']+[a for a in actions if a['tool']=='layout_overlays']
 
 
 def score(issues):
@@ -127,6 +138,34 @@ SIZES = ('extreme_wide', 'wide', 'full', 'medium_full', 'medium', 'medium_close'
 
 def camera_checks(shots, duration=0):
     out = []; planned_sizes = {}
+    ecus = [s for s in shots if s.get('size')=='extreme_close_up']
+    peak_level = max((s.get('reason',{}).get('intensity',0) for s in shots),default=0)
+    eligible = [s for s in ecus if not s.get('talking') and (not s.get('reason') or
+                (s['reason'].get('role')=='peak' and s['reason'].get('intensity',0)>=peak_level-.001))]
+    keep = max(eligible,key=lambda s:s.get('reason',{}).get('intensity',0),default=None)
+    seen = {}
+    for index,current in enumerate(shots):
+        if current.get('size')=='extreme_close_up' and current is not keep:
+            out.append(issue('ecu_limit','camera','error','Reserve one extreme close-up for a silent peak; use a full talking face.',
+                dict(scene_ecu_count=len(ecus),talking=bool(current.get('talking'))),
+                fix=camera_proposal(current,shot='close_up',lens=None,face_coverage=True),
+                auto=bool(current.get('repair')),shot=current['name'],frame=current['frames'][0]))
+        subject=tuple(current.get('subject',[]))
+        previous=seen.get(subject)
+        if len(subject)==1 and previous and index>previous[0]+1:
+            old=previous[1]
+            delta=abs((current.get('angle',0)-old.get('angle_end',old.get('angle',0))+180)%360-180)
+            within=current['frames'][0]-old['frames'][0]<=12*current.get('fps',24)
+            same=(current.get('size')==old.get('size') and current.get('move')==old.get('move') and delta<10
+                  and bool(current.get('foreground_shoulder'))==bool(old.get('foreground_shoulder')))
+            if within and same:
+                size=SIZES[max(2,SIZES.index(current.get('size','medium'))-2)]
+                out.append(issue('repeat_framing','camera','warn','The same subject returns to near-identical framing within twelve seconds.',
+                    dict(previous=old['name'],angle_change_deg=round(delta,2)),
+                    fix=camera_proposal(current,shot=size,lens=None),auto=bool(current.get('repair')),
+                    shot=current['name'],frame=current['frames'][0]))
+        if len(subject)==1:
+            seen[subject]=(index,current)
     for previous, current in zip(shots, shots[1:]):
         same = set(previous.get('subject', [])) == set(current.get('subject', [])) and current.get('subject')
         a = previous.get('angle_end', previous.get('angle', 0)); b = current.get('angle', 0)
@@ -139,7 +178,7 @@ def camera_checks(shots, duration=0):
             fix=[]
             if current.get('subject'):
                 i=SIZES.index(current.get('size','medium')); previous_i=planned_sizes.get(previous['name'],SIZES.index(previous.get('size','medium')))
-                choices=[n for n in range(len(SIZES)) if abs(n-previous_i)>=2]
+                choices=[n for n in range(len(SIZES)-1) if abs(n-previous_i)>=2]
                 target=min(choices,key=lambda n:(abs(n-i),n))
                 fix=camera_proposal(current,shot=SIZES[target],lens=None)
                 planned_sizes[current['name']]=target
@@ -164,6 +203,14 @@ def camera_checks(shots, duration=0):
                 fix=repair or camera_proposal(s,shot=SIZES[min(len(SIZES)-1,SIZES.index(size)+1)]),auto=bool(repair), **where))
         edge = [p for p in samples if p.get('face_edge')]
         blocked = s.get('occlusion', 0)
+        if s.get('scenery_occlusion',0)>0:
+            out.append(issue('face_scenery','camera','error','Scenery covers a face; refit the camera to clear every subject.',
+                dict(face_occlusion=s['scenery_occlusion'],objects=s.get('blockers',[])),
+                fix=repair or camera_proposal(s,avoid_occlusion='auto',require_composition=True),auto=bool(repair),**where))
+        if s.get('talking') and any(p.get('mouth_edge') for p in samples):
+            out.append(issue('talking_mouth_crop','camera','error','A talking mouth reaches or crosses the image edge.',
+                dict(mouth_boxes=[p.get('mouth_box') for p in samples]),
+                fix=camera_proposal(s,shot='close_up',lens=None,face_coverage=True),auto=bool(repair),**where))
         if edge or blocked > .05:
             out.append(issue('face_visibility', 'camera', 'warn', 'A face reaches the frame edge or is blocked.',
                 dict(edge_samples=len(edge), face_occlusion=blocked), fix=repair, auto=bool(repair), **where))

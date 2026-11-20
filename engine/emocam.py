@@ -142,12 +142,15 @@ def plan_coverage(lines, characters, start, end, fps=24, words=None, emotions=No
     curve = emotion_curve(lines, words, emotions, energy, beats)
     minimum = max(2, math.ceil(fps))
     warnings, shots, reactions = [], [], []
+    accent_used = False
+    real_peak = max(curve,key=lambda e:(e['intensity'],e.get('raw_intensity',0),-e['frame']),default=None)
     events_by_line = {i: [e for e in curve if e['line'] == i] for i in range(len(lines))}
 
     def event_at(frame):
         return min(curve, key=lambda e: abs(e['frame']-frame)) if curve else dict(emotion='neutral', intensity=.2, phase='hold')
 
     def add(a, b, who, role, event, size=None, partner=None, detail=None):
+        nonlocal accent_used
         if b < a:
             return
         value, emotion = event['intensity'], event['emotion']
@@ -161,9 +164,12 @@ def plan_coverage(lines, characters, start, end, fps=24, words=None, emotions=No
             move = 'pull_out'
         shock = (role == 'peak' and emotion == 'surprise' and event.get('source') == 'cue'
                  and event.get('raw_intensity', 0) >= .93
-                 and not any(s['move']=='crash_zoom' for s in shots))
+                 and not accent_used and real_peak is not None
+                 and event['frame']==real_peak['frame'])
         if shock:
-            size, move = 'extreme_close_up', 'crash_zoom'
+            speaking = any(l['speaker']==who and l['start']<=b and l['end']>=a for l in lines)
+            size, move = ('close_up' if speaking else 'extreme_close_up'), 'crash_zoom'
+            accent_used = True
         # Same-subject cuts need two sizes of change. Do this before baking;
         # live face-relative cameras should never be rotated away just for variety.
         if shots and shots[-1]['subject'] == who:
@@ -179,6 +185,18 @@ def plan_coverage(lines, characters, start, end, fps=24, words=None, emotions=No
                 size = SIZES[min(choices, key=lambda j: (abs(j-SIZES.index(size)), j))]
                 if role == 'OTS':
                     role = 'speaker'
+        previous = next((s for s in reversed(shots) if who is not None and s['subject']==who),None)
+        if (previous and 0<=a-previous['frames'][0]<=12*fps and previous['size']==size
+                and previous['move']==move and (previous['reason']['role']=='OTS')==(role=='OTS')):
+            i = SIZES.index(size)
+            distance = 2 if shots[-1] is previous else 1
+            choices = [j for j in range(2,7) if abs(j-i)>=distance]
+            if role=='reaction' and value<.48 and size=='medium_close':
+                move = 'dolly_in'
+            else:
+                size = SIZES[min(choices,key=lambda j:(abs(j-i),j if value<.48 else -j))]
+            if role=='OTS' and size!='medium_close':
+                role = 'speaker'
         reason = dict(role=role, emotion=emotion, intensity=value, phase=event.get('phase', 'hold'),
                       detail=detail or ('listener response over continuing speaker audio' if role == 'reaction' else 'emotional coverage'))
         shots.append(dict(frames=[int(a), int(b)], subject=who, size=size, move=move,

@@ -208,7 +208,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
         sc.frame_set(1)
         if len(cast) > 1:
             # Open torsos toward coverage while leaving a natural head/eye turn to peers.
-            dispatch("stage_dialog", {"characters": cast, "cheat_deg": 55.0})
+            dispatch("stage_dialog", {"characters": cast, "cheat_deg": 55.0, "desk":False})
         if plan["environment"]:
             dispatch("set_environment", {"preset": plan["environment"], "subject": cast, "variant": abs(int(seed))})
         if world_recipe is not None:
@@ -225,6 +225,13 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             props[ident] = result['world']['elements'][ident]
     preferred_seats = {}
     fps = sc.render.fps
+    if world_recipe is None:
+        from .desk_dialog import stage as stage_desk
+        result['staging'] = stage_desk(cast,plan['beats'])
+        for row in result['staging'].get('seats',[]):
+            ident = next(k for k,v in characters.items() if v['rig']==row['character'])
+            pair = row['seat'],row['seat_index']
+            occupied.add(pair);assigned_seats[ident]=pair;body_started.add(ident)
 
     def initial_idle(ident, end):
         if ident in body_started:

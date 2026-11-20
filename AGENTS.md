@@ -49,7 +49,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `retarget_animation`, `lock_feet`, `resolve_collisions`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
-  `remove_subtitles`, `add_transition`, `add_title`, `list_graphics`, `remove_graphics`,
+  `remove_subtitles`, `add_transition`, `add_title`, `layout_overlays`, `list_graphics`, `remove_graphics`,
   `render_options`, `render_video`, `render_status`, `cancel_render`
 - Multi-scene films: `script_to_film`, `film_info`, `open_film_scene`,
   `film_render_options`, `render_film` (shared `render_status` / `cancel_render`)
@@ -907,6 +907,11 @@ optional per line `pause_s` / `delay_s`). It:
   hold longer; >30 s scenes reserve a five-second breath. Tight shock accents require
   a strong explicit surprise emotion cue. Short scenes/absent word gaps can limit
   variety or reactions; missing face targets warn. Inspect actual listener faces.
+  One extreme close-up is reserved for a real silent peak; talking portraits use
+  close-up/full-face coverage. Returning singles vary size or move within twelve
+  seconds. `camera_shot` also protects talking mouths and limits ECU count.
+  Explicit camera cues retain their timing and direction; an unsafe talking ECU or
+  additional ECU is refitted to close-up, reported in `requested_shot`/`framing_notes`.
 Gaze samples the live posed head of each target at every keyed frame, including
 pelvis turns and seated height. Targets beyond 70° also receive a small chest turn
 (up to 45°); root/legs stay intact. Dialog opens heads 18° toward the camera side
@@ -1042,6 +1047,12 @@ and a reachable approach. Builds report the choice in `warnings` and
 Exact seat object names are always honored, with gaze/cameras adapting instead.
 Other known prop kinds are created as needed. MPFB missing uses rigged
 mannequins, with timing/audio/captions and gestures but no face, hair or clothes.
+Initial dialog in podcast_studio/news_desk/office seats the cast together when no
+sit/stand/walk/enter/interact direction is authored. It adapts the standing-height desk
+to the chairs and folds microphones below the mouth, aimed toward each guest.
+Authored physical blocking and world stages retain priority. Results report `staging`.
+Hand-made `stage_dialog` in an existing desk set has the same default; `desk=False`
+keeps standing staging, and `dialog(stage=False)` preserves placement.
 The result includes `characters` (id → `{rig, mesh, realistic}`), actual beat `frames`,
 `lines`, `shots`, `duration_s`, `warnings`, and `timings` in seconds. `camera="none"`
 creates one wide camera so the scene is still renderable, without dialog cuts.
@@ -1394,7 +1405,11 @@ and a quiet turn; shot length/variation/mid-word cuts; projected scale, face/eye
 position, visibility, jump cuts and dialog side; subtitle hold/CPS/face overlap,
 title duration, sampled luminance/contrast; blink/articulation/expression/motion,
 sole/torso/held-grip proxies, skin-fitted limb distances and sampled garment/prop
-penetration against evaluated furniture triangles. OTS review also checks rear-head orientation and measured
+penetration against evaluated furniture triangles. Scenery on any face, including two-shots, is an error
+with a native camera auto-fix. Talking-mouth crops, repeated ECU and repeated single
+framing are checked too. Measured caption glyph/outline boxes and title backing boxes
+are checked against face/mouth boxes and each other; `layout_overlays` repairs their
+placement without changing words or timing. OTS review also checks rear-head orientation and measured
 foreground width. `limited_coverage` warns only for scenes >20 s with >=4 shots,
 all static, and >=75% at one size. This is one normal camera warning (8 category
 points, about 1–2 overall points), with no automatic artistic edit; a single held
@@ -1406,7 +1421,7 @@ re-fitting or title hold fixes, and reviews once. An undersized native shot is r
 with its subject, move and dialog side retained; a jump cut changes the incoming view
 by two sizes. Short shots, long static holds and turned faces receive executable
 suggestions, kept for a directing decision. It never edits the script, cast or
-voices. Insufficient subtitle space and artistic edits remain suggestions.
+voices. Insufficient overlay space and artistic edits remain suggestions.
 `add_subtitles(min_hold=1.8,hold=.6,max_cps=17)` supplies reading-time targets;
 subsequent captions and the scene end can still constrain them.
 
@@ -1418,8 +1433,9 @@ encoded audio, A/V durations, near-black/frozen intervals and audio gaps. ASR is
 optional local Whisper round-trip WER against stored lines, never default.
 No story comprehension, exact mesh collision solver or certified loudness meter
 is implied. Static holds/fades/quiet audio can be intentional. Workbench exposure
-is provisional; use Eevee or encoded-file review for delivery. Subject hair and held
-props are excluded from the existing visibility rays and still need visual review. Custom sequencer
+is provisional; use Eevee or encoded-file review for delivery. Subject hair and worn
+character accessories still need visual review. Foreground and held scenery props count
+in face rays for every size. Custom sequencer
 DSP/spatialization is outside the offline volume/trim mix model.
 
 `credits(path=None,card=False,name=None)` writes `CREDITS.txt` and returns used
@@ -1994,8 +2010,10 @@ intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
   `render_frames([first, middle, last], camera="scene", engine_name="eevee")`.
 - `avoid_occlusion="auto"` (also `True`) raycasts evaluated visible meshes at the
   start/middle/end and about every 0.5 s. It checks each subject's posed face/eyes,
-  head/chest and, for wider sizes, body bounds. Subject meshes, descendants, active
-  held props, ground and hidden geometry are excluded; other characters can block
+  head/chest and, for wider sizes, body bounds. Anatomical landmarks include the
+  lips/chin and authored eyes/teeth, with head-weighted width for stylised heads.
+  Subject character meshes, ground and render-hidden geometry are excluded; held
+  and foreground scenery props remain occluders. Other characters can block
   singles, while every subject in a two-shot is excluded.
 - Blocked faces or excessive foreground trigger a deterministic search: pedestal
   up first, then small azimuth changes, then closer positions past the occluder.
@@ -2004,14 +2022,14 @@ intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
   their unobstructed design by translating those targets to a 1/3 eye line,
   retaining their relative size. Candidates allow ±4% of frame height/width for
   headroom/eye position and ±15% for head-to-chest projected height.
-- Acceptance requires face occlusion <= 5%, clear eyes for close-ups, face samples
+- Acceptance requires zero sampled scenery rays on a face, total face occlusion <= 5%, clear eyes for close-ups, face samples
   inside the frame, and foreground coverage <= 25% (close_up, medium_close, medium;
   also extreme_close_up) or <= 35% for wider sizes. Coverage uses a 24x14 ray grid,
   ending at the nearest subject's eye-depth plane. Subject geometry uses the same
   exclusions as face rays. Camera positions inside scenery/subject bounds or
   across walls are rejected; dialog preserves the current action-line side.
-- If no candidate passes, try exactly one wider size (close_up → medium_close →
-  medium → medium_full; extreme_close_up → close_up), with the same checks. If
+- If no candidate passes, try wider sizes (close_up → medium_close →
+  medium → medium_full → full → wide → extreme_wide), with the same checks. If
   that fails, keep the original camera and return a `warning`. Frontal unobstructed shots
   retain exactly the original transform/lens keys; `False` retains original framing.
   Dialog singles additionally require composition even if face/foreground are clear,
@@ -2029,7 +2047,7 @@ intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
   Dialog/script shot results include the same report. Inspect with Eevee after
   changing later animation. Visibility and foreground coverage are sampled, with
   approximate face landmarks; thin objects/grid gaps and brief crossings between
-  samples may be missed. Own hair/held props can still cover the face.
+  samples may be missed. Own hair and worn character accessories still need visual checks.
 
 **Subtitles** — `add_subtitles(style)` turns on captions; `render_video` then burns them in
 (a short Video Sequencer pass after the frames, ~0.1 s/frame) and writes an `.srt` next to the
@@ -2045,6 +2063,13 @@ MP4. `render_frames(camera="scene")` draws them too, so check the look there fir
   `font` (a .ttf/.otf path; default a bold system sans).
 - Captions break at sentence ends, pauses > 0.6 s and long clauses. Calling `add_subtitles`
   again replaces the settings; `remove_subtitles` or `render_video(subtitles=False)` skips them.
+- `avoid_overlap=True` (default, also on `add_title`) measures actual glyph outlines
+  and title backing boxes, reserving the current shot's face/mouth regions. Captions
+  and titles stack into free vertical space; requested placement remains when clear.
+  The same layout and cut/chunk/title boundaries drive stills and movie PNGs. A caption
+  crossing a camera cut gets separate overlays; SRT, highlights and speech timing stay
+  intact. `layout_overlays()` enables this on saved legacy configs; review can apply it.
+  If the image has no free space, review keeps a visible finding for wider framing.
 
 **Video graphics** — titles and shot transitions share the subtitle Video Sequencer pass
 (including draft renders), stored in the .blend as scene JSON. They keep the movie's frame

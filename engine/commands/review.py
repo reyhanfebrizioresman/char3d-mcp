@@ -80,6 +80,8 @@ def _shots(sc, level):
     from .gaze import head_frame
     items=[]
     rigs=[o for o in sc.objects if o.type=='ARMATURE' and not o.hide_render and not o.name.startswith('__')]
+    from .face_geometry import speech_ranges
+    spoken={r.name:speech_ranges(r) for r in rigs}
     raw_shots=dispatch('list_shots',{})['shots']
     for raw in raw_shots:
         if not raw['camera']: continue
@@ -96,23 +98,31 @@ def _shots(sc, level):
         lo,hi=scene_bounds(subjects) if subjects else (None,None)
         H=max(.1,hi.z-lo.z) if lo is not None else 1.75
         probe=VisibilityProbe(subjects,size,H,foreground=cam.get('c3d_foreground'))
+        if not names and not missing:
+            names=sorted(r.name for r in probe.rigs)
         samples=[]; angles=[]; side=0
         for f in sorted({a,(a+b)//2,b} if level!='quick' else {(a+b)//2}):
             sc.frame_set(f)
             pos=cam.matrix_world.translation
             groups=probe.points()
-            for face,eyes,body in groups:
+            for (root,_), (face,eyes,body) in zip(probe.groups.items(),groups):
                 if not eyes: continue
                 def project(p):
                     q=world_to_camera_view(sc,cam,p)
                     return Vector((q.x,1-q.y,q.z))
                 marks=[project(p) for p in _landmarks((face,eyes,body))]
                 fp=[project(p) for p in face]; bp=[project(p) for p in body[:8]]
+                geometry=probe.geometry.get(root)
+                sites=geometry.points() if geometry else None
+                mp=[project(p) for p in sites['mouth']] if sites else []
                 samples.append(dict(frame=f,eye_y=round(marks[0].y,4),
                     head_chest_height=round(abs(marks[1].y-marks[2].y),4),
                     body_height=round(max(p.y for p in bp)-min(p.y for p in bp),4),
                     face_box=[min(p.x for p in fp),min(p.y for p in fp),max(p.x for p in fp),max(p.y for p in fp)],
-                    face_edge=any(p.z<=0 or not .015<p.x<.985 or not .015<p.y<.985 for p in fp)))
+                    face_edge=any(p.z<=0 or not .015<p.x<.985 or not .015<p.y<.985 for p in fp),
+                    character=root.name,talking=any(wa<=f<=wb for wa,wb in spoken.get(root.name,[])),
+                    mouth_box=[min(p.x for p in mp),min(p.y for p in mp),max(p.x for p in mp),max(p.y for p in mp)] if mp else None,
+                    mouth_edge=any(p.z<=0 or not .02<p.x<.98 or not .02<p.y<.98 for p in mp)))
             target=sum((head_frame(bpy.data.objects[n])[0] if bpy.data.objects[n].type=='ARMATURE' else bpy.data.objects[n].matrix_world.translation for n in names),Vector())/max(1,len(names))
             angles.append(math.degrees(math.atan2((pos-target).x,-(pos-target).y)))
             if len(rigs)>=2:
@@ -124,7 +134,10 @@ def _shots(sc, level):
                 probe.capture(f,pos,aim,rot,cam.data.lens)
         measured=probe.measure() if probe.samples else {}
         repair=[]
-        if args and names and not missing and b>a:
+        if names and not missing and b>a:
+            if not args:
+                args=dict(subject=names,shot=size,move=meta.get('move','static'),angle=angles[0] if angles else 0,
+                          start_frame=a,end_frame=b,name=cam.name)
             # Legacy native shots did not save their coverage flags. Add a live
             # line constraint so re-fitting cannot silently change dialog sides.
             line=args.get('action_line') or [r.name for r in rigs[:2]]
@@ -139,6 +152,9 @@ def _shots(sc, level):
                           angle=angles[0] if angles else 0,angle_end=angles[-1] if angles else 0,
                           action_side=side,occlusion=measured.get('face',0),face_angle=measured.get('face_angle',0),repair=repair,
                           distinct_moves=meta.get('move','static'),
+                          fps=sc.render.fps/sc.render.fps_base,
+                          talking=any(wa<=b and wb>=a for n in names for wa,wb in spoken.get(n,[])),
+                          reason=read(cam,'c3d_shot_reason',{}),scenery_occlusion=measured.get('scenery_face',0),blockers=measured.get('blockers',[]),
                           foreground_samples=measured.get('foreground',[]),foreground_shoulder=cam.get('c3d_ots_shoulder')))
     return items
 
@@ -352,14 +368,30 @@ def _scene_once(level,sheet,engine,size,frames,asr):
         if cfg.get('words'):
             repair=[]
         issues+=subtitle_checks(chunks,fps,sc.frame_start,sc.frame_end,repair)
-        center=1-{'bottom':.12,'lower_third':.27,'center':.5,'top':.86}[st['position']]
-        half=st['size']*st['lines']*.7
-        for shot in shots:
-            for sample in shot['samples']:
-                if any(c['start']<=sample['frame']<c['end'] for c in chunks):
-                    box=sample['face_box']
-                    if box[0]<.93 and box[2]>.07 and box[1]<center+half and box[3]>center-half:
-                        issues.append(issue('caption_face','readability','warn','Caption band overlaps a projected face box.',dict(face_box=box,caption_box=[.07,center-half,.93,center+half]),shot=shot['name'],frame=sample['frame']));break
+    from .screen_layout import boundaries,layout_at
+    from ..screen_layout import overlap
+    overlay_layouts=[]
+    if cfg or any(g['type']=='title' for g in graphics(sc)):
+        cuts=boundaries(sc)
+        for a,b in zip(cuts,cuts[1:]):
+            f=(a+b-1)//2
+            arranged=layout_at(sc,f,size,round(size*sc.render.resolution_y/sc.render.resolution_x))
+            overlay_layouts.append(dict(frame=f,**arranged))
+            cap=arranged['caption_box']
+            if cap:
+                face_hit=next(((n,r) for n,r in arranged['faces'].items() if overlap(cap,r)),None)
+                mouth_hit=next(((n,r) for n,r in arranged['mouths'].items() if overlap(cap,r)),None)
+                if face_hit:
+                    issues.append(issue('caption_face','readability','warn','Caption glyph box overlaps a face.',
+                        dict(face_box=face_hit[1],caption_box=cap),fix=[call('layout_overlays')],auto=True,character=face_hit[0],frame=f))
+                if mouth_hit:
+                    issues.append(issue('caption_mouth','readability','error','Caption glyph box overlaps the mouth/chin region.',
+                        dict(mouth_box=mouth_hit[1],caption_box=cap),fix=[call('layout_overlays')],auto=True,character=mouth_hit[0],frame=f))
+                for title in arranged['titles']:
+                    if overlap(cap,title['box']):
+                        issues.append(issue('title_caption','readability','warn','Title backing and caption glyph boxes overlap.',
+                            dict(title_box=title['box'],caption_box=cap,title=title['config']['name']),
+                            fix=[call('layout_overlays')],auto=True,frame=f))
     for g in graphics(sc):
         if g['type']=='title' and g['duration_s']<3:
             from .graphics import title_timing
@@ -432,7 +464,7 @@ def _scene_once(level,sheet,engine,size,frames,asr):
     total,scores=score(issues)
     report=dict(kind='scene',score=total,scores=scores,issues=issues,contact_sheet=contact_sheet,strips=strips,
                 report_md=directory+'/review.md',audio=metrics,camera=dict(shot_count=len(shots),distinct_sizes=len({s['size'] for s in shots}),distinct_moves=len({s['move'] for s in shots})),shots=shots,frames=[sc.frame_start,sc.frame_end],
-                duration_s=duration,observations=observations,limits=[
+                duration_s=duration,observations=observations,overlay_layouts=overlay_layouts,limits=[
                 'Scores are heuristics, not story or artistic judgements; suggestions need review.',
                 'Face/torso/sole/contact measurements use sampled proxies, not mesh collision simulation.',
                 'Workbench luminance is a shape-preview proxy; use Eevee or the final MP4 for exposure.',

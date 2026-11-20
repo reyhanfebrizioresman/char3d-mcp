@@ -524,7 +524,7 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
             r.fps = int(fps)
             r.fps_base = 1.0
         overlays, transitions = gfx.build(sc, out_w, out_h, start, end, subs_dir)
-        title_count = len(overlays)
+        title_count = len({g.get('graphic_name',g['path']) for g in overlays})
         if want_subs:
             captions, chunks = subs.build(sc, out_w, out_h, start, end, subs_dir)
             overlays += captions

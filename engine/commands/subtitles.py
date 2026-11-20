@@ -211,8 +211,8 @@ def _layout(font, words, size, max_w, lines, min_size=10):
         size = max(min_size, int(size * 0.92))
 
 
-def draw_caption(path, width, height, words, active, cfg, style):
-    """Write one caption state as a transparent RGBA PNG of the full frame."""
+def caption_layout(width, height, words, cfg, style):
+    """Measured glyph/outline rectangle, shared by drawing and collision review."""
     font_path, thin = _font_path(cfg)
     font = _font_id(font_path)
     texts = [w.upper() if style.get("uppercase") else w for w in words]
@@ -220,12 +220,9 @@ def draw_caption(path, width, height, words, active, cfg, style):
     size, space, widths, rows = _layout(font, texts, max(10, int(style["size"] * ref)),
                                         width * 0.86, int(style["lines"]))
     line_h = size * 1.22
-    cy = height * POSITIONS.get(style["position"], 0.12)
+    cy = height * style.get('center_y',POSITIONS.get(style["position"], 0.12))
     top = cy + (len(rows) * line_h) / 2 - size * 0.85      # baseline of the first row
-    color = tuple(cfg.get("color", (1.0, 1.0, 1.0)))[:3]
-    hcolor = tuple(cfg.get("highlight_color", (1.0, 0.84, 0.1)))[:3]
     r_out = max(1.0, size * style["outline"])
-    ib = imbuf.new((int(width), int(height)))
     placed = []
     for li, row in enumerate(rows):
         row_w = sum(widths[i] for i in row) + space * (len(row) - 1)
@@ -234,6 +231,21 @@ def draw_caption(path, width, height, words, active, cfg, style):
         for i in row:
             placed.append((i, x, y))
             x += widths[i] + space
+    x0 = min(x for i,x,y in placed)-r_out
+    x1 = max(x+widths[i] for i,x,y in placed)+r_out
+    y0 = min(y for i,x,y in placed)-.30*size-r_out
+    y1 = max(y for i,x,y in placed)+1.05*size+r_out
+    return dict(font=font,thin=thin,texts=texts,size=size,r_out=r_out,placed=placed,cy=cy,
+                box=[x0/width,1-y1/height,x1/width,1-y0/height])
+
+
+def draw_caption(path, width, height, words, active, cfg, style):
+    """Write one caption state as a transparent RGBA PNG of the full frame."""
+    layout = caption_layout(width,height,words,cfg,style)
+    font,thin,texts,size,r_out,placed,cy = [layout[k] for k in ('font','thin','texts','size','r_out','placed','cy')]
+    color = tuple(cfg.get("color", (1.0, 1.0, 1.0)))[:3]
+    hcolor = tuple(cfg.get("highlight_color", (1.0, 0.84, 0.1)))[:3]
+    ib = imbuf.new((int(width), int(height)))
     steps = 16
     with blf.bind_imbuf(font, ib, display_name="sRGB"):
         blf.size(font, size)
@@ -255,7 +267,7 @@ def draw_caption(path, width, height, words, active, cfg, style):
                 blf.draw_buffer(font, texts[i])
     os.makedirs(os.path.dirname(path), exist_ok=True)
     imbuf.write(ib, filepath=path)
-    return {"origin": [0.5, cy / height]}
+    return {"origin": [0.5, cy / height],"box":layout['box']}
 
 
 def build(sc, width, height, frame_start, frame_end, out_dir):
@@ -268,15 +280,21 @@ def build(sc, width, height, frame_start, frame_end, out_dir):
     fps = sc.render.fps / (sc.render.fps_base or 1)
     chunks = chunk_words(scene_words(sc, cfg), fps, style)
     out = []
+    from .screen_layout import boundaries,layout_at
+    splits = boundaries(sc,frame_start,frame_end)
     for n, (a, b, ci, wi) in enumerate(caption_states(chunks, style["highlight"])):
         a2, b2 = max(a, frame_start), min(b - 1, frame_end)
         if b2 < a2:
             continue
-        path = os.path.join(out_dir, f"cap_{n:04d}.png")
-        info = draw_caption(path, width, height, [w[0] for w in chunks[ci]["words"]], wi, cfg, style)
-        first = a2 == a and (wi in (None, 0))
-        out.append({"path": path, "start": a2 - frame_start + 1, "end": b2 - frame_start + 1,
-                    "pop": bool(style["pop"] and first), "origin": info["origin"]})
+        cuts = sorted({a2,b2+1,*[f for f in splits if a2<f<=b2]})
+        for index,(left,right) in enumerate(zip(cuts,cuts[1:])):
+            path = os.path.join(out_dir, f"cap_{n:04d}_{index:03d}.png")
+            resolved = layout_at(sc,(left+right-1)//2,width,height)
+            st = resolved['caption_style'] or style
+            info = draw_caption(path,width,height,[w[0] for w in chunks[ci]['words']],wi,cfg,st)
+            first = left==a and (wi in (None,0))
+            out.append(dict(path=path,start=left-frame_start+1,end=right-frame_start,
+                            pop=bool(style['pop'] and first),origin=info['origin']))
     return out, chunks
 
 
@@ -304,7 +322,9 @@ def overlay_png(base_path, sc, frame):
     try:
         w, h = img.size
         tmp = base_path[:-4] + "_cap.png"
-        draw_caption(tmp, w, h, st[0], st[1], st[2], st[3])
+        from .screen_layout import layout_at
+        style = layout_at(sc,frame,w,h)['caption_style'] or st[3]
+        draw_caption(tmp, w, h, st[0], st[1], st[2], style)
         cap = bpy.data.images.load(tmp, check_existing=False)
         try:
             base = np.empty(w * h * 4, dtype=np.float32)
@@ -355,7 +375,7 @@ def write_srt(path, chunks, fps, frame_start, frame_end):
 @command("add_subtitles")
 def add_subtitles(style="tiktok", lines=None, words=None, start_frame=None, position=None,
                   size=1.0, color=None, highlight_color=None, highlight=None, uppercase=None,
-                  max_words=None, font=None, min_hold=None, hold=None, max_cps=None):
+                  max_words=None, font=None, min_hold=None, hold=None, max_cps=None, avoid_overlap=True):
     """Turn on captions for render_video / render_frames(camera="scene")."""
     if style not in STYLES:
         raise ValueError(f"style must be one of {list(STYLES)}")
@@ -376,6 +396,7 @@ def add_subtitles(style="tiktok", lines=None, words=None, start_frame=None, posi
     else:
         cfg_words = None
     cfg = {"enabled": True, "style": style, "position": position, "size": float(size),
+           "avoid_overlap": bool(avoid_overlap),
            "highlight": highlight, "uppercase": uppercase, "max_words": max_words,
            "font": font, "lines": lines, "min_hold": min_hold, "hold": hold, "max_cps": max_cps}
     if color is not None:

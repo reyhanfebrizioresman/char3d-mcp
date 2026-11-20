@@ -30,6 +30,10 @@ def _rig(obj):
         (m.object for m in obj.modifiers if m.type == "ARMATURE" and m.object), None)
 
 
+def _prop(obj):
+    return any(o.get('c3d_prop_kind') or o.get('c3d_hold_character') for o in _ancestors(obj))
+
+
 def _render_collections(collection):
     if not collection.hide_render:
         yield collection
@@ -75,6 +79,8 @@ def _points(parts, rig, height, depsgraph):
 
 class _Mesh:
     def __init__(self, obj, depsgraph, height):
+        self.name = obj.name
+        self.scenery = _rig(obj) is None or _prop(obj)
         ev = obj.evaluated_get(depsgraph)
         self.tree = BVHTree.FromObject(obj, depsgraph, deform=True, cage=False)
         self.inverse = ev.matrix_world.inverted_safe()
@@ -247,9 +253,9 @@ class VisibilityProbe:
         self.rigs = {_rig(o) for o in targets} - {None}
         ignored = set(targets) | self.rigs
         for obj in list(ignored):
-            ignored.update(obj.children_recursive)
+            ignored.update(o for o in obj.children_recursive if not _prop(o))
         for obj in bpy.context.scene.objects:
-            if _rig(obj) in self.rigs:
+            if _rig(obj) in self.rigs and not _prop(obj):
                 ignored.add(obj)
         for obj in targets:
             r = _rig(obj)
@@ -261,22 +267,21 @@ class VisibilityProbe:
         self.seconds = 0.0
         aspect = bpy.context.scene.render.resolution_y / bpy.context.scene.render.resolution_x
         self.sensor = (36 * max(1, aspect), 36 * min(1, aspect))
+        from .face_geometry import FaceGeometry
+        self.geometry = {r:FaceGeometry(r,height) for r in self.rigs}
 
     def points(self):
         dg = bpy.context.evaluated_depsgraph_get()
         groups = [_points(parts, root if root.type == "ARMATURE" else None, self.height, dg)
                   for root, parts in self.groups.items()]
-        if self.foreground:
-            # OTS deliberately frames the live eye plane, rather than a high
-            # forehead proxy derived from the rig's head-bone length.
-            from .ots import eye_point
-            for (root, _), group in zip(self.groups.items(), groups):
-                if root.type == 'ARMATURE':
-                    eye = eye_point(root)
-                    lateral = head_frame(root)[1] @ Vector((.02*self.height/1.7,0,0))
-                    eyes = [eye-lateral,eye+lateral]
-                    group[0][-2:] = eyes
-                    group[1][:] = eyes
+        for (root, _), group in zip(self.groups.items(), groups):
+            geometry = self.geometry.get(root)
+            marks = geometry.points() if geometry else None
+            if marks:
+                group[0][:] = marks['face']
+                group[1][:] = marks['eyes']
+                if len(group[2])>9:
+                    group[2][-2] = marks['crown']
         return groups
 
     def capture(self, frame, position, aim, rotation=None, lens=50):
@@ -289,14 +294,11 @@ class VisibilityProbe:
                     or obj.get("c3d_nature_occludes") is False):
                 continue
             chain = list(_ancestors(obj))
-            if (obj.hide_render or not obj.visible_get() or
+            if (obj.hide_render or
                     any(o.hide_render for o in chain) or
                     not any(c in collections for c in obj.users_collection)):
                 continue
-            held = next((o for o in chain if o.get("c3d_hold_character")), None)
-            ignored_sight = (obj.get("c3d_role") == "ground" or
-                             (held and held.get("c3d_hold_character") in {r.name for r in self.rigs} and
-                              held.get("c3d_hold_start", 0) <= frame <= held.get("c3d_hold_release", math.inf)))
+            ignored_sight = obj.get("c3d_role") == "ground"
             dynamic = (any(o.animation_data or o.constraints for o in chain) or
                        any(m.type not in {"BEVEL", "SUBSURF", "WEIGHTED_NORMAL", "SOLIDIFY",
                                           "TRIANGULATE", "MIRROR"} for m in obj.modifiers) or
@@ -332,6 +334,7 @@ class VisibilityProbe:
         coverage, composed, screens, sizes = 0.0, True, [], []
         angle = 0.0
         foreground = []
+        scenery, blockers = 0., set()
         for frame, pos, aim, meshes, groups, line, rot, mm, targets, solids in self.samples:
             original = pos
             if adjustment is not None:
@@ -364,6 +367,14 @@ class VisibilityProbe:
                 face, eyes, body = group
                 blocked = lambda p: inside or any(m.hit(pos, p) for m in meshes)
                 frac = sum(blocked(p) for p in face) / max(1, len(face))
+                covered = np.zeros(len(face),dtype=bool)
+                for mesh in meshes:
+                    if mesh.scenery:
+                        hits = mesh.hits(pos,np.asarray(face))
+                        if hits.any():
+                            blockers.add(mesh.name)
+                            covered |= hits
+                scenery = max(scenery,float(covered.mean()) if len(covered) else 0.)
                 worst = max(worst, frac)
                 eye_blocked |= any(blocked(p) for p in eyes)
                 points = body if self.shot in {"full", "wide", "extreme_wide", "medium_full"} else body[-2:]
@@ -393,14 +404,14 @@ class VisibilityProbe:
             else:
                 return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
                             coverage=1.0, composed=False, screens=screens, sizes=sizes, face_angle=angle,
-                            foreground=foreground)
+                            foreground=foreground,scenery_face=scenery,blockers=sorted(blockers))
         return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
                     coverage=coverage, composed=composed, screens=screens, sizes=sizes, face_angle=angle,
-                    foreground=foreground)
+                    foreground=foreground,scenery_face=scenery,blockers=sorted(blockers))
 
     def accepts(self, value):
         limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
-        return (value['safe'] and value['face'] <= 0.05 and value['face_angle'] <= self.face_limit and value['composed'] and
+        return (value['safe'] and value['face'] <= 0.05 and not value.get('scenery_face') and value['face_angle'] <= self.face_limit and value['composed'] and
                 not (self.shot in {"close_up", "extreme_close_up"} and value['eyes']) and
                 all(.18 <= f['width'] <= .37 and f['head_angle'] >= 115 for f in value.get('foreground', [])) and
                 value['coverage'] <= limit)
@@ -411,7 +422,7 @@ class VisibilityProbe:
         limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
         # Preserve the exact keys of an unobstructed design, including intentional
         # pans/tilts and close crops. Composition constraints apply to corrections.
-        blocked = (before['face'] > 0.05 or before['face_angle'] > self.face_limit or before['coverage'] > limit or
+        blocked = (before['face'] > 0.05 or before.get('scenery_face',0)>0 or before['face_angle'] > self.face_limit or before['coverage'] > limit or
                    (self.shot in {"close_up", "extreme_close_up"} and before['eyes']) or
                    (require_composition and not self.accepts(before)))
         chosen, after = None, before
@@ -438,6 +449,8 @@ class VisibilityProbe:
                   "face_angle": round(after['face_angle'], 2),
                   "face_screen": after['screens'], "subject_scale": after['sizes'],
                   "shot_size": self.shot, "sample_frames": [s[0] for s in self.samples]}
+        report.update(scenery_face_before=before.get('scenery_face',0),scenery_face_after=after.get('scenery_face',0),
+                      blockers_before=before.get('blockers',[]),blockers_after=after.get('blockers',[]))
         if self.foreground:
             report['foreground'] = after['foreground']
         if enabled and blocked and chosen is None:

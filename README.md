@@ -132,6 +132,10 @@ belakang kepala dan bahu partner di foreground (sekitar 20–35% lebar frame),
 dengan sisi garis dialog tetap konsisten. Hasil melaporkan fraksi foreground;
 review memberi warning ringan untuk adegan panjang dengan cakupan statis monoton.
 Timing reaksi bersifat heuristik; periksa wajah dan framing.
+Dialog meja tanpa blocking khusus menempatkan kedua tamu duduk dan mic di bawah
+mulut. Kamera melindungi wajah yang berbicara; caption dan judul otomatis mencari
+ruang yang tidak menutupi wajah atau bertabrakan. `review_scene(fix=True)` dapat
+memperbaiki kamera terhalang properti serta layout teks lama.
 
 ## Suara dialog otomatis
 

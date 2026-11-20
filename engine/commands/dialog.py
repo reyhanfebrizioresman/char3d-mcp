@@ -28,7 +28,7 @@ def _facing_az(rig):
 
 
 @command("stage_dialog")
-def stage_dialog(characters, layout="angled", distance=1.3, cheat_deg=35.0, center=(0.0, 0.0), camera=None):
+def stage_dialog(characters, layout="angled", distance=1.3, cheat_deg=35.0, center=(0.0, 0.0), camera=None, desk=True):
     """Place 2-4 characters for a conversation, facing each other but opened towards the
     camera side (-Y). layout: angled (TV 'cheat'), face_to_face, side_by_side."""
     if layout not in ("angled", "face_to_face", "side_by_side"):
@@ -64,6 +64,11 @@ def stage_dialog(characters, layout="angled", distance=1.3, cheat_deg=35.0, cent
                     "facing_deg": round(az, 1)})
     bpy.context.view_layer.update()
     report = {"layout": layout, "characters": out, "fps": bpy.context.scene.render.fps}
+    if desk:
+        from .desk_dialog import stage as stage_desk
+        report['desk_staging'] = stage_desk([r.name for r in rigs])
+        for row,rig in zip(out,rigs):
+            row.update(location=list(rig.location),facing_deg=round(_facing_az(rig),1))
     if camera is not None:
         from ..emocam import mode
         from ..emotion import sentences

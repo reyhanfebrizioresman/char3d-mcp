@@ -910,7 +910,7 @@ async def add_subtitles(style: SubtitleStyle = "tiktok",
                         audio: str | None = None, language: str | None = None,
                         start_frame: int = 1, font: str | None = None,
                         min_hold: float | None = None, hold: float | None = None,
-                        max_cps: float | None = None) -> dict:
+                        max_cps: float | None = None, avoid_overlap: bool = True) -> dict:
     """Captions burned into render_video (and shown by render_frames(camera="scene")).
     Words come from lip_sync / lip_sync_audio word times automatically (all speakers).
     style: "tiktok" = 1-3 big bold words at a time, the spoken word highlighted, pop-in
@@ -920,7 +920,8 @@ async def add_subtitles(style: SubtitleStyle = "tiktok",
     yellow). Other sources: lines=[{"text": "...", "start": 0.5, "end": 2.8}] (seconds from
     the scene start) or audio="audio/line.wav" (local Whisper transcript placed at
     start_frame) for voice-overs without a lip-synced character. Calling it again replaces
-    the settings; remove_subtitles turns them off."""
+    the settings; remove_subtitles turns them off. avoid_overlap=True measures face/mouth
+    boxes and stacks captions with titles in free screen space for stills and movies."""
     words = None
     if audio:
         path = _workspace_path(audio)
@@ -929,13 +930,21 @@ async def add_subtitles(style: SubtitleStyle = "tiktok",
     return await run("add_subtitles", style=style, position=position, size=size, color=color,
                      highlight_color=highlight_color, highlight=highlight, uppercase=uppercase,
                      max_words=max_words, lines=lines, words=words, start_frame=start_frame,
-                     font=font, min_hold=min_hold, hold=hold, max_cps=max_cps)
+                     font=font, min_hold=min_hold, hold=hold, max_cps=max_cps, avoid_overlap=avoid_overlap)
 
 
 @mcp.tool()
 async def remove_subtitles() -> dict:
     """Turn captions off (render_video renders without them)."""
     return await run("remove_subtitles")
+
+
+@mcp.tool()
+async def layout_overlays() -> dict:
+    """Keep captions clear of faces/mouths and stack titles without text overlap.
+    Uses measured text and live camera projections for stills and movies; words,
+    timing, colors and font choices are preserved. review_scene can apply this."""
+    return await run('layout_overlays')
 
 
 @mcp.tool()
@@ -964,7 +973,7 @@ async def add_title(text: str, subtitle: str | None = None, start_s: float = 0.0
                      background_color: list[float] = [0.025, 0.035, 0.055],
                      background_opacity: float = 0.7,
                      animation: Literal["fade", "slide", "none"] | None = None,
-                     animation_s: float = 0.3, font: str | None = None) -> dict:
+                     animation_s: float = 0.3, font: str | None = None, avoid_overlap: bool = True) -> dict:
     """Add a title card or name/role tag over the shot timeline; reuse name to replace.
     start_s/duration_s are seconds from scene start. center = centered title/subtitle;
     lower_third = name + role on a translucent bar at bottom left; corner = top left.
@@ -972,11 +981,12 @@ async def add_title(text: str, subtitle: str | None = None, start_s: float = 0.0
     box). Text wraps/shrinks to fit. animation defaults to fade for center, slide for
     tags; animation_s is the in/out time (clamped to half the title). font is a local
     TTF/OTF path. Shows in render_frames(camera='scene') and render_video with captions;
-    color fades cover the combined picture. No scene geometry is added."""
+    color fades cover the combined picture. avoid_overlap=True stacks around captions
+    and visible faces, retaining the requested placement when clear. No scene geometry is added."""
     return await run("add_title", text=text, subtitle=subtitle, start_s=start_s,
                      duration_s=duration_s, style=style, name=name, size=size, color=color,
                      background_color=background_color, background_opacity=background_opacity,
-                     animation=animation, animation_s=animation_s, font=font)
+                     animation=animation, animation_s=animation_s, font=font, avoid_overlap=avoid_overlap)
 
 
 @mcp.tool()
@@ -1884,13 +1894,15 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
 async def stage_dialog(characters: list[str], layout: Literal["angled", "face_to_face",
                        "side_by_side"] = "angled", distance: float = 1.3,
                        cheat_deg: float = 35.0, center: list[float] | None = None,
-                       camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] | None = None) -> dict:
+                       camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] | None = None,
+                       desk: bool = True) -> dict:
     """Place 2-4 characters for a conversation (left to right in the given order): they face
     each other, "cheated" cheat_deg toward the camera side (-Y) so faces stay visible
     (angled); face_to_face = exact profile; side_by_side = both toward camera. distance in m.
-    Optional camera="directed" covers existing timed speech, or establishes the cast."""
+    Optional camera="directed" covers existing timed speech, or establishes the cast.
+    desk=True seats guests consistently in existing desk sets; False keeps standing staging."""
     return await run("stage_dialog", characters=characters, layout=layout, distance=distance,
-                     cheat_deg=cheat_deg, center=center or [0.0, 0.0], camera=camera)
+                     cheat_deg=cheat_deg, center=center or [0.0, 0.0], camera=camera, desk=desk)
 
 
 @mcp.tool()

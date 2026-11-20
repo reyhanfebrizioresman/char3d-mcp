@@ -37,6 +37,45 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(actions[0]['tool'],'resolve_collisions')
         self.assertEqual(actions[0]['args']['characters'],['Ana_rig','Budi_rig'])
 
+    def test_scenery_and_talking_mouth_are_errors_with_repairs(self):
+        view=shot('mic',1,96,size='extreme_close_up')
+        view.update(talking=True,scenery_occlusion=.1,blockers=['mic_grille'],
+                    samples=[dict(mouth_edge=True,mouth_box=[.3,.9,.6,1.1])])
+        view['repair']=[call('camera_shot',subject=['Ana'],name='mic',shot='extreme_close_up',start_frame=1,end_frame=96)]
+        found=camera_checks([view])
+        for rule in ('face_scenery','talking_mouth_crop','ecu_limit'):
+            item=next(i for i in found if i['id'].split(':')[0]==rule)
+            self.assertEqual(item['severity'],'error')
+            self.assertTrue(item['auto_fixable']);self.assertTrue(item['fix'])
+        fixes=safe_fixes(found)
+        self.assertEqual(len(fixes),1)
+        self.assertEqual(fixes[0]['args']['shot'],'close_up')
+
+    def test_one_ecu_and_nonconsecutive_repeat(self):
+        a=shot('a',1,48,size='extreme_close_up')
+        b=dict(shot('b',49,96),subject=['Budi'])
+        c=shot('c',97,144,size='extreme_close_up')
+        found=camera_checks([a,b,c])
+        self.assertEqual(sum(i['id'].startswith('ecu_limit:') for i in found),1)
+        self.assertIn('repeat_framing',ids(found))
+        c['angle']=40
+        self.assertNotIn('repeat_framing',ids(camera_checks([a,b,c])))
+        a['reason']=dict(role='speaker',intensity=.2)
+        b['reason']=dict(role='peak',intensity=.9)
+        self.assertIn('ecu_limit',ids(camera_checks([a,b])))
+
+    def test_caption_title_layout_avoids_faces_and_each_other(self):
+        from engine.screen_layout import arrange,overlap
+        cap=[.15,.79,.85,.91];title=[.06,.75,.35,.91];face=[.25,.22,.70,.78]
+        bad=arrange(cap,[title],[face],False,[False])
+        self.assertFalse(bad['clear'])
+        good=arrange(cap,[title],[face])
+        self.assertTrue(good['clear'])
+        self.assertFalse(overlap(good['caption'],face))
+        self.assertFalse(overlap(good['caption'],good['titles'][0]))
+        self.assertEqual(good,arrange(cap,[title],[face]))
+        self.assertFalse(arrange(cap,[title],[[0,0,1,1]])['clear'])
+
     def test_segment_bounds_parallel_and_inside(self):
         from engine.ray_bounds import intersects
         targets=np.array([[0,0,0],[4,0,0],[2,3,0],[-2,0,0],[2,.5,0],[2,0,3]])

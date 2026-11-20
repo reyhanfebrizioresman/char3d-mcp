@@ -16,7 +16,7 @@ from mathutils import Euler, Vector
 
 from . import command
 from .util import RENDERABLE, is_helper, obj_or_raise, scene_bounds
-from .occlusion import VisibilityProbe, adjusted, fit_frame, framing_targets, sample_frames
+from .occlusion import VisibilityProbe, adjusted, fit_frame, framing_targets, sample_frames, _prop, _project
 from .gaze import head_frame
 
 # shot size: (visible height as multiple of subject height, aim height fraction, lens mm)
@@ -108,7 +108,12 @@ def _subjects(names):
                                                      for md in m.modifiers) and m not in objs]
             else:
                 objs.append(o)
-        return objs
+        return [o for o in objs if not _prop(o)] if any(bpy.data.objects[n].type=='ARMATURE' for n in names) else objs
+    from .anim import semantic_map
+    cast = [o.name for o in bpy.context.scene.objects if o.type=='ARMATURE' and not o.hide_render
+            and not o.name.startswith('__') and semantic_map(o).get('head')]
+    if cast:
+        return _subjects(cast)
     return [o for o in bpy.context.scene.objects
             if o.type in RENDERABLE and o.visible_get() and not is_helper(o)
             and o.get("c3d_role") not in {"ground", "environment", "weather"}]
@@ -124,6 +129,24 @@ def _shot_name():
     while f"Shot{i}" in bpy.data.objects:
         i += 1
     return f"Shot{i}"
+
+
+def _full_face(pos, rot, mm, marks, sensor):
+    """Keep chin/lips/crown in a talking portrait, including during optical moves."""
+    points = _project(pos,rot,mm,marks['fit'],sensor)
+    if all(.035<p.x<.965 and .035<p.y<.965 and p.z>0 for p in points):
+        return pos,rot
+    from .ots import eye_rotation
+    eye = marks['eye']
+    for _ in range(4):
+        rot = eye_rotation(pos,eye,mm,sensor)
+        pts = _project(pos,rot,mm,marks['fit'],sensor)
+        factor = max([1.]+[abs(p.x-.5)/.44 for p in pts]+
+                     [(1/3-p.y)/(.3333-.04) if p.y<1/3 else (p.y-1/3)/(.96-1/3) for p in pts])
+        if factor<=1.001:
+            break
+        pos = eye+(pos-eye)*min(4,factor*1.015)
+    return pos,rot
 
 
 @command("list_camera_moves")
@@ -170,6 +193,20 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     targets = _subjects(subject)
     if not targets:
         raise ValueError("no subject geometry to frame")
+
+    from .occlusion import _rig
+    from .face_geometry import speech_ranges
+    rigs = {_rig(o) for o in targets}-{None}
+    talking = any(a<=end and b>=start for r in rigs for a,b in speech_ranges(r))
+    requested_shot = shot
+    framing_notes = []
+    if shot=='extreme_close_up':
+        repeated = any(m.camera and m.camera.name!=name and
+                       m.camera.get('c3d_shot',{}).get('shot_size',m.camera.get('c3d_shot',{}).get('shot'))=='extreme_close_up'
+                       for m in sc.timeline_markers)
+        if talking or repeated:
+            shot = 'close_up'
+            framing_notes.append('Full talking face protected.' if talking else 'One extreme close-up per scene.')
 
     name = name or _shot_name()
     old = bpy.data.objects.get(name)
@@ -297,6 +334,11 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
                 pos = pos + Vector((_noise(t, 2.0), _noise(t, 5.0), _noise(t, 9.0))) * 0.01 * shake * H
             if roll:
                 rot.y += math.radians(roll)
+            if not ots and (talking or face_coverage) and len(probe.geometry)==1 and size in ('close_up','medium_close'):
+                marks = next(iter(probe.geometry.values())).points()
+                if marks:
+                    pos,rot = _full_face(pos,rot,lens_mm,marks,probe.sensor)
+                    aim = pos+rot.to_matrix()@Vector((0,0,-(aim-pos).length))
             prev_rot = rot.copy()
             trajectory.append((f, pos.copy(), aim.copy(), rot.copy(), lens_mm, focus.copy()))
             if f in samples:
@@ -308,20 +350,25 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
     adjustment, occlusion = probe.resolve(avoid_occlusion is not False, elevation, require_composition=require_composition)
     used_size = framing_size
     wider = {"extreme_close_up": "close_up", "close_up": "medium_close",
-             "medium_close": "medium", "medium": "medium_full"}
-    if not ots and avoid_occlusion is not False and "warning" in occlusion and shot in wider:
-        wider_trajectory, wider_probe = design(wider[shot])
+             "medium_close": "medium", "medium": "medium_full", "medium_full":"full",
+             "full":"wide", "wide":"extreme_wide"}
+    fallback_size = shot
+    while not ots and avoid_occlusion is not False and "warning" in occlusion and fallback_size in wider:
+        fallback_size = wider[fallback_size]
+        wider_trajectory, wider_probe = design(fallback_size)
         wider_adjustment, wider_report = wider_probe.resolve(True, elevation, require_composition=True)
-        # A one-step fallback has to pass composition too, even if its face was
+        # Each fallback has to pass composition too, even if its face was
         # already clear and resolve deliberately preserved the original keys.
         if "warning" not in wider_report and wider_probe.accepts(wider_probe.measure(wider_adjustment)):
             wider_report["before"] = occlusion["before"]
+            wider_report['scenery_face_before'] = occlusion.get('scenery_face_before',0)
+            wider_report['blockers_before'] = occlusion.get('blockers_before',[])
             wider_report["frame_coverage_before"] = occlusion["frame_coverage_before"]
-            wider_report["adjusted"].insert(0, "shot_size="+wider[shot])
+            wider_report["adjusted"].insert(0, "shot_size="+fallback_size)
             wider_report["seconds"] += occlusion["seconds"]
             trajectory, probe = wider_trajectory, wider_probe
             adjustment, occlusion = wider_adjustment, wider_report
-            used_size = wider[shot]
+            used_size = fallback_size
         else:
             occlusion["seconds"] += wider_report["seconds"]
     cam["c3d_shot"]["shot_size"] = used_size
@@ -380,6 +427,7 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             "next_start_frame": end + 1, "subject_height": round(H, 3),
             "occlusion": occlusion, "shot_size": used_size,
             "replaced_shots_at_start_frame": replaced,
+            "requested_shot": requested_shot, "framing_notes": framing_notes,
             **({'foreground_composition': dict(partner=foreground, shoulder=cam['c3d_ots_shoulder'],
                 width_range=[min(v['width'] for v in occlusion['foreground']),max(v['width'] for v in occlusion['foreground'])],
                 area_range=[min(v['area'] for v in occlusion['foreground']),max(v['area'] for v in occlusion['foreground'])],

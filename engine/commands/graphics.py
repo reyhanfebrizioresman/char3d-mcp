@@ -107,7 +107,7 @@ def add_transition(at_frame=None, shot=None, kind="crossfade", duration_s=0.5, n
 @command("add_title")
 def add_title(text, subtitle=None, start_s=0.0, duration_s=3.0, style="center", name=None,
               size=1.0, color=(1, 1, 1), background_color=(0.025, 0.035, 0.055),
-              background_opacity=0.7, animation=None, animation_s=0.3, font=None):
+              background_opacity=0.7, animation=None, animation_s=0.3, font=None, avoid_overlap=True):
     """Add/replace a title or name/role bar. Times are seconds from the scene start."""
     if not str(text).strip():
         raise ValueError("text must not be empty")
@@ -119,7 +119,7 @@ def add_title(text, subtitle=None, start_s=0.0, duration_s=3.0, style="center", 
     opacity = float(background_opacity)
     if not math.isfinite(opacity) or not 0 <= opacity <= 1:
         raise ValueError("background_opacity must be in 0..1")
-    cfg = dict(type="title", name=name, text=str(text).strip(), subtitle=str(subtitle or "").strip(),
+    cfg = dict(type="title", name=name, text=str(text).strip(), subtitle=str(subtitle or "").strip(),avoid_overlap=bool(avoid_overlap),
                start_s=_positive(start_s, "start_s", zero=True),
                duration_s=_positive(duration_s, "duration_s"), style=style,
                size=_positive(size, "size"), color=_color(color),
@@ -133,6 +133,22 @@ def add_title(text, subtitle=None, start_s=0.0, duration_s=3.0, style="center", 
 def list_graphics():
     """List saved titles/transitions (names can be reused to replace them)."""
     return {"graphics": get_config(bpy.context.scene)}
+
+
+@command('layout_overlays')
+def layout_overlays():
+    """Enable measured face/text avoidance without altering words, timing or styling."""
+    sc = bpy.context.scene
+    cfg = subtitles.get_config(sc)
+    if cfg:
+        cfg['avoid_overlap'] = True
+        sc[subtitles.CONFIG_PROP] = json.dumps(cfg)
+    titles = get_config(sc)
+    for g in titles:
+        if g['type']=='title':
+            g['avoid_overlap'] = True
+    sc[CONFIG_PROP] = json.dumps(titles)
+    return dict(captions=bool(cfg),titles=sum(g['type']=='title' for g in titles))
 
 
 @command("remove_graphics")
@@ -162,8 +178,8 @@ def title_keys(sc, g, width):
             if ramp else [[a, 1, 0], [b, 1, 0]])
 
 
-def draw_title(path, width, height, g):
-    """Draw text with blf and a rectangular translucent backing with numpy pixels."""
+def title_layout(width, height, g):
+    """The exact text and backing rectangle, before animation offsets."""
     font = subtitles._font_id(subtitles._font_path(g)[0])
     ref = min(width, height)
     size = max(10, int(ref * (0.075 if g["style"] == "center" else 0.06) * g["size"]))
@@ -183,6 +199,16 @@ def draw_title(path, width, height, g):
     left = (width - block_w) / 2 if g["style"] == "center" else width * 0.06 + pad
     bottom = ((height - block_h) / 2 if g["style"] == "center" else
               height * 0.12 + pad if g["style"] == "lower_third" else height * 0.92 - block_h - pad)
+    bottom += height*g.get('layout_shift_y',0)
+    return dict(font=font,lines=lines,pad=pad,block_h=block_h,block_w=block_w,left=left,bottom=bottom,
+                box=[(left-pad)/width,1-(bottom+block_h+pad)/height,
+                     (left+block_w+pad)/width,1-(bottom-pad)/height])
+
+
+def draw_title(path, width, height, g):
+    """Draw text with blf and a rectangular translucent backing with numpy pixels."""
+    layout = title_layout(width,height,g)
+    font,lines,pad,block_h,block_w,left,bottom = [layout[k] for k in ('font','lines','pad','block_h','block_w','left','bottom')]
     ib = imbuf.new((int(width), int(height)))
     y = bottom + block_h
     with blf.bind_imbuf(font, ib, display_name="sRGB"):
@@ -223,16 +249,22 @@ def blend_rgba(base, over):
 
 def build(sc, width, height, start, end, out_dir):
     overlays = []
+    from .screen_layout import boundaries,layout_at
+    splits = boundaries(sc,start,end)
     for i, g in enumerate(get_config(sc)):
         if g["type"] != "title":
             continue
         a, b, _ = title_timing(sc, g)
         if b < start or a > end:
             continue
-        path = os.path.join(out_dir, f"title_{i:04d}.png")
-        draw_title(path, width, height, g)
-        overlays.append(dict(path=path, start=max(a, start) - start + 1, end=min(b, end) - start + 1,
-                             keys=[[f - start + 1, alpha, dx] for f, alpha, dx in title_keys(sc, g, width)]))
+        cuts = sorted({max(a,start),min(b,end)+1,*[f for f in splits if max(a,start)<f<=min(b,end)]})
+        for index,(left,right) in enumerate(zip(cuts,cuts[1:])):
+            path = os.path.join(out_dir, f"title_{i:04d}_{index:03d}.png")
+            resolved = layout_at(sc,(left+right-1)//2,width,height)
+            placed = next((t for t in resolved['titles'] if t['config']['name']==g['name']),None)
+            draw_title(path,width,height,placed['config'] if placed else g)
+            overlays.append(dict(path=path,graphic_name=g['name'],start=left-start+1,end=right-start,
+                keys=[[f-start+1,alpha,dx] for f,alpha,dx in title_keys(sc,g,width)]))
     transitions = []
     for t in resolve_transitions(sc):
         if t["end"] >= start and t["start"] <= end:
@@ -255,8 +287,11 @@ def overlay_png(base_path, sc, frame):
         pixels = np.empty(w * h * 4, dtype=np.float32)
         img.pixels.foreach_get(pixels)
         base = pixels.reshape(h, w, 4)
+        from .screen_layout import layout_at
+        arranged = layout_at(sc,frame,w,h)
         for g in titles:
-            draw_title(tmp, w, h, g)
+            placed = next((t for t in arranged['titles'] if t['config']['name']==g['name']),None)
+            draw_title(tmp, w, h, placed['config'] if placed else g)
             title = bpy.data.images.load(tmp, check_existing=False)
             try:
                 over = np.empty_like(pixels)

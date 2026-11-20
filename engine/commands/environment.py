@@ -365,6 +365,9 @@ class _Builder:
                 for sy in (-1, 1):
                     self.box("sofa_foot", (sx*0.9, sy*0.30, 0.07), (0.09, 0.09, 0.14), "metal")
         parts = self.objects[start:]
+        for part in parts:
+            part['c3d_prop_kind'] = kind
+            part['c3d_prop_group'] = parts[0].name
         if kind in ("chair", "sofa", "bench", "stool"):
             anchor = parts[0]
             # Usable sitting centers are near the sofa's front so calves clear its deep base.
