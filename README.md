@@ -128,7 +128,10 @@ ukuran shot, gerak dan ritme mengikuti kurva emosi, dengan OTS serta reaksi pend
 saat suara pembicara tetap berjalan. Hasil memuat alasan setiap shot dan kurva emosi.
 Cue `[KAMERA: ...]` tetap diutamakan; `dialog` tetap default `mixed`.
 `camera_shot(shot="ots", subject=[tokoh, partner])` membingkai wajah tokoh dengan
-bahu partner di foreground. Timing reaksi bersifat heuristik; periksa wajah dan framing.
+belakang kepala dan bahu partner di foreground (sekitar 20–35% lebar frame),
+dengan sisi garis dialog tetap konsisten. Hasil melaporkan fraksi foreground;
+review memberi warning ringan untuk adegan panjang dengan cakupan statis monoton.
+Timing reaksi bersifat heuristik; periksa wajah dan framing.
 
 ## Suara dialog otomatis
 

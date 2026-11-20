@@ -692,6 +692,8 @@ optional per line `pause_s` / `delay_s`). It:
   without speech it establishes the staged cast. Omit camera for placement only.
   Directed results include `emotion_curve`, visible `reactions`, and each shot's
   `reason` (role/emotion/intensity/phase). Explicit camera cues always override it.
+  An automatic insert shortened below one second by a closing cue is removed;
+  the preceding view holds until the authored closing cut.
   Energy comes only from audible voice samples, alongside saved `char3d_emotions`,
   line/body emotion and punctuation. This is a local heuristic, not story analysis.
   Reactions begin about .3 s after a trigger word, on separate `__c3d_reaction_`
@@ -980,7 +982,12 @@ music attenuation and speech balance, audio/lip coverage, contact Foley, ambienc
 and a quiet turn; shot length/variation/mid-word cuts; projected scale, face/eye
 position, visibility, jump cuts and dialog side; subtitle hold/CPS/face overlap,
 title duration, sampled luminance/contrast; blink/articulation/expression/motion,
-sole/torso/held-grip proxies. `fix=True` runs at most one call per tool/target for
+sole/torso/held-grip proxies. OTS review also checks rear-head orientation and measured
+foreground width. `limited_coverage` warns only for scenes >20 s with >=4 shots,
+all static, and >=75% at one size. This is one normal camera warning (8 category
+points, about 1–2 overall points), with no automatic artistic edit; a single held
+master, shorter scenes, varied sizes or a motivated move are exempt.
+`fix=True` runs at most one call per tool/target for
 safe blink, ducking, missing Foley/ambience, subtitle grouping/hold, native camera
 re-fitting or title hold fixes, and reviews once. An undersized native shot is re-fitted
 with its subject, move and dialog side retained; a jump cut changes the incoming view
@@ -1537,8 +1544,17 @@ Without a look, None has the same behavior as the former False default.
 **Shots** — `camera_shot(subject, shot, move, start_frame, end_frame, angle, elevation,
 intensity, handheld, roll, depth_of_field, avoid_occlusion="auto")`:
 - `shot="over_shoulder"` (alias `ots`) uses one facing subject and `foreground=partner`,
-  or `subject=[facing_subject, partner]`. It composes a medium close view behind the
-  partner's shoulder on the established action-line side. The foreground partner is
+  or `subject=[facing_subject, partner]`. The camera is placed behind the near
+  upper-arm/shoulder joint, at shoulder height, on the established action-line side.
+  Default lenses stay within 50–85 mm; the subject's evaluated eye mesh supplies
+  the upper-third framing and cinematic focus (anatomical fallback on other rigs).
+  The partner's rear head/shoulder occupies roughly 20–35% of frame width.
+  `foreground_composition` and `occlusion.foreground` report the shoulder, side,
+  clipped width/area fractions and head-to-camera angle. Width uses a 64×36 mesh-ray
+  mask, not an alpha-aware raster pass; review allows a margin of two percentage points.
+  Opposite coverage selects opposite anatomical shoulders while retaining the action
+  line side. OTS-to-clean cuts still need two sizes or a 30-degree viewpoint change.
+  The foreground partner is
   excluded only from the foreground-area budget: face/eye occlusion and solid camera
   collision checks still include it. Tight spacing, furniture or unusual blocking can
   prevent a safe OTS and produce a warning. Cinematic DOF focuses the facing subject;

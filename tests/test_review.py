@@ -48,6 +48,32 @@ class ReviewTests(unittest.TestCase):
         tiny=shot('tiny',1,24,size='close_up');tiny['samples']=[dict(head_chest_height=.05,eye_y=.05,face_edge=True)]
         self.assertTrue({'small_subject','eye_line','face_visibility'}<=ids(camera_checks([tiny])))
 
+    def test_long_monotone_coverage(self):
+        shots=[shot('establish',1,72,size='medium_full'),shot('a',73,192),
+               shot('b',193,360),shot('c',361,552)]
+        self.assertNotIn('even_pace',ids(rhythm(shots,24)))
+        self.assertIn('limited_coverage',ids(camera_checks(shots,duration=23)))
+        self.assertNotIn('limited_coverage',ids(camera_checks(shots,duration=20)))
+        self.assertNotIn('limited_coverage',ids(camera_checks(shots[:1],duration=23)))
+        varied=copy.deepcopy(shots);varied[2]['size']='close_up'
+        self.assertNotIn('limited_coverage',ids(camera_checks(varied,duration=23)))
+        moving=copy.deepcopy(shots);moving[2]['move']='push_in'
+        self.assertNotIn('limited_coverage',ids(camera_checks(moving,duration=23)))
+
+    def test_ots_to_clean_jump_cut(self):
+        ots=dict(shot('ots',1,48,size='medium_close',angle=78),foreground='Budi')
+        clean=shot('clean',49,96,size='medium_close',angle=43)
+        self.assertNotIn('jump_cut',ids(camera_checks([ots,clean])))
+        ots['foreground_samples']=[dict(width=.28,head_angle=125)]
+        self.assertNotIn('ots_foreground',ids(camera_checks([ots])))
+        ots['foreground_samples']=[dict(width=.04,head_angle=100)]
+        self.assertIn('ots_foreground',ids(camera_checks([ots])))
+        ots['foreground_samples']=[]
+        clean['angle']=65
+        self.assertIn('jump_cut',ids(camera_checks([ots,clean])))
+        clean['size']='medium_full'
+        self.assertNotIn('jump_cut',ids(camera_checks([ots,clean])))
+
     def test_native_camera_repairs_and_directing_suggestions(self):
         shots=[shot('a',1,12),shot('b',13,72),shot('c',73,400)]
         for s in shots:

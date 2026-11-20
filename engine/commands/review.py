@@ -138,7 +138,8 @@ def _shots(sc, level):
                           deliberate=bool(cam.get('c3d_deliberate_cut',False)),
                           angle=angles[0] if angles else 0,angle_end=angles[-1] if angles else 0,
                           action_side=side,occlusion=measured.get('face',0),face_angle=measured.get('face_angle',0),repair=repair,
-                          distinct_moves=meta.get('move','static')))
+                          distinct_moves=meta.get('move','static'),
+                          foreground_samples=measured.get('foreground',[]),foreground_shoulder=cam.get('c3d_ots_shoulder')))
     return items
 
 
@@ -273,7 +274,8 @@ def _scene_once(level,sheet,engine,size,frames,asr):
     t=time.perf_counter();issues,words,contacts,states=_performance(sc,shots,level); performance_s=time.perf_counter()-t
     if not shots:
         issues.append(issue('missing_camera','camera','error','No shot camera is available for review.'))
-    issues+=rhythm(shots,fps,words,(sc.frame_end-sc.frame_start+1)/fps)+camera_checks(shots)
+    duration=(sc.frame_end-sc.frame_start+1)/fps
+    issues+=rhythm(shots,fps,words,duration)+camera_checks(shots,duration)
     t=time.perf_counter();mix,stems,entries,errors=_mix(sc)
     metrics=audio_metrics(mix);issues+=sound_checks(metrics)
     for error in errors:

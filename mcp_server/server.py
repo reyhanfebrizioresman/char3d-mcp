@@ -491,7 +491,10 @@ async def camera_shot(subject: list[str] | None = None, shot: ShotSize = "medium
     optionally identifies the active speaker. Review repairs preserve these settings.
     shot="over_shoulder" ("ots") takes one facing subject plus foreground=partner,
     or subject=[facing_subject, partner]. Partner foreground is intentional; subject
-    face/eyes must remain clear. Cinematic focus tracks the facing subject.
+    face/eyes must remain clear. The near shoulder joint anchors a rear head/shoulder
+    foreground, roughly 20–35% of frame width, with a 50–85mm default lens. Returns
+    foreground_composition plus sampled occlusion.foreground width/area/head angles.
+    Cinematic focus tracks the subject's evaluated eye mesh when available.
     Returns
     occlusion fractions, frame_coverage_before/after, normalized face_screen eye
     positions (top-left origin), subject_scale, shot_size, adjustments and timing.

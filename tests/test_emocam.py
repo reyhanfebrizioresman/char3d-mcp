@@ -72,6 +72,16 @@ def run():
     assert camera_overrides(cues,900)==[(1,399)]
     overridden=plan_coverage(lines,['A','B'],1,lines[-1]['end']+12,words=words,beats=cues)
     assert all(r['peak']>=400 for r in overridden['reactions'])
+    # A late authored ending must not expose a seven-frame listener insert.
+    late = next(s for s in reversed(a['shots']) if s['reason']['role']=='reaction')
+    closing = late['frames'][0]+7
+    ending = [dict(do='camera',shot='medium_full',move='dolly_out',frames=[closing,closing-1])]
+    bounded = plan_coverage(lines,['A','B'],1,lines[-1]['end']+12,words=words,beats=ending)
+    assert camera_overrides(ending,lines[-1]['end']+12)==[(closing,lines[-1]['end']+12)]
+    visible = [s for s in bounded['shots'] if s['frames'][0]<closing]
+    assert all(min(closing-1,s['frames'][1])-s['frames'][0]+1>=24 for s in visible)
+    assert not any(s['frames'][0]==late['frames'][0] for s in bounded['shots'])
+    assert not any(r['cut']==late['frames'][0] for r in bounded['reactions'])
     assert safe_cut(20,2,35,[('continuous',1,40)]) is None
     assert safe_cut(20,2,45,[('continuous',1,40)])==40
     # Speech energy raises intensity; bilingual emotions share direction.

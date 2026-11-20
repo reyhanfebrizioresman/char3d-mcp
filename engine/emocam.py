@@ -359,6 +359,18 @@ def plan_coverage(lines, characters, start, end, fps=24, words=None, emotions=No
     shots = merged
     # Reactions hidden by the held breath are removed, not reported as visible.
     overrides = camera_overrides(beats, end)
+    # A closing authored cue can trim an otherwise readable automatic insert
+    # down to a few frames. Hold the previous view up to that exact cue instead.
+    # Later automatic shots are hidden by this final override, so no new cut is
+    # introduced on the far side of the removed fragment.
+    if overrides and overrides[-1][1] == end:
+        closing = overrides[-1][0]
+        for i in range(1, len(shots)):
+            a, b = shots[i]['frames']
+            if a < closing <= b+1 and closing-a < minimum:
+                shots[i-1]['frames'][1] = b
+                del shots[i]
+                break
     reactions = [r for r in reactions if not any(a <= r['peak'] <= b for a,b in overrides)
                  and any(s['reason']['role']=='reaction' and s['subject']==r['character']
                          and s['frames'][0] <= r['peak'] <= s['frames'][1] for s in shots)]

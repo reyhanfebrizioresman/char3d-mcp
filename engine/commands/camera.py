@@ -130,7 +130,7 @@ def _shot_name():
 def list_camera_moves():
     return {"moves": {k: v[1] for k, v in MOVES.items()},
             "shot_sizes": {**{k: f"frames ~{v[0]}x subject height, {v[2]}mm" for k, v in SHOTS.items()},
-                           'over_shoulder': 'OTS: facing subject, partner shoulder in foreground; 65mm'}}
+                           'over_shoulder': 'OTS: facing subject, rear head/shoulder foreground; 50–85mm'}}
 
 
 @command("camera_shot")
@@ -156,6 +156,7 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             raise ValueError('over_shoulder needs two different characters')
         action_line = action_line or [subject[0], foreground]
         face_coverage = True
+        require_composition = True
     if not ots and shot not in SHOTS:
         raise ValueError(f"shot must be one of {list(SHOTS)}")
     if move not in MOVES:
@@ -277,23 +278,12 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
                 pos.z += math.sin(el) * dist
 
                 if ots:
-                    subject_head = frames[0][0]
-                    partner_head = head_frame(bpy.data.objects[foreground])[0]
-                    axis = Vector((partner_head.x-subject_head.x, partner_head.y-subject_head.y, 0))
-                    gap = axis.length
-                    if gap < .25:
-                        raise ValueError('over_shoulder partners must be at least 25 cm apart')
-                    axis.normalize()
-                    # Camera behind the partner, offset into the established aisle.
-                    # The shoulder falls on a frame edge; the facing subject stays
-                    # readable and the camera never crosses the action line.
-                    distance = max(dist, gap+.55*H)
-                    aim = Vector((subject_head.x, subject_head.y, focus.z))
-                    pos = aim + axis*distance + normal*(.46*H)
-                    pos.z = subject_head.z + .035*H
-                    if depth_of_field:
-                        from .cinematic import _eye
-                        focus = _eye(next(iter(probe.rigs)))
+                    from .ots import layout, eye_point
+                    focus = eye_point(next(iter(probe.rigs)))
+                    pos,aim,ots_rot,lens_mm,ots_info = layout(next(iter(probe.rigs)),
+                        bpy.data.objects[foreground],normal,focus,H,probe.sensor,
+                        back=.75,side=.30,lens=lens)
+                    cam['c3d_ots_shoulder'] = ots_info['shoulder']
 
             if "to_face" in p:   # zooms drift the aim from the shot's focus up to the face
                 aim = aim + Vector((0, 0, (0.92 - aim_frac) * H * max(0.0, p["to_face"])))
@@ -390,6 +380,10 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
             "next_start_frame": end + 1, "subject_height": round(H, 3),
             "occlusion": occlusion, "shot_size": used_size,
             "replaced_shots_at_start_frame": replaced,
+            **({'foreground_composition': dict(partner=foreground, shoulder=cam['c3d_ots_shoulder'],
+                width_range=[min(v['width'] for v in occlusion['foreground']),max(v['width'] for v in occlusion['foreground'])],
+                area_range=[min(v['area'] for v in occlusion['foreground']),max(v['area'] for v in occlusion['foreground'])],
+                head_angle_min=min(v['head_angle'] for v in occlusion['foreground']))} if ots else {}),
             "lens_mm": [round(lenses[0], 1), round(lenses[-1], 1)]}
 
 

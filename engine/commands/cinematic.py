@@ -201,7 +201,12 @@ def _focus(sc, camera, objects, actions):
         sc.collection.objects.link(target)
         objects.append(target)
         target.parent = anchor
-        target.location = (rig.matrix_world @ rig.pose.bones[bone].matrix).inverted() @ _eye(rig)
+        if camera.get('c3d_foreground'):
+            from .ots import eye_point
+            eye = eye_point(rig)
+        else:
+            eye = _eye(rig)
+        target.location = (rig.matrix_world @ rig.pose.bones[bone].matrix).inverted() @ eye
         dof.focus_object = target
     else:
         # Editorial cuts and two-shot coverage carry live speaker turns. Focus

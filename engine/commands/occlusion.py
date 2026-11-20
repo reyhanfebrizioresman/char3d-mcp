@@ -210,6 +210,32 @@ def frame_coverage(pos, rot, lens, sensor, meshes, groups):
     return float(np.mean(covered))
 
 
+def foreground_coverage(pos, rot, lens, sensor, meshes, groups):
+    """64x36 partner silhouette, stopping at the subject eye plane.
+
+    Width is the span of occupied columns, clipped to the frame; area is the
+    occupied pixel fraction. Mesh rays include head, hair, neck and shoulders.
+    """
+    forward = rot.to_matrix() @ Vector((0, 0, -1))
+    depth = min((p-pos).dot(forward) for g in groups for p in _landmarks(g)[:1])
+    if depth <= 0 or not meshes:
+        return dict(width=0., area=0., side='none')
+    basis = rot.to_matrix()
+    points = np.asarray([pos+basis@Vector((((x+.5)/64-.5)*sensor[0]/lens,
+                         (.5-(y+.5)/36)*sensor[1]/lens,-1))*depth
+                         for y in range(36) for x in range(64)])
+    mask = np.zeros(len(points), dtype=bool)
+    for mesh in meshes:
+        remaining = np.flatnonzero(~mask)
+        if len(remaining):
+            mask[remaining] |= mesh.hits(pos, points[remaining])
+    mask = mask.reshape(36,64)
+    columns = np.flatnonzero(mask.any(axis=0))
+    width = (columns[-1]-columns[0]+1)/64 if len(columns) else 0.
+    return dict(width=float(width), area=float(mask.mean()),
+                side=('left' if float(np.mean(columns)) < 32 else 'right') if len(columns) else 'none')
+
+
 class VisibilityProbe:
     def __init__(self, targets, shot, height, angle_limits=None, action_line=None, face_limit=75.0, foreground=None):
         self.shot, self.height = shot, height
@@ -231,14 +257,27 @@ class VisibilityProbe:
         self.ignored = ignored
         self.cache, self.samples = {}, []
         self.faces = {}
+        self.foreground_faces = {}
         self.seconds = 0.0
         aspect = bpy.context.scene.render.resolution_y / bpy.context.scene.render.resolution_x
         self.sensor = (36 * max(1, aspect), 36 * min(1, aspect))
 
     def points(self):
         dg = bpy.context.evaluated_depsgraph_get()
-        return [_points(parts, root if root.type == "ARMATURE" else None, self.height, dg)
-                for root, parts in self.groups.items()]
+        groups = [_points(parts, root if root.type == "ARMATURE" else None, self.height, dg)
+                  for root, parts in self.groups.items()]
+        if self.foreground:
+            # OTS deliberately frames the live eye plane, rather than a high
+            # forehead proxy derived from the rig's head-bone length.
+            from .ots import eye_point
+            for (root, _), group in zip(self.groups.items(), groups):
+                if root.type == 'ARMATURE':
+                    eye = eye_point(root)
+                    lateral = head_frame(root)[1] @ Vector((.02*self.height/1.7,0,0))
+                    eyes = [eye-lateral,eye+lateral]
+                    group[0][-2:] = eyes
+                    group[1][:] = eyes
+        return groups
 
     def capture(self, frame, position, aim, rotation=None, lens=50):
         started = time.perf_counter()
@@ -275,6 +314,8 @@ class VisibilityProbe:
         groups = self.points()
         self.faces[frame] = [head_frame(root) if root.type == "ARMATURE" else None
                              for root in self.groups]
+        if self.foreground:
+            self.foreground_faces[frame] = head_frame(bpy.data.objects[self.foreground])
         rotation = rotation or (aim-position).to_track_quat("-Z", "Y").to_euler()
         targets = framing_targets(position, rotation, lens, groups, self.sensor, self.shot)
         line = []
@@ -290,6 +331,7 @@ class VisibilityProbe:
         worst, body_worst, eye_blocked, safe = 0.0, 0.0, False, True
         coverage, composed, screens, sizes = 0.0, True, [], []
         angle = 0.0
+        foreground = []
         for frame, pos, aim, meshes, groups, line, rot, mm, targets, solids in self.samples:
             original = pos
             if adjustment is not None:
@@ -310,6 +352,11 @@ class VisibilityProbe:
                         safe = False
             inside = any(m.inside(pos) for m in solids)
             safe &= not inside
+            if self.foreground:
+                value = foreground_coverage(pos, rot, mm, self.sensor,
+                    [m for m in meshes if m.foreground], groups)
+                value.update(frame=frame,head_angle=face_angle(*self.foreground_faces[frame],pos))
+                foreground.append(value)
             for face in self.faces[frame]:
                 if face is not None:
                     angle = max(angle, face_angle(*face, pos))
@@ -345,14 +392,17 @@ class VisibilityProbe:
                     [m for m in meshes if not m.foreground], groups))
             else:
                 return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
-                            coverage=1.0, composed=False, screens=screens, sizes=sizes, face_angle=angle)
+                            coverage=1.0, composed=False, screens=screens, sizes=sizes, face_angle=angle,
+                            foreground=foreground)
         return dict(face=worst, eyes=eye_blocked, body=body_worst, safe=safe,
-                    coverage=coverage, composed=composed, screens=screens, sizes=sizes, face_angle=angle)
+                    coverage=coverage, composed=composed, screens=screens, sizes=sizes, face_angle=angle,
+                    foreground=foreground)
 
     def accepts(self, value):
         limit = 0.25 if self.shot in {"extreme_close_up", "close_up", "medium_close", "medium"} else 0.35
         return (value['safe'] and value['face'] <= 0.05 and value['face_angle'] <= self.face_limit and value['composed'] and
                 not (self.shot in {"close_up", "extreme_close_up"} and value['eyes']) and
+                all(.18 <= f['width'] <= .37 and f['head_angle'] >= 115 for f in value.get('foreground', [])) and
                 value['coverage'] <= limit)
 
     def resolve(self, enabled, elevation, require_composition=False):
@@ -388,6 +438,8 @@ class VisibilityProbe:
                   "face_angle": round(after['face_angle'], 2),
                   "face_screen": after['screens'], "subject_scale": after['sizes'],
                   "shot_size": self.shot, "sample_frames": [s[0] for s in self.samples]}
+        if self.foreground:
+            report['foreground'] = after['foreground']
         if enabled and blocked and chosen is None:
             report["warning"] = "No safe camera adjustment preserves composition; original camera retained."
         self.seconds += time.perf_counter() - started

@@ -95,12 +95,11 @@ for event in {built['reactions']!r}:
         (root/'comparison.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2))
         print(f"EMOCAM {name}: directed {pair['directed']['score']} / mixed {pair['mixed']['score']} | "
               f"shots {pair['directed']['stats']['shot_count']} / {pair['mixed']['stats']['shot_count']}",flush=True)
-    # Inspectable final material/DOF evidence, two frames only.
+    # Listener-focus evidence; mirrored standing/seated OTS stills follow below.
     if os.environ.get('CHAR3D_EMOCAM_CASE') not in (None, 'good_news'):
         return
     await call('open_project',path='emocam/good_news_directed.blend')
     built=json.loads((root/'good_news_directed_build.json').read_text())
-    ots=next(s for s in built['shots'] if s.get('role')=='OTS')
     reaction=next((r for r in built['reactions'] if r['expression']=='surprised'), built['reactions'][0])
     proof=await data('run_blender_python',code=f"""
 from engine.commands.cinematic import _focus, _eye
@@ -128,7 +127,10 @@ finally:
         if action.users==0: bpy.data.actions.remove(action)
 """)
     (root/'focus_proof.json').write_text(json.dumps(proof,indent=2))
-    final=await call('render_frames' ,frames=[sum(ots['frames'])//2,reaction['peak']],camera='scene',
-                     engine_name='eevee',size=384,prefix=str(root/'final'))
-    (root/'final_stills.json').write_text(json.dumps(text_of(final),ensure_ascii=False,indent=2))
+    if not os.environ.get('CHAR3D_EMOCAM_NO_STILLS'):
+        final=await call('render_frames',frames=[reaction['peak']],camera='scene',
+                         engine_name='eevee',size=384,prefix=str(root/'final'))
+        (root/'final_stills.json').write_text(json.dumps(text_of(final),ensure_ascii=False,indent=2))
+    from ots_checks import run as ots_checks
+    await ots_checks(call,text_of)
     print('EMOCAM E2E OK',flush=True)
