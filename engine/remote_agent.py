@@ -3,7 +3,7 @@
 No listener, provider token, repo, MPFB or Python package installation on the worker.
 RPC uses SSH stdin. Render processes live beyond an SSH disconnect, with a local TTL.
 """
-import fcntl
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -14,22 +14,153 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
+
+WINDOWS = os.name == 'nt'
 
 TERMINAL = ('done', 'failed', 'cancelled')
 
 
 def read(path, default=None):
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding='utf-8'))
     except FileNotFoundError:
         return default
 
 
 def write(path, value):
     path = Path(path)
-    tmp = path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(value))
-    os.replace(tmp, path)
+    tmp = path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+    try:
+        tmp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        for attempt in range(40):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 39:
+                    raise
+                time.sleep(.025)  # Windows readers/virus scanners can hold a file briefly.
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@contextmanager
+def queue_lock(path):
+    with open(path, 'a+b') as stream:
+        if WINDOWS:
+            import msvcrt
+            if stream.tell() == 0:
+                stream.write(b'0')
+                stream.flush()
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(.05)
+        else:
+            import fcntl
+            fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if WINDOWS:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def process_token(pid):
+    """Windows PID + kernel creation time; never kill a reused/unrelated PID."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE]+[ctypes.POINTER(wintypes.FILETIME)]*4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000 | 0x100000, False, int(pid))
+    if not handle:
+        return None
+    try:
+        if kernel.WaitForSingleObject(handle, 0) != 258:
+            return None
+        created, exited, system, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(handle, *map(ctypes.byref, (created, exited, system, user))):
+            raise RuntimeError('Cannot identify owned Windows process')
+        return {'pid': int(pid), 'created': str((created.dwHighDateTime << 32) | created.dwLowDateTime)}
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def pid_record(pid):
+    if not WINDOWS:
+        return pid
+    record = process_token(pid)
+    if record is None:
+        return {'pid': int(pid), 'exited': True}
+    return record
+
+
+def owned_process(record, directory):
+    if WINDOWS:
+        return isinstance(record, dict) and process_token(record['pid']) == record
+    if not isinstance(record, int):
+        return False
+    try:
+        return str(directory).encode() in Path(f'/proc/{record}/cmdline').read_bytes()
+    except OSError:
+        return False
+
+
+def stop_tree(record, directory):
+    if not owned_process(record, directory):
+        return
+    if WINDOWS:
+        result = subprocess.run(['taskkill.exe', '/PID', str(record['pid']), '/T', '/F'],
+            capture_output=True, timeout=15, creationflags=0x08000000)
+        if result.returncode and owned_process(record, directory):
+            raise RuntimeError('Could not stop the owned Windows worker tree')
+    else:
+        try:
+            os.kill(record, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def detach_options(breakaway=True):
+    # Windows OpenSSH runs each session in a job object that kills its processes when
+    # the connection closes; CREATE_BREAKAWAY_FROM_JOB keeps the supervisor alive.
+    if not WINDOWS:
+        return {'start_new_session': True}
+    return {'creationflags': 0x00000008 | 0x00000200 | (0x01000000 if breakaway else 0)}
+
+
+def worker_options():
+    return {'creationflags': 0x00000200 | 0x08000000} if WINDOWS else {}
+
+
+def gpu_inventory():
+    binary = shutil.which('nvidia-smi')
+    if not binary and WINDOWS:
+        candidate = Path(os.environ.get('SystemRoot', r'C:\Windows'))/'System32/nvidia-smi.exe'
+        binary = str(candidate) if candidate.is_file() else None
+    if not binary:
+        return []
+    try:
+        result = subprocess.run([binary, '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
+            **({'creationflags': 0x08000000} if WINDOWS else {}))
+        if result.returncode:
+            return []
+        return [dict(name=name.strip(), vram_bytes=int(float(size.strip())*2**20), source='nvidia-smi')
+                for name, size in (row.rsplit(',', 1) for row in result.stdout.splitlines() if row.strip())]
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
 
 
 def safe_path(root, name):
@@ -48,12 +179,13 @@ def hash_file(path):
 
 
 def prune(root, cap):
+    pinned = {h for p in (root/'jobs').glob('*/files.json') for h in read(p, {}).values()}
     blobs = sorted((p for p in (root/'blobs').glob('*') if p.is_file()), key=lambda p: p.stat().st_mtime)
     total = sum(p.stat().st_size for p in blobs)
     for p in blobs:
         if total <= cap:
             break
-        if p.stat().st_nlink == 1:
+        if p.stat().st_nlink == 1 and p.name not in pinned:
             total -= p.stat().st_size
             p.unlink()
 
@@ -61,75 +193,129 @@ def prune(root, cap):
 def rpc(req):
     root = Path(req['root'])
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
+    if not WINDOWS:
+        os.chmod(root, 0o700)
     (root/'blobs').mkdir(exist_ok=True)
     action = req['action']
+    if action in ('stage_upload', 'finish_upload', 'discard_upload'):
+        token = req['token']
+        if not re.fullmatch('[0-9a-f]{32}', token):
+            raise ValueError('Invalid upload token')
+        stage = root/'uploads'/token
+        if action == 'stage_upload':
+            stage.mkdir(parents=True, exist_ok=True)
+            # Interrupted SCP staging never becomes a cache blob. Expire abandoned
+            # batches after a day; current transfers have a two-minute timeout.
+            for old in stage.parent.iterdir():
+                if old != stage and old.is_dir() and time.time()-old.stat().st_mtime > 86400:
+                    shutil.rmtree(old)
+        elif action == 'discard_upload':
+            shutil.rmtree(stage, ignore_errors=True)
+        else:
+            try:
+                # Idempotent for a retried request: blobs already moved and verified
+                # by an earlier attempt are accepted.
+                pending = [h for h in req['hashes'] if not (
+                    re.fullmatch('[0-9a-f]{64}', h) and not (stage/h).exists()
+                    and (root/'blobs'/h).exists() and hash_file(root/'blobs'/h) == h)]
+                for h in pending:
+                    if not re.fullmatch('[0-9a-f]{64}', h) or hash_file(stage/h) != h:
+                        raise ValueError('Uploaded blob SHA-256 mismatch')
+                for h in pending:
+                    os.replace(stage/h, root/'blobs'/h)
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
+        return {'ok': True}
     if action == 'missing':
         return {'missing': [h for h in req['hashes'] if not re.fullmatch('[0-9a-f]{64}', h)
                             or not (root/'blobs'/h).is_file() or hash_file(root/'blobs'/h) != h]}
     if action == 'probe':
-        if sys.platform != 'linux' or sys.version_info < (3, 9):
-            raise RuntimeError('Worker requires Linux and system Python 3.9+')
-        p = subprocess.run([req['blender'], '--version'], capture_output=True, text=True, timeout=30)
+        if (not WINDOWS and sys.platform != 'linux') or sys.version_info < (3, 9):
+            raise RuntimeError('Worker requires Linux/Windows and system Python 3.9+')
+        p = subprocess.run([req['blender'], '--version'], capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=30, **worker_options())
         if p.returncode:
             raise RuntimeError('Blender unavailable')
         return {'version': p.stdout.splitlines()[0], 'python': sys.version.split()[0],
-                'rsync': bool(shutil.which('rsync'))}
+                'rsync': bool(shutil.which('rsync')), 'os': 'windows' if WINDOWS else 'linux',
+                'gpus': gpu_inventory()}
     ident = req['id']
     if not re.fullmatch('[a-zA-Z0-9_-]+', ident):
         raise ValueError('Invalid job id')
     directory = root/'jobs'/ident
     if action == 'start':
         (root/'jobs').mkdir(exist_ok=True)
-        with open(root/'queue.lock', 'w') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with queue_lock(root/'queue.lock'):
             if (directory/'status.json').exists():
                 return read(directory/'status.json')
             active = [read(p, {}) for p in (root/'jobs').glob('*/status.json')]
             if sum(s.get('status') not in TERMINAL for s in active) >= req['max_parallel']:
                 raise RuntimeError('Target max_parallel reached')
             directory.mkdir(mode=0o700, exist_ok=True)
-            for name, h in req['files'].items():
-                if not re.fullmatch('[0-9a-f]{64}', h) or hash_file(root/'blobs'/h) != h:
-                    raise ValueError('Blob verification failed')
-                dest = safe_path(directory, name)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if not dest.exists():
-                    os.link(root/'blobs'/h, dest)
-            (directory/'agent.py').write_text(SOURCE)
-            write(directory/'spec.json', req['spec'])
-            write(directory/'status.json', {'status': 'starting', 'progress': '0/1'})
-            with open(directory/'agent.log', 'wb') as log:
-                p = subprocess.Popen([sys.executable, str(directory/'agent.py'), 'run', str(directory)],
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            write(directory/'pid.json', p.pid)
+            p = None
+            try:
+                write(directory/'status.json', {'status': 'starting', 'progress': '0/1'})
+                write(directory/'files.json', req['files'])
+                for name, h in req['files'].items():
+                    if not re.fullmatch('[0-9a-f]{64}', h) or hash_file(root/'blobs'/h) != h:
+                        raise ValueError('Blob verification failed')
+                    dest = safe_path(directory, name)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if not dest.exists():
+                        try:
+                            os.link(root/'blobs'/h, dest)
+                        except OSError:
+                            shutil.copyfile(root/'blobs'/h, dest)
+                (directory/'agent.py').write_text(SOURCE, encoding='utf-8')
+                write(directory/'spec.json', req['spec'])
+                with open(directory/'agent.log', 'wb') as log:
+                    command = [sys.executable, str(directory/'agent.py'), 'run', str(directory)]
+                    try:
+                        p = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
+                                             stderr=subprocess.STDOUT, **detach_options())
+                    except PermissionError:
+                        # A job without JOB_OBJECT_LIMIT_BREAKAWAY_OK refuses breakaway.
+                        p = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
+                                             stderr=subprocess.STDOUT, **detach_options(False))
+                write(directory/'pid.json', pid_record(p.pid))
+            except Exception:
+                if p and p.poll() is None:
+                    # This Popen still owns the process handle, even if recording a
+                    # PID failed. Do not leave an untracked supervisor running.
+                    p.kill()
+                    p.wait()
+                write(directory/'status.json', {'status': 'failed', 'error': 'Could not prepare/start remote supervisor'})
+                raise
             return {'status': 'starting', 'pid': p.pid}
     if action == 'status':
         state = read(directory/'status.json', {'status': 'missing'})
         pid = read(directory/'pid.json')
         if pid and state['status'] not in TERMINAL and state['status'] != 'missing':
-            try:
-                live = str(directory).encode() in Path(f'/proc/{pid}/cmdline').read_bytes()
-            except OSError:
-                live = False
+            live = owned_process(pid, directory)
             if not live:
                 worker = read(directory/'worker_pid.json')
-                try:
-                    owned = worker and str(directory).encode() in Path(f'/proc/{worker}/cmdline').read_bytes()
-                    if owned:
-                        os.kill(worker, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
+                stop_tree(worker, directory)
                 state.update(status='failed', error='Remote supervisor exited; owned worker stopped')
                 write(directory/'status.json', state)
         return state
     if action == 'cancel':
         (directory/'cancel').touch()
+        if WINDOWS:
+            stop_tree(read(directory/'worker_pid.json'), directory)
         return {'cancel_requested': True}
     if action == 'cleanup':
         if read(directory/'status.json', {}).get('status') not in TERMINAL:
             raise RuntimeError('Cannot clean an active job')
-        shutil.rmtree(directory, ignore_errors=True)
+        for attempt in range(40):
+            try:
+                shutil.rmtree(directory)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if attempt == 39:
+                    raise RuntimeError('Worker files still in use; retry cleanup') from None
+                time.sleep(.05)
         prune(root, req['cache_bytes'])
         return {'cleaned': True}
     raise ValueError('Unknown remote action')
@@ -156,8 +342,9 @@ def run(directory):
         logpath = Path(logname)
         last_size, changed = -1, time.monotonic()
         with open(logpath, 'wb') as stream:
-            proc = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        write('worker_pid.json', proc.pid)
+            proc = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, **worker_options())
+        write('worker_pid.json', pid_record(proc.pid))
         while proc.poll() is None:
             now = time.monotonic()
             size = logpath.stat().st_size
@@ -169,7 +356,7 @@ def run(directory):
                 raise TimeoutError('Remote time/budget cap reached')
             if now-changed > spec['idle_timeout_s']:
                 raise TimeoutError('Remote idle watchdog expired')
-            text = logpath.read_text(errors='replace')[-262144:]
+            text = logpath.read_text(encoding='utf-8', errors='replace')[-262144:]
             cursor = [int(n)+1 for n in re.findall(r'Video append frame\s+(\d+)', text)]
             cursor += [int(n) for n in re.findall(r'\bFra:\s*(\d+)', text)]
             done = min(spec['frames'], max(0, max(cursor, default=spec['start'])-spec['start']))
@@ -178,6 +365,8 @@ def run(directory):
             state.update(read('device.json', {}))
             write('status.json', state)
             time.sleep(.5)
+        if stop or Path('cancel').exists():
+            raise InterruptedError('Render cancelled')
         if proc.returncode:
             raise RuntimeError('Blender worker failed; see downloaded render.log')
 
@@ -212,7 +401,10 @@ def run(directory):
         state.update(status='cancelled' if isinstance(exc, InterruptedError) else 'failed', error=str(exc))
     finally:
         if proc and proc.poll() is None:
-            proc.terminate()
+            if WINDOWS:
+                stop_tree(read('worker_pid.json'), directory)
+            else:
+                proc.terminate()
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -223,6 +415,8 @@ def run(directory):
 
 
 if __name__ == '__main__':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
     if sys.argv[1] == 'run':
         run(sys.argv[2])
     else:

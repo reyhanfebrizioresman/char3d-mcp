@@ -3,7 +3,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shlex
 import tempfile
@@ -56,7 +56,20 @@ def positive(value, name, zero=False):
 COMMON = {'kind', 'host', 'user', 'port', 'jump_host', 'remote_dir', 'blender', 'device',
           'max_parallel', 'threads', 'hourly_usd', 'max_hours', 'max_budget_usd',
           'idle_timeout_s', 'cache_bytes', 'gpu_type', 'max_hourly_usd', 'image', 'disk_gb',
-          'public_key', 'cloud_type', 'startup_seconds'}
+          'public_key', 'cloud_type', 'startup_seconds', 'os', 'python', 'shell',
+          'blender_version', 'vram_gb'}
+
+
+def validate_remote_dir(value, system='auto'):
+    if not isinstance(value, str) or any(c in value for c in '\n\r\x00'):
+        raise RemoteError('Invalid remote_dir')
+    win = PureWindowsPath(value)
+    windows = win.is_absolute() and bool(re.fullmatch(r'[A-Za-z]:', win.drive))
+    if windows:
+        if system == 'linux' or '..' in win.parts or len(win.parts) < 2 or any(c in value[2:] for c in ':*?"<>|'):
+            raise RemoteError('remote_dir must be a Windows drive directory without .. or wildcards')
+    elif system == 'windows' or not value.startswith('/') or '..' in Path(value).parts or ':' in value or str(Path(value)) in ('/', '//'):
+        raise RemoteError('remote_dir must be an absolute directory for the target OS, without ..')
 
 
 def targets():
@@ -73,21 +86,29 @@ def targets():
                  threads=4, max_hours=4, idle_timeout_s=900, cache_bytes=2**30,
                  startup_seconds=300, disk_gb=20)
         t.update(raw)
+        t.setdefault('os', 'auto' if t.get('kind') == 'ssh' else 'linux')
+        t.setdefault('shell', 'auto')
+        t.setdefault('blender_version', 'minor')
+        if t['os'] not in ('auto', 'linux', 'windows'):
+            raise RemoteError('os must be auto, linux or windows')
+        if t['shell'] not in ('auto', 'cmd', 'powershell'):
+            raise RemoteError('shell must be cmd, powershell or auto')
+        if t['blender_version'] not in ('exact', 'minor'):
+            raise RemoteError('blender_version must be exact or minor')
         if t.get('kind') not in ('ssh', 'runpod', 'vast'):
             raise RemoteError(f'{name}: kind must be ssh, runpod or vast')
         if t['device'] not in ('cpu', 'cuda', 'optix', 'hip'):
             raise RemoteError('device must be cpu, cuda, optix or hip')
-        for field in ('host', 'user', 'jump_host'):
+        for field in ('host', 'jump_host'):
             if t.get(field) and not re.fullmatch(r'[A-Za-z0-9_.@,:\[\]-]+', t[field]):
                 raise RemoteError(f'Invalid {field}')
             if str(t.get(field, '')).startswith('-'):
                 raise RemoteError(f'Invalid {field}')
-        if not isinstance(t['remote_dir'], str) or not t['remote_dir'].startswith('/') or '..' in Path(t['remote_dir']).parts:
-            raise RemoteError('remote_dir must be an absolute Linux path without ..')
-        if any(c in t['remote_dir'] for c in '\n\r\x00:') or str(Path(t['remote_dir'])) in ('/', '//'):
-            raise RemoteError('Invalid remote_dir')
-        for field in ('blender', 'image'):
-            if field in t and (not isinstance(t[field], str) or not t[field] or '\n' in t[field]):
+        if 'user' in t and (not isinstance(t['user'], str) or not re.fullmatch(r'[\w .@\\-]+', t['user']) or t['user'].startswith('-')):
+            raise RemoteError('Invalid SSH user')
+        validate_remote_dir(t['remote_dir'], t['os'])
+        for field in ('blender', 'python', 'image'):
+            if field in t and (not isinstance(t[field], str) or not t[field] or any(c in t[field] for c in '\n\r\x00')):
                 raise RemoteError(f'Invalid {field}')
         for field in ('max_parallel', 'threads', 'disk_gb', 'cache_bytes'):
             if type(t[field]) is not int or t[field] < 1:
@@ -96,12 +117,16 @@ def targets():
             raise RemoteError('Invalid SSH port')
         for field in ('max_hours', 'idle_timeout_s', 'startup_seconds'):
             t[field] = positive(t[field], field)
+        if 'vram_gb' in t:
+            t['vram_gb'] = positive(t['vram_gb'], 'vram_gb')
         if t['kind'] == 'ssh':
             if not t.get('host'):
                 raise RemoteError(f'{name}: host is required')
             if 'hourly_usd' in t:
                 t['hourly_usd'] = positive(t['hourly_usd'], 'hourly_usd', zero=True)
         else:
+            if t['os'] != 'linux':
+                raise RemoteError('Rented provider targets currently require Linux images')
             for field in ('gpu_type', 'image', 'public_key', 'max_budget_usd', 'max_hourly_usd'):
                 if not t.get(field):
                     raise RemoteError(f'{name}: {field} is required for rented GPU targets')

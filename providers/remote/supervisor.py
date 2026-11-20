@@ -18,6 +18,7 @@ import threading
 import time
 
 from engine.render_metrics import frame_times
+from engine.render_compat import check_version, memory_warning
 from .cloud import Cloud
 from .config import RemoteError, clean_env, digest, read_json, write_json
 from .jobs import TERMINAL, engine_key
@@ -27,7 +28,8 @@ from .transport import ROOT, SSH, file_hash
 def bundle(child, t, seconds):
     files = dict(child.get('remote_assets', {}))
     files.update({'scene.blend': child['blend'], 'worker.py': str(ROOT/'engine/remote_worker.py'),
-                  'compose.py': str(ROOT/'engine/compose_subtitles.py')})
+                  'compose.py': str(ROOT/'engine/compose_subtitles.py'),
+                  'render_compat.py': str(ROOT/'engine/render_compat.py')})
     overlays, transitions = copy.deepcopy(child['overlays']), copy.deepcopy(child['transitions'])
     for i, ov in enumerate(overlays):
         name = f'overlays/{i}.png'
@@ -41,6 +43,8 @@ def bundle(child, t, seconds):
             handles.append({'path': trans['movie'], 'camera': trans['camera'],
                             'frames': [trans['start']+start-1, trans['end']+start-1]})
     spec = dict(blender=t['blender'], blender_version=child['blender_version'], device=t['device'],
+        blender_version_policy=t.get('blender_version', 'minor'),
+        estimated_vram_bytes=child.get('scene_memory', {}).get('estimated_vram_bytes'),
         threads=t['threads'], start=child['frames'][0], frames=child['frames'][1]-child['frames'][0]+1,
         size=child['size'], fps=child['fps'], audio=child['audio'], handles=handles,
         overlays=overlays, transitions=transitions, max_seconds=seconds,
@@ -242,7 +246,8 @@ class Supervisor:
             ratio = min(100, max(.001, measured/child['model_spf']))
             factor = math.sqrt(old['factor']*ratio) if old else ratio
             data[key] = dict(factor=factor, samples=old.get('samples', 0)+1,
-                             measured_s_per_frame=measured, updated=time.time())
+                             measured_s_per_frame=measured, updated=time.time(),
+                             vram_bytes=self.state.get('vram_bytes'), gpus=self.state.get('gpus', []))
             write_json(speed_path, data)
         self.save(learned_speed=data[key])
 
@@ -256,11 +261,24 @@ class Supervisor:
         self.save(stage=f'scene {index+1}/{len(self.state["prepared"]["children"])}', active_remote_id=ident)
         files, spec = bundle(child, ssh.target, max(1, self.caps()-(time.time()-self.state.get('lease_started', self.state['started']))))
         probe = ssh.rpc('probe', blender=ssh.target['blender'])
-        if not probe.get('rsync', True):
+        system = probe.get('os', ssh.target.get('os', 'linux'))
+        if system != 'windows' and not probe.get('rsync', True):
             raise RemoteError('Install rsync on the remote worker')
-        version = '.'.join(map(str, child['blender_version']))
-        if not probe['version'].startswith('Blender '+version):
-            raise RemoteError('Blender version mismatch; install the exact local version on target')
+        try:
+            warnings = check_version(child['blender_version'], probe['version'], self.t.get('blender_version', 'minor'))
+        except ValueError as exc:
+            raise RemoteError(str(exc)) from None
+        gpus = probe.get('gpus', [])
+        vram = min((g['vram_bytes'] for g in gpus if g.get('vram_bytes')), default=None)
+        if vram is None and self.t.get('vram_gb'):
+            vram = int(self.t['vram_gb']*2**30)
+        spec.update(gpus=gpus, vram_bytes=vram)
+        if self.t['device'] != 'cpu':
+            warnings += memory_warning(spec.get('estimated_vram_bytes'), vram)
+        self.save(warnings=list(dict.fromkeys(self.state.get('warnings', [])+warnings)),
+            target_os=system, blender_remote_version=probe['version'], gpus=gpus, vram_bytes=vram,
+            vram_source='nvidia-smi' if gpus else 'target config' if vram else 'unavailable',
+            estimated_vram_bytes=spec.get('estimated_vram_bytes'))
         self.check()
         mapping = ssh.upload(files, self.path.parents[2]/'blobs')
         self.check()
@@ -294,6 +312,7 @@ class Supervisor:
             else:
                 self.save(progress=progress, progress_unit='frames')
             self.save(device=remote.get('device', self.t['device']), gpu=remote.get('gpu'), eta_s=eta)
+            self.save(warnings=list(dict.fromkeys(self.state.get('warnings', [])+remote.get('warnings', []))))
             if remote['status'] in TERMINAL:
                 break
             if remote['status'] == 'missing':

@@ -505,8 +505,11 @@ Video dan film bisa memakai `target="devodo"` atau nama target sendiri. Default
 `target="local"` tetap memakai laptop. Klip film dirender di remote, lalu disusun
 di laptop. Tidak ada perubahan Web UI; gunakan tool MCP.
 
-1. Siapkan mesin Linux dengan SSH, Python 3.9+, rsync dan **versi Blender persis sama**
-   dengan laptop. GPU perlu driver/EGL serta CUDA/OptiX/HIP sesuai perangkat.
+1. Siapkan mesin Linux atau Windows dengan SSH, Python 3.9+, dan Blender dari seri
+   major.minor yang sama. Default `blender_version="minor"` menerima 5.2.3 ↔ 5.2.4
+   dengan peringatan; `"exact"` mewajibkan patch sama. Seri berbeda ditolak.
+   Linux memakai rsync; Windows memakai SCP/SFTP tanpa rsync. GPU perlu driver
+   grafis serta CUDA/OptiX/HIP sesuai perangkat.
    `scripts/install_remote_worker.sh --help` menjelaskan verifikasi/instalasi arsip resmi.
    Worker tidak perlu MPFB, repo char3d, atau paket pip tambahan.
 2. Buat `~/.config/char3d/targets.json`, misalnya:
@@ -548,6 +551,47 @@ bukan tagihan; pajak/pembulatan/penyimpanan bisa berbeda. Cache blob privat di r
 tetap tersimpan dengan batas ukuran; scene sementara dibersihkan setelah pengiriman.
 Cache simulasi eksternal, linked library, volume dan UDIM/sequence perlu dikonversi
 sebelum dikirim. Tidak ada dukungan Kaggle/Colab atau akal-akalan free tier.
+
+### PC Windows milik sendiri
+
+Aktifkan **OpenSSH Server** dan layanan `sshd` di PC. Untuk akun anggota Administrators,
+public key laptop yang **disetujui pemilik** masuk ke
+`C:\ProgramData\ssh\administrators_authorized_keys`. Jangan kirim private key.
+Di PowerShell Administrator, setelah menambahkan key tanpa BOM:
+
+```powershell
+$keyFile = "$env:ProgramData\ssh\administrators_authorized_keys"
+icacls.exe $keyFile /inheritance:r
+icacls.exe $keyFile /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F'
+New-Item -ItemType Directory -Force 'D:\char3d\remote'
+```
+
+Periksa ACL lama agar tidak ada grant pengguna lain; batasi folder worker juga.
+Pertahankan akses melalui VPN/jump host. Contoh target di `targets.json`:
+
+```json
+{"pc":{"kind":"ssh","os":"windows","shell":"cmd",
+  "host":"10.8.0.8","jump_host":"reyhan","user":"reyhan febrizio r",
+  "remote_dir":"D:\\char3d\\remote",
+  "python":"C:\\Users\\Reyhan Febrizio R\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+  "blender":"C:\\Users\\Reyhan Febrizio R\\AppData\\Local\\Programs\\Blender\\blender-5.2.3-windows-x64\\blender.exe",
+  "blender_version":"minor","device":"cuda","vram_gb":4,"max_parallel":1}}
+```
+
+Path/nama login berspasi didukung. Shell cmd.exe maupun PowerShell 5.1 menggunakan
+command PowerShell terenkode UTF-16LE; tidak perlu mengubah DefaultShell. `os` boleh
+dihilangkan untuk deteksi otomatis. Verifikasi fingerprint host di kedua mesin
+sebelum mengisi known_hosts; contoh lengkap, fingerprint PC yang diberikan pemilik,
+instalasi OpenSSH dan penambahan key ada di [panduan Windows](AGENTS.md#target-ssh-windows-penyiapan-oleh-pemilik-pc).
+
+Eevee memakai GPU; Cycles memakai `cuda` atau `optix`. Nama GPU/VRAM dilaporkan,
+dengan peringatan dan saran menurunkan resolusi bila estimasi scene melebihi 4 GB.
+Estimasi memori bukan pengukuran pasti. Ukur kecepatan dengan
+`render_options(target="pc", quality="preview", calibrate=True, consent_upload=True)`.
+Blender sudah membawa encoder MP4, jadi FFmpeg eksternal tidak wajib.
+Setelah key diotorisasi, jalankan `.venv/bin/python tests/remote_ssh_smoke.py pc`.
+Render biasa memakai `render_video(..., target="pc", consent_upload=True)`; progress,
+cancel, reattach dan film sama seperti target Linux.
 
 ## Web UI — studio lokal
 

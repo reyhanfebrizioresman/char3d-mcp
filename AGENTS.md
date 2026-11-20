@@ -1210,14 +1210,23 @@ MP4s are downloaded atomically. Films render scene clips remotely and compose lo
 using the original Blender VSE script, with original captions/music/cards/transitions.
 Remote film cache keys also include external asset bytes and target/device settings.
 
-The remote worker needs Linux, system Python **3.9+**, rsync, the **exact** Blender
-version (including patch), and Blender's system graphics/audio libraries. Use
+The remote worker needs Linux or Windows, system Python **3.9+**, and Blender's
+system graphics/audio libraries. Linux uses rsync; Windows uses OpenSSH SCP's SFTP
+protocol, without rsync. `blender_version="minor"` is the default: major/minor must
+match (5.2.3 can render 5.2.4 snapshots), with a visible patch warning in the job report.
+Use `blender_version="exact"` to require the identical patch. A different major/minor
+is always refused, before upload and again inside Blender. Patch compatibility is a
+policy, not a promise that every newer feature will work; inspect the result. Use
 `scripts/install_remote_worker.sh --help` on the worker/image build; it installs only
 an explicitly supplied official Blender archive with its published checksum and
 never installs into the shared venv. CUDA/OptiX/HIP must be available in Blender's
 Cycles build. Eevee/workbench use the worker's graphics context; GPU targets reject
 software rasterizers instead of silently charging for CPU fallback. The image/host
-must provide functional EGL/graphics driver access. Detected GPU/device is reported.
+must provide functional graphics driver access (EGL on headless Linux). Detected GPU,
+device and VRAM from `nvidia-smi` are reported. Optional `vram_gb` supplies a labelled
+fallback when inventory is unavailable. Scene geometry/texture/render-buffer estimates
+warn when they exceed VRAM and suggest lower resolution; these are planning heuristics,
+not measured allocations. Lower resolution cannot fix oversized geometry/textures.
 
 `render_options(target="devodo", calibrate=True, consent_upload=True)` renders one
 480p frame remotely and records target-specific speed. Paid calibration follows the
@@ -1225,8 +1234,10 @@ same quote/confirm flow. `film_render_options(..., calibrate=True)` measures the
 saved film scene and restores the editor. First-frame cold startup makes single-frame calibration
 approximate. Remote work never updates local speed calibration.
 
-Transfers use SHA-256 blobs; rsync sends only missing verified content and resumes
-partial downloads. SSH disconnects reattach to the detached worker without starting
+Transfers use SHA-256 blobs; rsync/SCP send only missing or corrupt content. Windows
+SCP uses a staging folder, Python verifies SHA-256, then atomically publishes blobs.
+Interrupted SCP transfers retry the missing blob/file; they do not resume byte offsets
+as rsync does. SSH disconnects reattach to the detached worker without starting
 another render. Cancel is sent over SSH; TTL remains a fallback during disconnection.
 Completed job directories are removed; a private bounded blob cache remains (default
 `cache_bytes=1073741824`). Set a small cap to reduce retained private assets.
@@ -1245,6 +1256,82 @@ two Eevee frames and a tiny two-scene film/cache check against an SSH target, us
 isolated editor port **9969**. `--loopback` uses fake SSH/rsync with real Blender workers.
 `tests/test_remote.py` runs offline fake RunPod/Vast APIs and cleanup tests;
 success prints `REMOTE UNIT OK`. No paid account or real rental is used by tests.
+
+### Target SSH Windows (penyiapan oleh pemilik PC)
+
+Windows OpenSSH Server dengan default shell **cmd.exe** atau PowerShell 5.1 didukung.
+Semua RPC Windows memakai `powershell -NoProfile -NonInteractive -EncodedCommand`
+(base64 UTF-16LE); payload/source Python lewat stdin UTF-8 supaya tidak melewati batas
+8191 karakter cmd.exe. Path dan nama login berspasi tidak dipotong oleh shell.
+`os` dapat diisi `windows`/`linux`; bila dihilangkan, char3d mendeteksi `ver`, lalu
+`$env:OS`, lalu `uname -s`. `shell="cmd"|"powershell"` mencatat shell SSH; tidak perlu
+mengubah registry DefaultShell. Keduanya tetap memakai command PowerShell terenkode.
+
+Pemilik menyiapkan OpenSSH Server dari PowerShell **Administrator** bila belum ada:
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+```
+Untuk anggota Administrators, tambahkan **public key laptop yang telah disetujui** ke
+`C:\ProgramData\ssh\administrators_authorized_keys`, bukan profil `.ssh` pengguna.
+Pertahankan key yang sudah ada; jangan salin private key. Contoh untuk file baru:
+```powershell
+$keyFile = "$env:ProgramData\ssh\administrators_authorized_keys"
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::AppendAllText($keyFile, "ssh-ed25519 AAAA_GANTI_DENGAN_PUBLIC_KEY_LAPTOP pemilik`n", $utf8)
+icacls.exe $keyFile /inheritance:r
+icacls.exe $keyFile /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F'
+icacls.exe $keyFile
+New-Item -ItemType Directory -Force 'D:\char3d\remote'
+```
+SID tersebut berarti Administrators dan SYSTEM, termasuk Windows berbahasa lain.
+Periksa ACL file yang sudah ada dan hapus grant pengguna lain bila diperlukan.
+Batasi akses folder worker ke akun pemilik/Administrators/SYSTEM juga; `chmod` Unix
+tidak mengatur DACL Windows. Pertahankan pembatasan jaringan/VPN/jump host yang ada.
+
+Contoh registry untuk PC pemilik (backslash JSON harus ditulis `\\`):
+```json
+{
+  "pc": {
+    "kind": "ssh", "os": "windows", "shell": "cmd",
+    "host": "10.8.0.8", "jump_host": "reyhan", "port": 22,
+    "user": "reyhan febrizio r",
+    "remote_dir": "D:\\char3d\\remote",
+    "python": "C:\\Users\\Reyhan Febrizio R\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "blender": "C:\\Users\\Reyhan Febrizio R\\AppData\\Local\\Programs\\Blender\\blender-5.2.3-windows-x64\\blender.exe",
+    "blender_version": "minor", "device": "cuda", "vram_gb": 4,
+    "max_parallel": 1, "threads": 4, "max_hours": 4
+  }
+}
+```
+GTX 750 Ti 4 GB memakai GPU untuk Eevee. Cycles memilih CUDA atau OptiX sesuai
+`device`; memilih mode yang tidak tersedia menghasilkan error, tanpa fallback CPU
+diam-diam. Kalibrasikan setiap kualitas yang dipakai. Pengukuran PC 0,70 s/frame pada
+640×360 / 8 samples tidak otomatis berlaku untuk final 64 samples atau scene lain.
+FFmpeg/ffprobe eksternal tidak wajib; Blender menyandikan MP4 dengan FFmpeg bawaannya.
+
+Verifikasi host key di PC dengan
+`ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub`, lalu cocokkan di laptop.
+Fingerprint yang diberikan pemilik untuk PC ini:
+`SHA256:N0TqA8emrMKQQW8hU7r0xtN7LvpH43b535HuFOehDq8` (ED25519).
+Jangan menonaktifkan StrictHostKeyChecking atau menerima fingerprint secara otomatis.
+Uji manual setelah key disetujui:
+```bash
+ssh -F ~/.ssh/config -o 'ProxyCommand=ssh -F ~/.ssh/config -o BatchMode=yes -W %h:%p reyhan' -l 'reyhan febrizio r' 10.8.0.8 ver
+.venv/bin/python tests/remote_ssh_smoke.py pc
+```
+char3d tetap memerlukan `consent_upload=True` untuk target PC ini. Worker Windows
+dilepas dengan DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP, menyimpan PID dan waktu
+pembuatan proses untuk menghindari PID reuse. Pembatalan memakai `taskkill /PID ... /T /F`
+hanya untuk worker yang identitasnya cocok. TTL/idle watchdog, reattach, cleanup dan
+cache sama seperti Linux. Tidak ada `taskkill /IM blender.exe`, password, atau perubahan
+konfigurasi SSH otomatis.
+
+Tes offline: `tests/test_remote_windows.py` → `REMOTE WINDOWS UNIT OK` menguji command,
+SCP/hash/cache, lifecycle Win32 dengan fakes, versi dan VRAM. `tests/remote_ssh_smoke.py
+--windows-loopback` memakai emulasi layer Windows/SCP dengan Blender Linux sungguhan;
+ini tidak menggantikan pengujian OpenSSH/driver/Blender native pada PC pemilik.
 
 ## Directing method
 

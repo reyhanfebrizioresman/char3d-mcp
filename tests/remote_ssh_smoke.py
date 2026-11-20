@@ -166,13 +166,16 @@ result=True
                               width=640,height=360,resume=True)
         assert all(s['reused'] for s in cached['scenes']), cached
         if args.loopback:
-            remote_root = Path(cfg['remote_dir'])
+            remote_root = Path(os.environ.get('CHAR3D_WINDOWS_ROOT',cfg['remote_dir']))
             assert not any(p for job in records for p in remote_root.glob('jobs/'+job['job_id']+'_*/scene.blend')), 'Remote temporary snapshots not cleaned'
             events=[json.loads(line) for line in Path(os.environ['CHAR3D_LOOPBACK_RECORD']).read_text().splitlines()]
             assert any(e.get('blobs') for e in events)
             sent=[h for event in events for h in event.get('blobs',[])]
             assert len(sent)==len(set(sent)), 'Already cached blobs were sent twice'
             assert Path(os.environ['CHAR3D_LOOPBACK_DROP']).exists(), 'Disconnect injection was not exercised'
+            if args.windows_loopback:
+                assert any(e['tool']=='scp' for e in events) and not any(e['tool']=='rsync' for e in events)
+                assert any('patch differs' in warning for job in records for warning in job.get('warnings',[]))
         write_json(ROOT/'output/remote_smoke_results.json', records)
         print('REMOTE SSH SMOKE OK: 24 draft + 2 Eevee frames, AAC, graphics/SRT/credits, 2-scene film/cache, reattach',flush=True)
     finally:
@@ -183,8 +186,10 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('target',nargs='?',default='loopback')
     parser.add_argument('--loopback',action='store_true')
+    parser.add_argument('--windows-loopback',action='store_true',help='Emulate cmd/PowerShell, Windows paths and SCP around real Linux Blender')
     parser.add_argument('--calibration-only',action='store_true',help='Measure one frame from the prior smoke editor snapshot')
     args=parser.parse_args()
+    args.loopback = args.loopback or args.windows_loopback
     os.environ['CHAR3D_PORT']='9969'
     os.environ['CHAR3D_WORKSPACE']=str(ROOT/'output')
     os.environ['CHAR3D_ALLOW_PYTHON']='1'
@@ -203,14 +208,21 @@ if __name__ == '__main__':
         shim.mkdir(exist_ok=True)
         source=ROOT/'tests/remote_loopback.py'
         source.chmod(0o755)
-        for name in ('ssh','rsync'):
+        for name in ('ssh','rsync','scp'):
             p=shim/name
             p.unlink(missing_ok=True)
             p.symlink_to(source)
         os.environ['PATH']=str(shim)+os.pathsep+os.environ['PATH']
         from mcp_server.blender_client import _find_blender
         from providers.remote.config import write_json
-        write_json(config/'targets.json', {'loopback':dict(kind='ssh',host='loopback',device='cpu',
-            blender=_find_blender(),remote_dir=str(directory/'worker'),threads=4,startup_seconds=10,
-            idle_timeout_s=300)})
+        cfg=dict(kind='ssh',host='loopback',device='cpu',blender=_find_blender(),
+            remote_dir=str(directory/'worker'),threads=4,startup_seconds=10,idle_timeout_s=300)
+        if args.windows_loopback:
+            os.environ['CHAR3D_WINDOWS_ROOT']=str(directory/'Windows worker ü')
+            os.environ['CHAR3D_LOOPBACK_BLENDER']=_find_blender()
+            cfg.update(os='auto',user='reyhan febrizio r',shell='cmd',blender_version='minor',
+                python=r'C:\Users\Reyhan Febrizio R\Python312\python.exe',
+                blender=r'C:\Users\Reyhan Febrizio R\Blender\blender.exe',
+                remote_dir=r'D:\char3d\Remote render',vram_gb=4)
+        write_json(config/'targets.json', {'loopback':cfg})
     asyncio.run(main(args))

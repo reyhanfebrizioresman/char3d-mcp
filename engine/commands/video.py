@@ -573,6 +573,8 @@ def render_video(path="video.mp4", frame_start=None, frame_end=None, quality="pr
     if _remote:
         job['remote_assets'] = remote_assets
         job['blender_version'] = list(bpy.app.version)
+        from ..remote_worker import estimate_memory
+        job['scene_memory'] = estimate_memory(sc, out_w, out_h, quality)
     if _defer:
         job["status"] = "queued"
         return _report(job)
@@ -657,6 +659,8 @@ def render_options(quality="final", frame_start=None, frame_end=None, vertical=F
             options[-1]['model_spf'] = _model_spf(QUALITY[quality][0], QUALITY[quality][2],
                 w, h, _scene_weight(sc)) * _effects_cost(sc, QUALITY[quality][0])
             options[-1]['model_total_s'] = options[-1]['model_spf']*(frames+handles)
+            from ..remote_worker import estimate_memory
+            options[-1]['scene_memory'] = estimate_memory(sc, w, h, quality)
     engine = QUALITY[quality][0]
     from .materials import scene_cost_factor
     calib = _calibration_report()

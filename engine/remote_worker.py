@@ -6,6 +6,21 @@ import time
 
 import bpy
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from render_compat import check_version, memory_warning
+
+
+def estimate_memory(scene, width, height, quality):
+    """Conservative planning heuristic; does not evaluate modifiers or allocate a GPU."""
+    geometry = sum(len(o.data.vertices)*64+len(o.data.loops)*32+len(o.data.polygons)*16
+                   for o in scene.objects if o.type == 'MESH' and not o.hide_render)
+    textures = sum(int(im.size[0])*int(im.size[1])*16*4//3 for im in bpy.data.images
+                   if im.source not in ('VIEWER',) and im.users)
+    buffers = int(width)*int(height)*(128 if quality == 'cycles' else 64)
+    return {'estimated_vram_bytes': 512*2**20+geometry*(4 if quality == 'cycles' else 2)+textures+buffers,
+            'geometry_bytes': geometry, 'texture_bytes': textures, 'render_buffer_bytes': buffers,
+            'method': 'heuristic; evaluated modifiers, drivers and GPU allocations can differ'}
+
 
 def setup_device(device):
     if device == 'cpu':
@@ -26,19 +41,29 @@ def setup_device(device):
         bpy.context.scene.cycles.device = 'GPU'
         return {'device': device, 'gpu': ', '.join(enabled)}
     import gpu
-    renderer = gpu.platform.renderer_get()
+    try:
+        renderer = gpu.platform.renderer_get()
+    except SystemError:
+        # Background Blender on Windows initializes its GPU context only when the
+        # first Eevee/workbench frame renders; the renderer is not queryable yet.
+        return {'device': device, 'gpu': None,
+                'gpu_note': 'GPU context initializes at the first rendered frame'}
     if any(x in renderer.lower() for x in ('llvmpipe', 'softpipe', 'software', 'swrast')):
         raise RuntimeError('GPU target has a software OpenGL renderer; configure EGL/driver access')
     return {'device': device, 'gpu': renderer}
 
 
 def main(path):
-    spec = json.loads(Path(path).read_text())
-    if list(bpy.app.version) != spec['blender_version']:
-        raise RuntimeError('Blender version mismatch; install the exact local Blender version')
+    spec = json.loads(Path(path).read_text(encoding='utf-8'))
+    warnings = check_version(spec['blender_version'], bpy.app.version, spec.get('blender_version_policy', 'minor'))
     sc = bpy.context.scene
     info = setup_device(spec['device'])
-    Path('device.json').write_text(json.dumps(info))
+    vram = spec.get('vram_bytes')
+    if spec['device'] != 'cpu':
+        warnings += memory_warning(spec.get('estimated_vram_bytes'), vram)
+    info.update(gpus=spec.get('gpus', []), vram_bytes=vram, warnings=warnings,
+                blender_remote_version=bpy.app.version_string)
+    Path('device.json').write_text(json.dumps(info), encoding='utf-8')
     sc.render.filepath = str(Path('raw_').resolve())
     # Packed images and //assets/... are independent of the source workstation paths.
     grain_cfg = json.loads(sc.get('char3d_remote_grain', 'null'))
@@ -68,7 +93,7 @@ def main(path):
             bpy.ops.render.render(animation=True)
     finally:
         bpy.app.handlers.render_pre.remove(grain)
-    Path('timing.json').write_text(json.dumps({'render_s': time.monotonic()-started, **info}))
+    Path('timing.json').write_text(json.dumps({'render_s': time.monotonic()-started, **info}), encoding='utf-8')
 
 
 if __name__ == '__main__':

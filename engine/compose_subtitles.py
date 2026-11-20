@@ -33,7 +33,7 @@ def linear_keys(sc):
 
 
 def main(spec_path):
-    with open(spec_path) as f:
+    with open(spec_path, encoding='utf-8') as f:
         spec = json.load(f)
     sc = bpy.context.scene
     r = sc.render

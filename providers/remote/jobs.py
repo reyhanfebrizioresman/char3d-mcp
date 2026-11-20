@@ -14,6 +14,7 @@ import uuid
 from .cloud import Cloud
 from .config import RemoteError, config_dir, target, targets, digest, positive, read_json, write_json, clean_env
 from .transport import file_hash
+from engine.render_compat import memory_warning
 
 PRIVACY = ('Uploads a Blender scene snapshot, referenced textures/user images, fonts, '
            'voice/music/Foley WAVs and caption/title images to this target. '
@@ -56,6 +57,7 @@ class RemoteRenders:
                 return result
             info['test_frame'] = result
         factor, learned = self.factor(name, quality, t)
+        vram = int(t['vram_gb']*2**30) if t.get('vram_gb') else learned.get('vram_bytes')
         offer = Cloud(t['kind']).quote(t) if t['kind'] != 'ssh' else {
             'gpu_type': t.get('device'), 'hourly_price_usd': float(t.get('hourly_usd', 0))}
         for report in [info]+info.get('scenes', []):
@@ -68,8 +70,11 @@ class RemoteRenders:
                 choice.update(total_s=round(seconds), total=f'~{math.ceil(seconds/60)} min',
                     estimated_cost_usd=round(billed/3600*offer['hourly_price_usd'], 4),
                     hourly_price_usd=offer['hourly_price_usd'])
+                choice['warnings'] = (memory_warning(choice.get('scene_memory', {}).get('estimated_vram_bytes'), vram)
+                                      if t['device'] != 'cpu' else [])
             report.update(target=name, machine_speed={'measurements': learned.get('samples', 0), 'factor':factor})
         info.update(target=name, device=t['device'], gpu_type=offer['gpu_type'], privacy=PRIVACY,
+                    vram_bytes=vram,
                     machine_speed={'measurements': learned.get('samples', 0), 'factor': factor},
                     note='Per-target measurements; startup/transfer costs included as an allowance. '
                          'Uncalibrated estimates use conservative CPU defaults; quotes are not invoices.')
@@ -220,7 +225,8 @@ class RemoteRenders:
                   'progress', 'frame_progress', 'progress_unit', 'eta_s', 'device', 'gpu', 'instance_id',
                   'ssh_host', 'ssh_port',
                   'scenes', 'cost_so_far_usd', 'elapsed_s', 'billing', 'error', 'bytes',
-                  'subtitles', 'credits', 'has_audio', 'cleanup_pending', 'cleanup_error', 'learned_speed', 'verified')
+                  'subtitles', 'credits', 'has_audio', 'cleanup_pending', 'cleanup_error', 'learned_speed', 'verified',
+                  'target_os', 'blender_remote_version', 'warnings', 'gpus', 'vram_bytes', 'vram_source', 'estimated_vram_bytes')
         return dict(job_id=ident, target=state['target_name'],
                     **{k: state[k] for k in fields if k in state}, quote=state['quote'])
 
