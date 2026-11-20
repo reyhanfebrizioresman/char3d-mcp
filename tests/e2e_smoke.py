@@ -4085,6 +4085,11 @@ async def _review_checks(call):
     await run(call, text_of)
 
 
+async def _toon_checks(call):
+    from toon_checks import run
+    await run(call, text_of)
+
+
 async def main():
     server_args = ["-m", "mcp_server.server"]
     if "--audio-only" in sys.argv and os.environ.get("CHAR3D_AUDIO_NO_ASR"):
@@ -4131,7 +4136,8 @@ async def main():
             await call("engine_shutdown")
             print("AUDIO E2E OK", flush=True)
             return
-        for flag, section in (("--review-only", _review_checks),
+        for flag, section in (("--toon-only", _toon_checks),
+                              ("--review-only", _review_checks),
                               ("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),
                               ("--mpfb-only", _materials_realistic_checks),

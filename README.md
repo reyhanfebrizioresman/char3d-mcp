@@ -27,7 +27,7 @@ halus yang tidak menimpa kurva viseme/tubuh. Gunakan `life=0` untuk menonaktifka
 | `scene_info` | Daftar objek, ukuran, statistik mesh/armature, animasi |
 | `new_scene` | Adegan kosong |
 | `add_primitive`, `transform_object`, `delete_objects` | Objek dasar |
-| `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh |
+| `import_model` | .glb .gltf .fbx .obj .stl .ply .usd .bvh; .vrm dengan add-on opsional |
 | `export_asset` | .glb (disarankan, ikut animasi) .gltf .fbx .obj .usd .bvh; Rigify hanya tulang deform; `max_influences=4` membatasi bobot untuk game tanpa mengubah adegan (hasil: `vertices_limited`) |
 | `save_project`, `open_project` | File .blend |
 | `cinematic_look` | Suasana sinematik prosedural: langit/matahari, haze, berkas cahaya, bloom, grade dan fokus otomatis pada kepala; bisa dibersihkan dengan `clear=True` |
@@ -574,6 +574,24 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 ```json
 { "mcpServers": { "char3d": { "command": "/PATH/KE/char3d/run_mcp.sh" } } }
 ```
+
+## Karakter anime, VRM, dan wajah dari foto
+
+`create_realistic_human(..., style="anime"|"cartoon"|"chibi")` membuat proporsi
+MPFB 6,75 / 5 / 3 kepala, tetap dengan rig, baju/rambut, blink, viseme dan ekspor
+GLB. Default `realistic` tetap sama. Deskriptor `anime`, `kartun`, `chibi` berlaku
+per karakter; `GAYA: anime` juga menjadi default tubuh, kecuali karakter bertanda
+`realistis`. Hasil menyarankan `render_style("anime")` tanpa memaksanya.
+
+Impor `.vrm` memerlukan VRM Add-on for Blender (`scripts/install_vrm.sh`). Model
+VRM memiliki lisensi sendiri yang wajib dipatuhi pengguna. `face_from_photo`
+memerlukan `consent=True` untuk wajah sendiri/orang yang memberi izin, foto
+frontal lokal di `imports/`, dan dua model ONNX OpenSeeFace BSD-2-Clause
+(`scripts/install_face_landmarks.sh`). Foto tidak diunggah. Tekstur foto default
+aktif untuk realistis, nonaktif untuk gaya kartun. Installer meminta konfirmasi,
+memeriksa SHA-256/ukuran di TSV, dan menyediakan `--dry-run`; SHA model wajah
+masih harus diisi pemilik. Tidak ada unduhan otomatis atau perubahan virtualenv.
+Lihat panduan [AGENTS.md](AGENTS.md) untuk privasi, instalasi, dan batas fitting.
 
 ## Manusia realistis (MPFB)
 

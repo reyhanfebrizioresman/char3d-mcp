@@ -76,6 +76,11 @@ def _descriptors(text, char, warnings):
         char["voice"] = voice[1]
         text = text[:voice.start()] + " " + text[voice.end():]
     rest = text.lower()
+    from .toon import style_name as character_style
+    for word in ('realistis', 'realistic', 'anime', 'kartun', 'cartoon', 'chibi'):
+        if re.search(r'\b'+word+r'\b', rest):
+            char['style'] = character_style(word)
+            rest = re.sub(r'\b(?:(?:gaya|style)\s+)?'+word+r'\b', ' ', rest)
     for pattern, pitch in ((r"suara\s+berat|deep\s+voice", -3),
                             (r"suara\s+tinggi|high\s+voice", 3)):
         if re.search(pattern, rest):
@@ -235,6 +240,10 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
     if not isinstance(raw.get("characters", []), list) or not isinstance(raw.get("beats", []), list):
         raise ValueError("characters and beats must be lists")
     rng = random.Random(seed)
+    from .toon import style_name as character_style
+    from .filmstyle import style_name as render_style_name
+    scene_style = style if style is not None else raw.get('style')
+    default_body = 'anime' if scene_style is not None and render_style_name(scene_style) == 'anime' else 'realistic'
     characters, ids = [], {}
     for char in raw.get("characters", []):
         if not isinstance(char, dict) or not isinstance(char.get("id"), str) or not char["id"].strip():
@@ -246,6 +255,8 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
         char["id"] = ident
         char["gender"] = _number(char.get("gender", 0.5), "gender", 0, 1)
         char["age"] = _number(char.get("age", 28), "age", 1, 90)
+        if 'style' in char or default_body != 'realistic':
+            char['style'] = character_style(char.get('style', default_body))
         sex = "female" if char["gender"] < 0.5 else "male"
         char.setdefault("hair", "bob01" if sex == "female" else "short01")
         default_clothes = [f"{sex}_casualsuit{rng.randint(1, 2):02d}", "shoes01"]
@@ -277,7 +288,7 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
                 char[key] = _number(char.get(key, default), key, low, high)
         if "materials" in char and char["materials"] not in ("enhanced", "mpfb"):
             raise ValueError("materials must be enhanced or mpfb")
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials"}:
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):

@@ -62,6 +62,8 @@ def _norm(name):
 
 def heuristic_map(rig):
     """basic bone name -> bone name in `rig`, guessed from common naming schemes."""
+    if rig.get('c3d_bone_map'):
+        return {k:v for k,v in json.loads(rig['c3d_bone_map']).items() if v in rig.pose.bones}
     if all(b in rig.pose.bones for b in BASIC_BONES):
         return {b: b for b in BASIC_BONES}
     lookup = {}

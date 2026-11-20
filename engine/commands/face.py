@@ -219,8 +219,10 @@ def _ensure_face(base):
     keys = base.data.shape_keys.key_blocks if base.data.shape_keys else {}
     if "jawOpen" in keys and "aa_02" in keys:
         return False
+    if base.get('c3d_source')=='mpfb' and base.get('c3d_style','realistic')!='realistic':
+        raise ValueError('This stylized MPFB character was built with face=False. Recreate it with face=True before facial animation; targets must be fitted before rest proportions are frozen.')
     if base.get("c3d_source") != "mpfb":
-        if "jawOpen" in keys:
+        if "jawOpen" in keys or (base.get('c3d_source') == 'vrm' and any(k in keys for k in ARKIT+VISEMES)):
             return False
         raise ValueError(f"{base.name} has no ARKit face shape keys. Expressions work on "
                          "create_realistic_human characters or meshes with ARKit blendshapes.")

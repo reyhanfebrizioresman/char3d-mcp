@@ -18,7 +18,13 @@ def _op(*candidates):
     raise RuntimeError(f"none of these operators exist in this Blender: {candidates}")
 
 
+def _vrm(path):
+    from .vrm import import_vrm
+    return import_vrm(path)
+
+
 IMPORTERS = {
+    ".vrm": _vrm,
     ".glb": lambda p: _op("import_scene.gltf")(filepath=p),
     ".gltf": lambda p: _op("import_scene.gltf")(filepath=p),
     ".fbx": lambda p: _op("import_scene.fbx", "wm.fbx_import")(filepath=p),
@@ -45,7 +51,12 @@ def import_model(path):
     new = [o for o in bpy.data.objects if o not in before]
     for obj in new:
         obj["c3d_import_source"] = path
+    vrm = []
+    if ext == '.vrm':
+        from .vrm import setup
+        vrm = [setup(o) for o in new if o.type == 'ARMATURE']
     return {
+        **({'vrm':vrm} if vrm else {}),
         "path": path,
         "imported": [{"name": o.name, "type": o.type,
                       "parent": o.parent.name if o.parent else None} for o in new],

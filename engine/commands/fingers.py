@@ -58,6 +58,10 @@ SPREAD_SIDE = {"index": -1.0, "middle": -0.2, "ring": 0.6, "pinky": 1.2}
 
 def find_fingers(rig):
     """{side: {finger: [bone1, bone2, bone3]}} using the first matching naming scheme."""
+    if rig.get('c3d_finger_map'):
+        import json
+        return {s:{f:chain for f,chain in hand.items() if all(n in rig.pose.bones for n in chain)}
+                for s,hand in json.loads(rig['c3d_finger_map']).items()}
     names = set(rig.pose.bones.keys())
     for pat in PATTERNS:
         found = {}
