@@ -785,6 +785,7 @@ def _repair_torsos(bodies, rigs, frames, clearance, reports, skip):
     from .seating import _chain
     sc = bpy.context.scene
     snapshots, corrections = {}, {r.name: [] for r in rigs}
+    failed=set()
     with _bones_only():
         for f in frames:
             sc.frame_set(f)
@@ -841,10 +842,13 @@ def _repair_torsos(bodies, rigs, frames, clearance, reports, skip):
                         wrist = Matrix(mats['hand.'+side].tolist())
                         s,e,w = [mats[k+'.'+side][:3,3] for k in ('upper_arm','forearm','hand')]
                         error = max(error,_chain(rig,names,wrist.translation,Vector(e-(s+w)/2),wrist.to_quaternion()))
+                        actual=(rig.matrix_world@rig.pose.bones[names[-1]].matrix).to_quaternion().normalized()
+                        if abs(actual.dot(wrist.to_quaternion().normalized()))<1.-2e-6:error=max(error,.004)
                 if error > .003:
                     for n,m in base.items():
                         rig.pose.bones[n].matrix_basis = m
-                    skip(rig,'chest',f,'chest offset cannot preserve wrist contact within 3 mm',target_error=error)
+                    failed.add(rig.name)
+                    skip(rig,'chest',f,'chest offset cannot preserve wrist position/orientation',target_error=error)
                 elif np.linalg.norm(filtered[i]) > 1e-7:
                     reports[rig.name]['corrected_frames'].add(f)
                     reports[rig.name]['_part_frames'].setdefault('chest',set()).add(f)
@@ -860,6 +864,7 @@ def _repair_torsos(bodies, rigs, frames, clearance, reports, skip):
                     for key in fc.keyframe_points:
                         if frames[0]<=key.co.x<=frames[-1]:
                             key.interpolation='LINEAR'
+    return failed
 
 
 @command('resolve_collisions')
@@ -1108,7 +1113,7 @@ def resolve_collisions(characters=None, frame_start=None, frame_end=None, parts=
                             if f0 <= key.co.x <= f1:
                                 key.interpolation = 'LINEAR'
         if 'torso' in selected and not report_only:
-            _repair_torsos(bodies, rigs, frames, clearance, reports, skip)
+            failed_rigs.update(_repair_torsos(bodies, rigs, frames, clearance, reports, skip))
         timing['bake'] = time.perf_counter()-t
         t = time.perf_counter()
         # Re-measure evaluated bones after keying, including all newly moved peer
