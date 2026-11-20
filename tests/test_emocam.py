@@ -115,6 +115,15 @@ def run():
                 assert signature!=seen[who][1],(shot,seen[who])
             seen[who]=(shot['frames'][0],signature)
         assert sum(s['size']=='extreme_close_up' for s in result['shots'])<=1
+    # Adjacent one-word turns: the first is shorter than a shot, so planning must
+    # start the first emitted shot at the scene start instead of indexing nothing.
+    short=[dict(speaker='A',start=1,end=9,text='Halo!',emotion='joy'),
+           dict(speaker='B',start=14,end=22,text='Hi!',emotion='joy')]
+    short_words={'A':[('Halo!',1,9)],'B':[('Hi!',14,22)]}
+    tiny=plan_coverage(short,['A','B'],1,34,words=short_words)
+    assert tiny['shots'] and tiny['shots'][0]['frames'][0]==1 and tiny['shots'][-1]['frames'][1]==34,tiny['shots']
+    for left,right in zip(tiny['shots'],tiny['shots'][1:]):
+        assert left['frames'][1]+1==right['frames'][0],tiny['shots']
     print('EMOCAM UNIT OK')
 
 if __name__=='__main__':

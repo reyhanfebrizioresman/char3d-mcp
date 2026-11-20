@@ -206,7 +206,9 @@ def plan_coverage(lines, characters, start, end, fps=24, words=None, emotions=No
 
     singles = 0
     for index, line in enumerate(lines):
-        lo = start if index == 0 else safe_cut(line['start']-4, max(start+minimum, shots[-1]['frames'][0]+minimum), line['start'], all_words)
+        # A first turn too short for its own shot leaves no shot yet; the first
+        # emitted shot then begins at the scene start.
+        lo = start if index == 0 or not shots else safe_cut(line['start']-4, max(start+minimum, shots[-1]['frames'][0]+minimum), line['start'], all_words)
         if lo is None:
             warnings.append(f"Line {index+1}: no safe word gap; previous shot held")
             continue
