@@ -245,3 +245,27 @@ def drape_targets(strands, cols, colliders, chains, mw, parents, rig):
                         ch['radius'] * max(mw.to_scale()), normal)
         normals.append(normal)
     return normals
+
+
+def constrain_scene(points, targets, lengths, field, radius, iterations=3):
+    """Project elastic chain samples against static BVHs and posed peer bodies.
+
+    Segment lengths and the waist attachment remain fixed. Report remaining
+    penetration when these constraints are incompatible with seat geometry.
+    """
+    import numpy as np
+    for _ in range(iterations):
+        for j, length in enumerate(lengths):
+            a, b = points[j], points[j+1]
+            samples = [np.array(a.lerp(b, t)) for t in (.35, .7, 1.)]
+            hits = field.hits(samples, [radius]*3, ['0', '1', '2'])
+            if hits:
+                depth, normal, index, _, _ = hits[0]
+                t = (.35, .7, 1.)[int(index)]
+                b = b+Vector(normal)*min(depth/t, length*.35)
+                direction = b-a
+                if direction.length > 1e-9:
+                    points[j+1] = a+direction.normalized()*length
+    samples = [np.array(a.lerp(b, t)) for a,b in zip(points,points[1:]) for t in (.35,.7,1.)]
+    hits = field.hits(samples, [radius]*len(samples), ['cloth']*len(samples))
+    return max((h[4] for h in hits), default=0.)

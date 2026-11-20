@@ -2,7 +2,9 @@
 
 The solver operates on cached world-space attachment/collider samples, without
 evaluating Blender inside its substeps. Authored rest curves are elastic targets;
-capsules are conservative rest-fitted body proxies, not triangle-mesh collisions.
+capsules are conservative rest-fitted body proxies. Loose garments additionally
+sample evaluated static triangle BVHs and posed peer/arm envelopes; hair retains
+its body-only colliders. Neither is a full cloth or self-collision simulation.
 """
 import json
 import math
@@ -14,7 +16,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 from . import command
 from .anim import _key_rot, semantic_map
-from .talk import _fcurves, _rig_of
+from .talk import _data_curves, _rig_of
 
 _STATE = "char3d_secondary"
 _HAIR = ("hair", "ponytail", "braid", "long01", "bob01", "bob02", "afro", "short")
@@ -232,9 +234,8 @@ def _strand_samples(ch):
 
 
 def _clear_keys(rig, names, f0, f1, neutral=False):
-    act = rig.animation_data.action if rig.animation_data else None
     paths = {rig.pose.bones[n].path_from_id('rotation_quaternion') for n in names}
-    for fc in _fcurves(act):
+    for fc in _data_curves(rig):
         if fc.data_path not in paths:
             continue
         for index in range(len(fc.keyframe_points) - 1, -1, -1):
@@ -250,7 +251,7 @@ def _clear_keys(rig, names, f0, f1, neutral=False):
         rig.pose.bones[n].rotation_quaternion = Quaternion()
 
 
-def _sample(rig, chains, colliders, f0, f1):
+def _sample(rig, chains, colliders, f0, f1, scene_bodies=(), scene_geometry=()):
     sc = bpy.context.scene
     rest_inv = {n: rig.data.bones[n].matrix_local.inverted()
                 for n in {ch['parent'] for ch in chains} | {c['bone'] for c in colliders}}
@@ -265,7 +266,24 @@ def _sample(rig, chains, colliders, f0, f1):
         parents = {ch['parent']: rig.pose.bones[ch['parent']].matrix.copy() for ch in chains}
         from .secondary_cloth import drape_targets
         normals = drape_targets(strands, cols, colliders, chains, mw, parents, rig)
-        samples.append((strands, cols, mw, parents, normals))
+        field = None
+        if scene_bodies or scene_geometry:
+            from .collision import Field
+            proxies = [c for body in scene_bodies for c in body.world({
+                k: np.array(body.rig.matrix_world@body.rig.pose.bones[n].matrix)
+                for k, n in body.map.items()}) if body.rig != rig or
+                c['name'].startswith(('upper_arm.', 'forearm.', 'hand.'))]
+            field = Field(proxies, scene_geometry, '', '', .01)
+            from .secondary_cloth import constrain_scene,constrain_cloth
+            own=[c for spec,c in zip(colliders,cols) if spec.get('part')=='clothes']
+            for k,ch in enumerate(chains):
+                if ch.get('part')!='clothes':continue
+                rest=[p.copy() for p in strands[k]]
+                lengths=[(b-a).length for a,b in zip(rest,rest[1:])]
+                radius=ch['radius']*max(mw.to_scale())
+                constrain_scene(strands[k],rest,lengths,field,radius)
+                constrain_cloth(strands[k],rest,lengths,own,radius,normals[k])
+        samples.append((strands, cols, mw, parents, normals, field))
     return samples
 
 
@@ -312,7 +330,7 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
     stats = {ch['mesh']: dict(max_tip_offset_m=0., final_tip_offset_m=0.,
                               min_collider_clearance_m=float('inf')) for ch in chains}
     for i, f in enumerate(range(f0, f1 + 1), 1):
-        targets, cols, mw, parents, normals = samples[i]
+        targets, cols, mw, parents, normals, scene_field = samples[i]
         inverse = mw.inverted()
         all_points, all_lengths, all_cols = [], [], []
         for k, ch in enumerate(chains):
@@ -350,6 +368,19 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
                 if ch.get('part') == 'clothes':
                     constrain_cloth(all_points[k], targets[k], all_lengths[k], all_cols[k],
                                     ch['radius'] * max(mw.to_scale()), normals[k])
+                    if scene_field is not None:
+                        from .secondary_cloth import constrain_scene
+                        penetration = constrain_scene(all_points[k], targets[k], all_lengths[k],
+                            scene_field, ch['radius']*max(mw.to_scale()))
+                        # Body enclosure has priority when a seat and a planted
+                        # leg leave no feasible chain path. Report the remaining
+                        # scene conflict rather than pushing fabric through skin.
+                        constrain_cloth(all_points[k], targets[k], all_lengths[k], all_cols[k],
+                                        ch['radius']*max(mw.to_scale()), normals[k])
+                        penetration = constrain_scene(all_points[k], targets[k], all_lengths[k],
+                            scene_field, ch['radius']*max(mw.to_scale()), iterations=0)
+                        st = stats[ch['mesh']]
+                        st['scene_max_penetration_m'] = max(st.get('scene_max_penetration_m', 0.), penetration)
                     offsets[k] = [p - t for p, t in zip(all_points[k], targets[k])]
         for k, ch in enumerate(chains):
             points, rest, own_cols = all_points[k], targets[k], all_cols[k]
@@ -395,7 +426,7 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
 
 @command('secondary_motion')
 def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=None,
-                     stiffness=0.5, damping=0.5, gravity=1.0, wind=None, clear=False):
+                     stiffness=0.5, damping=0.5, gravity=1.0, wind=None, clear=False, collisions=True):
     """Bake elastic hair/garment chains after body/face motion; export as ordinary skin bones."""
     started = time.perf_counter()
     if isinstance(parts, str) or not parts or any(not isinstance(p, str) or not p for p in parts):
@@ -481,15 +512,30 @@ def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=Non
         _clear_keys(rig, names, f0, f1, neutral=clear)
         measured = {}
         if names and not clear:
-            samples = _sample(rig, chains, state['colliders'], f0, f1)
+            scene_bodies, scene_geometry = [], []
+            if collisions and any(ch.get('part') == 'clothes' for ch in chains):
+                from .collision import Body, surfaces
+                for other in sorted((o for o in sc.objects if o.type == 'ARMATURE' and
+                                     not o.hide_render and not o.name.startswith('__')), key=lambda o:o.name):
+                    try:
+                        scene_bodies.append(Body(other))
+                    except ValueError as exc:
+                        skipped.append(dict(object=other.name, reason=str(exc)))
+                scene_geometry = surfaces([rig])
+            samples = _sample(rig, chains, state['colliders'], f0, f1, scene_bodies, scene_geometry)
             measured = _bake(rig, chains, state['colliders'], samples, f0, f1,
                              stiffness, damping, gravity, wind)
             paths = {rig.pose.bones[n].path_from_id('rotation_quaternion') for n in names}
-            for fc in _fcurves(rig.animation_data.action):
+            for fc in _data_curves(rig):
                 if fc.data_path in paths:
                     for key in fc.keyframe_points:
                         if f0 <= key.co.x <= f1:
                             key.interpolation = 'LINEAR'
+            state['settings'] = dict(stiffness=stiffness, damping=damping, gravity=gravity,
+                                     wind=list(wind), collisions=collisions)
+            for part in {ch.get('part','hair') for ch in chains}:
+                state.setdefault('settings_by_part',{})[part]=dict(state['settings'])
+            rig[_STATE] = json.dumps(state)
         garments = measured.pop('garments', [])
         if clear:
             garments = [dict(object=mesh, chains=sum(c['mesh'] == mesh for c in chains),

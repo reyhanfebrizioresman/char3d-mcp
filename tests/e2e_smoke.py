@@ -4085,6 +4085,16 @@ async def _review_checks(call):
     await run(call, text_of)
 
 
+async def _collide_checks(call):
+    from collide_checks import run
+    return await run(call, text_of)
+
+
+async def _collision_secondary_checks(call):
+    await _secondary_motion_checks(call)
+    await _cloth_motion_checks(call)
+
+
 async def main():
     server_args = ["-m", "mcp_server.server"]
     if "--audio-only" in sys.argv and os.environ.get("CHAR3D_AUDIO_NO_ASR"):
@@ -4102,6 +4112,15 @@ async def main():
         assert {"auto_expression", "face_life"} <= tools
 
         async def call(tool, **args):
+            if os.environ.get('CHAR3D_COLLIDE_SHAPE_ONLY'):
+                assert os.environ.get('CHAR3D_PORT')=='9970','Collision regression port must be 9970'
+                if tool in ('render_frames','render_views','render_preview'):
+                    args=dict(args)
+                    args['engine_name']='workbench'
+                    if tool=='render_preview':
+                        args['width']=min(384,args.get('width',384))
+                        args['height']=min(384,args.get('height',384))
+                    else:args['size']=min(384,args.get('size',384))
             if '--serial-video' in sys.argv:
                 import serial_film
                 if tool == 'render_film':
@@ -4131,7 +4150,10 @@ async def main():
             await call("engine_shutdown")
             print("AUDIO E2E OK", flush=True)
             return
-        for flag, section in (("--review-only", _review_checks),
+        for flag, section in (("--collide-only", _collide_checks),
+                              ("--interaction-only", _interaction_checks),
+                              ("--secondary-only", _collision_secondary_checks),
+                              ("--review-only", _review_checks),
                               ("--world-only", _world_checks),
                               ("--materials-only", _materials_checks),
                               ("--mpfb-only", _materials_realistic_checks),

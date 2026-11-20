@@ -101,12 +101,16 @@ def _look_schedule(char, turns, others, f0, f1):
     return sched
 
 
+from .collision import deferred
+
+
 @command("dialog_direct")
+@deferred
 def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_shot="medium_full",
                   move="static", lead_frames=4, gestures="presenter", expression="smile",
                   expression_strength=0.3, blink=True, motion=True, idle=True,
                   frame_start=None, frame_end=None, shot_prefix="Dialog", two_shot_angle=0.0,
-                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False, life=1., seed=3):
+                  single_angle_bias=-25.0, single_angle_limits=None, body_language=False, life=1., seed=3, collisions=True):
     """Perform lip-synced dialog lines: gaze, listener nods, gestures, blinks and cameras.
 
     turns: [{"speaker": rig name, "start": frame, "end": frame}] (from lip sync).
@@ -246,6 +250,8 @@ def dialog_direct(turns, characters=None, camera="mixed", shot="medium", two_sho
                 # should remain visible to the caller.
                 if 'no ARKit' not in str(exc) and 'faceunits01' not in str(exc):
                     raise
+    from .collision import automatic
+    report['collisions'] = automatic(collisions, names, f0, f1, outer=True)
     sc.frame_set(f0)
     return report
 
@@ -265,7 +271,7 @@ def line_frames(line, fps):
 @command("dialog")
 def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
            start_frame=1, gap_s=0.35, camera="mixed", shot="medium",
-           gestures="presenter", expression="smile", language=None, perform=True, body_language=False, life=1., seed=0):
+           gestures="presenter", expression="smile", language=None, perform=True, body_language=False, life=1., seed=0, collisions=True):
     """In-process dialog for scene orchestration. Audio accepts pre-transcribed `words`.
 
     perform=False authors only speech, leaving performance/cameras for a later pass.
@@ -317,7 +323,8 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
         frame = b + 1 + round(float(ln.get("pause_s", gap_s)) * fps)
     sc.frame_end = max(sc.frame_end, turns[-1]["end"])
     report = dialog_direct(turns, characters=cast, camera=camera, shot=shot,
-                           gestures=gestures, expression=expression, body_language=body_language, life=life, seed=int(seed)+3) if perform else {
+                           gestures=gestures, expression=expression, body_language=body_language, life=life, seed=int(seed)+3,
+                           collisions=collisions) if perform else {
                                "frames": [int(start_frame), turns[-1]["end"]], "shots": []}
     return {**report, "lines": turns, "next_start_frame": max(frame, report["frames"][1] + 1),
             "warnings": list(dict.fromkeys(warnings))}

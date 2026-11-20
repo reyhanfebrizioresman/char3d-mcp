@@ -260,6 +260,19 @@ def _performance(sc,shots,level):
                 contacts += [dict(e,kind='footsteps',character=rig.name) for e in steps]
                 contacts += [dict(e,character=rig.name) for e in seats]
             except ValueError: pass
+    if rigs:
+        from .collision import resolve_collisions
+        measured = resolve_collisions([r.name for r in rigs], parts=['arms','props','legs','torso','clothes'],
+                                      report_only=True, _sample_step=step)
+        for name, report in measured['characters'].items():
+            conflicts={part:stat for part,stat in report['parts'].items()
+                       if stat['max_penetration_before_m']>.02}
+            if conflicts:
+                issues.append(issue('penetration','performance','warn',
+                    'Sampled body/prop envelopes penetrate skin-fitted body proxies or evaluated furniture triangles.',
+                    dict(parts=conflicts, sample_step=step, measurement='closest-point body ellipsoid/capsule and signed scene BVH distances',
+                         clearance_m=.01), character=name,
+                    fix=[call('resolve_collisions',characters=[name])],auto=True))
     return issues,sorted(words,key=lambda w:w[1]),contacts,states
 
 
@@ -447,7 +460,8 @@ def review_scene(level='standard',fix=False,sheet=True,engine='workbench',size=3
         applied=[]
         for action in safe_fixes(before['issues']):
             try:
-                dispatch(action['tool'],action['args']);applied.append(dict(action,status='applied'))
+                outcome=dispatch(action['tool'],action['args'])
+                applied.append(dict(action,status='applied',**({'result':outcome} if action['tool']=='resolve_collisions' else {})))
             except (ValueError,RuntimeError,TypeError,KeyError,OSError) as exc:
                 applied.append(dict(action,status='failed',reason=str(exc)))
         after=_scene_once(level,sheet,engine,size,frames,asr)

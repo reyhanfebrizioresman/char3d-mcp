@@ -28,6 +28,15 @@ def ids(issues): return {i['id'].split(':')[0] for i in issues}
 
 
 class ReviewTests(unittest.TestCase):
+    def test_collision_fixes_merge_character_selection(self):
+        findings=[issue('penetration','performance','warn','Measured overlap',
+                    fix=[call('resolve_collisions',characters=[name])],auto=True,character=name)
+                  for name in ('Ana_rig','Budi_rig')]
+        actions=safe_fixes(findings)
+        self.assertEqual(len(actions),1)
+        self.assertEqual(actions[0]['tool'],'resolve_collisions')
+        self.assertEqual(actions[0]['args']['characters'],['Ana_rig','Budi_rig'])
+
     def test_segment_bounds_parallel_and_inside(self):
         from engine.ray_bounds import intersects
         targets=np.array([[0,0,0],[4,0,0],[2,3,0],[-2,0,0],[2,.5,0],[2,0,3]])

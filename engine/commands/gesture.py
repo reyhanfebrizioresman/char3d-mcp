@@ -210,7 +210,7 @@ def _semantic_event(p, g, use, hold, word=None):
 
 @command("talk_gestures")
 def talk_gestures(character, frame_start=None, frame_end=None, style="presenter", hands="both",
-                  intensity=1.0, seed=5, fingers=True, semantic=True, cues=None):
+                  intensity=1.0, seed=5, fingers=True, semantic=True, cues=None, collisions=True):
     """Add speech-timed arm gestures: beats on stressed syllables plus gestures that show the
     meaning of words (numbers, me/you, big/small, no, good, ...)."""
     if style not in STYLES:
@@ -408,6 +408,15 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
     sc.frame_set(f0)
     beats = [e for e in events if e["kind"] == "beat"]
     sem = [e for e in events if e["kind"] == "semantic"]
+    from .collision import record_contact, automatic, forget_contacts
+    forget_contacts(rig,f0,f1,'semantic:')
+    for event in sem:
+        if event['type'] in ('self', 'love', 'think'):
+            for side in event['hands']:
+                record_contact(rig, side, f0+event['frame'],
+                    min(f1, f0+event['frame']+event['keys'][3][0]), 'semantic:'+event['type'],
+                    part='head' if event['type'] == 'think' else 'chest')
+    collision_report = automatic(collisions, [rig.name], f0, f1, parts=['arms', 'props', 'clothes'])
     return {"character": rig.name, "frames": [f0, f1], "driven_by": source, "style": style,
             "gestures": [{"frame": f0 + e["frame"], "type": e["type"], "hands": list(e["hands"])}
                          for e in sorted(beats, key=lambda e: e["frame"])],
@@ -416,4 +425,4 @@ def talk_gestures(character, frame_start=None, frame_end=None, style="presenter"
                          for e in sorted(sem, key=lambda e: e["frame"])],
             "words_known": len(words), "talking_frames": int((w > 0.5).sum()),
             "arm_bones": keyed, "hand_bones": hand_bones, "finger_bones": len(finger_bones),
-            "max_palm_twist_deg": round(max_twist, 1)}
+            "max_palm_twist_deg": round(max_twist, 1), 'collisions': collision_report}
