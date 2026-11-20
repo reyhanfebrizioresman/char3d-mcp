@@ -138,7 +138,7 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 
 `create_realistic_human(..., style="realistic"|"anime"|"cartoon"|"chibi")`
 uses MPFB for all four styles. The default realistic path is unchanged. Anime is
-6.75 heads, cartoon 5, chibi 3, measured scalp-to-chin (hair is excluded). These
+6.75 heads, cartoon 4.75, chibi 2.8, measured scalp-to-chin (hair is excluded). These
 are original proportions/materials, not designs from existing characters/studios.
 Stylized builds freeze the phenotype, deform every relative facial target and
 fitted hair/clothing mesh together, transform rest bone endpoints, and re-fit
@@ -150,7 +150,23 @@ speaking gesture, blink/lip-sync and GLB paths. Do not auto-rig them again.
 
 Eyes are enlarged with their lids/lashes and have an original code-generated
 iris/pupil/highlight atlas. Closed blink targets recess the eye inserts behind
-the lids (native continuous morphs, with no visibility/alpha switches).
+the lids (native continuous morphs, with no visibility/alpha switches). The full
+upper lid margin is calibrated onto the lower contour in the blink target,
+including both canthi; the review checks the 3D gap and sampled eye occlusion.
+Eye width and height use independent monotone remaps, with lower eye placement,
+a larger forehead and reduced lower face/nose. Anime has a softly pointed chin;
+cartoon/chibi have rounder cheeks/chins. Native skinned ink ribbons follow the
+upper/lower lid morphs; simple thin brows replace photographic alpha strands.
+The short styles rebalance leg/torso heights and shorten arms/hands/feet with
+actual shoulder/wrist anchors. One C1 height map spans torso, neck and head;
+the neck width blend excludes shoulders. Chibi uses 82% of the MPFB stature to
+shorten torso and limbs together while retaining 2.8 heads; other styles retain
+the source stature. Choose a proportionate low chair for its short lower legs.
+Hair uses packed binary cutout alpha,
+also portable to GLB, rather than stochastic intermediate strand opacity.
+`tests/toon_polish.py --case f_anime` (also f/m × all four styles) records actual
+eye/head/face ratios, blink and A/O/M/B/P lip gaps. `--sheet` composes the rendered
+female/male front/three-quarter comparison. Use port 9971 and one case at a time.
 Skin uses flat sampled albedo with soft UV blush and no pores;
 hair retains authored cutout alpha with flat pigment, and clothes
 use flat sampled colours. These PBR textures/materials export without downloading

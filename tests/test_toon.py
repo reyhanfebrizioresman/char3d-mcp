@@ -10,7 +10,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from engine.toon import PRESETS, RestMap, iris_pixels, style_name
+from engine.toon import PRESETS, RestMap, iris_pixels, style_name, LID_PAIRS, LOWER_RIM, UPPER_RIM, lid_taper
 from engine.vrm import BONES, bone_map, expression_map, addon_bones, addon_expressions, eye_rotation_delta
 from engine.photo_fit import validate, photo_path, project, fit_modifiers
 from engine.photo_landmarks import detect, model_files
@@ -26,6 +26,14 @@ def rejects(fn, *args, **kwargs):
 
 
 def main():
+    assert len(LID_PAIRS['R'])==len(UPPER_RIM)==14
+    assert set(b for a,b in LID_PAIRS['R'])==set(LOWER_RIM)
+    assert LID_PAIRS['L']==tuple((a+6784,b+6784) for a,b in LID_PAIRS['R'])
+    # Fourteen-point lid ink previously produced NaN at its final vertex.
+    for count in (7,14):
+        taper=lid_taper(np.arange(count)/(count-1))
+        assert np.isfinite(taper).all() and taper.min()>=0
+        assert max(taper[0],taper[-1])<1e-6
     for name,preset in PRESETS.items():
         mapping = RestMap(name,0,1.8,1.56,[[-.03,-.08,1.69],[.03,-.08,1.69]])
         pts = np.array([[0,0,0],[0,0,1.56],[0,0,1.8]])
@@ -34,7 +42,7 @@ def main():
             assert np.array_equal(mapped,pts)
         else:
             assert abs((mapped[-1,2]-mapped[0,2])/(mapped[-1,2]-mapped[1,2])-preset['heads'])<1e-8
-        assert abs(mapped[0,2])<1e-10 and abs(mapped[-1,2]-1.8)<1e-10
+        assert abs(mapped[0,2])<1e-10 and abs(mapped[-1,2]-mapping.output_top)<1e-10
         # Shared mapping keeps coincident closed lid points coincident.
         closed = mapping([[-.03,-.09,1.69],[-.03,-.09,1.69]])
         assert np.array_equal(closed[0],closed[1])
@@ -43,6 +51,31 @@ def main():
             x=np.linspace(-.1,.1,401)
             line=mapping(np.c_[x,np.full_like(x,-.09),np.full_like(x,z)])
             assert np.diff(line[:,0]).min()>0,(name,z)
+    # Short limbs must not drag off-axis feet up with the arm field. Neck
+    # interpolation has one shared derivative across the head/torso boundary.
+    for name in ('anime','cartoon','chibi'):
+        warp=RestMap(name,0,1.8,1.56,[[-.03,-.08,1.69],[.03,-.08,1.69]])
+        foot=warp([[.15,-.1,0]],features=False)
+        assert abs(foot[0,2])<1e-8,(name,foot)
+        z=np.linspace(0,1.8,1501)
+        q=warp(np.c_[np.zeros_like(z),np.zeros_like(z),z],features=False)
+        assert np.diff(q[:,2]).min()>0,name
+        epsilon=1e-6
+        joint=warp([[0,-.09,1.56-epsilon],[0,-.09,1.56],[0,-.09,1.56+epsilon]])
+        slopes=np.diff(joint[:,2])/epsilon
+        assert abs(slopes[0]-slopes[1])<.001,(name,slopes)
+        # Mirrored eye fields must have a smooth sagittal join. abs(x)-based
+        # masks can make a cusp here and leak the inverted hull down the forehead.
+        mid=warp([[-epsilon,-.09,1.74],[0,-.09,1.74],[epsilon,-.09,1.74]])
+        join=np.diff(mid[:,2])/epsilon
+        assert abs(join[0]-join[1])<.001,(name,join)
+        # Eye remapping has compact support; it must not move scalp/chin or
+        # introduce a seam at the bottom of the head.
+        ends=warp([[0,-.09,1.56],[0,-.09,1.8]])
+        assert abs(ends[0,2]-warp.new_chin)<1e-9
+        assert abs(ends[1,2]-warp.output_top)<1e-9
+        vertical=warp(np.c_[np.full_like(z,.03),np.full_like(z,-.09),z])
+        assert np.diff(vertical[:,2]).min()>0,name
     assert style_name('kartun')=='cartoon' and style_name('realistis')=='realistic'
     rejects(style_name,'pirate');rejects(style_name,None)
     iris = iris_pixels()

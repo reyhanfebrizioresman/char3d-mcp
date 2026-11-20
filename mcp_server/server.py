@@ -1080,8 +1080,8 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
     materials="enhanced" preserves textures and improves skin/eyes/hair/fabric shading;
     "mpfb" keeps original shaders. upgrade_materials can switch existing characters.
     style chooses MPFB body proportions: realistic (unchanged default), anime (6.75
-    heads), cartoon (5), chibi (3). Stylized bodies retain rig/morphs and use original
-    flat toon materials. Result suggests render_style('anime'); no global change."""
+    heads), cartoon (4.75), chibi (2.8, 82% stature). Stylized bodies retain rig/morphs
+    and use original flat toon materials. Result suggests render_style('anime'); no global change."""
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,

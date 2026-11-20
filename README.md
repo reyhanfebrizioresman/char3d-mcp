@@ -578,10 +578,14 @@ codex mcp add char3d -- /PATH/KE/char3d/run_mcp.sh
 ## Karakter anime, VRM, dan wajah dari foto
 
 `create_realistic_human(..., style="anime"|"cartoon"|"chibi")` membuat proporsi
-MPFB 6,75 / 5 / 3 kepala, tetap dengan rig, baju/rambut, blink, viseme dan ekspor
+MPFB 6,75 / 4,75 / 2,8 kepala, tetap dengan rig, baju/rambut, blink, viseme dan ekspor
 GLB. Default `realistic` tetap sama. Deskriptor `anime`, `kartun`, `chibi` berlaku
 per karakter; `GAYA: anime` juga menjadi default tubuh, kecuali karakter bertanda
 `realistis`. Hasil menyarankan `render_style("anime")` tanpa memaksanya.
+Mata dan iris diperbesar, bentuk wajah/hidung disederhanakan, serta anggota tubuh
+cartoon/chibi diperpendek; tinggi chibi memakai 82% hasil MPFB. Garis kelopak
+mengikuti morph native; alis sederhana dan alpha rambut yang tegas mengurangi grain. `tests/toon_polish.py` membuat
+perbandingan tampilan serta pengukuran kelopak dan bibir.
 
 Impor `.vrm` memerlukan VRM Add-on for Blender (`scripts/install_vrm.sh`). Model
 VRM memiliki lisensi sendiri yang wajib dipatuhi pengguna. `face_from_photo`

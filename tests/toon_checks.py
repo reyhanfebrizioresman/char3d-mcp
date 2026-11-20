@@ -1,5 +1,6 @@
 """Isolated MCP toon integration checks. No optional model downloads."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -20,13 +21,16 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 root,body,meshes=_family(CHARACTER)
 keys=body.data.shape_keys.key_blocks
+for obj in meshes:
+ data=[obj.data.vertices]+([key.data for key in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else [])
+ assert all(np.isfinite(coords(points)).all() for points in data),obj.name
 p=coords(keys[0].data)
 _,top,chin,eyes=anatomy(body,meshes)
 from engine.toon import LID_PAIRS
 report={}
 for side,pairs in LID_PAIRS.items():
  blink=coords(keys['eyeBlink'+('Left' if side=='L' else 'Right')].data)
- report[side]=dict(pairs=pairs,blink_gap_m=max(abs(float(blink[i,2]-blink[j,2])) for i,j in pairs),open_gap_m=max(abs(float(p[i,2]-p[j,2])) for i,j in pairs))
+ report[side]=dict(pairs=pairs,blink_gap_m=max(abs(float(blink[i,2]-blink[j,2])) for i,j in pairs),blink_gap3d_m=max(float(np.linalg.norm(blink[i]-blink[j])) for i,j in pairs),open_gap_m=max(abs(float(p[i,2]-p[j,2])) for i,j in pairs))
 jaw=coords(keys['aa_02'].data)-p
 states=[(m,m.show_viewport) for m in body.modifiers if m.type=='MASK']
 try:
@@ -58,8 +62,8 @@ try:
   bpy.context.view_layer.update();skin_bvh,eye_bvh=bvh(body),bvh(eye)
   visible=0
   for center,extent in centers:
-   for dx in (-.15,0,.15):
-    for dz in (-.10,0,.10):
+   for dx in (-.45,-.25,0,.25,.45):
+    for dz in (-.20,-.10,0,.10,.20):
      origin=Vector((center[0]+dx*extent[0],center[1]-.5,center[2]+dz*extent[2]))
      face=skin_bvh.ray_cast(origin,Vector((0,1,0)))
      globe=eye_bvh.ray_cast(origin,Vector((0,1,0)))
@@ -84,6 +88,7 @@ from engine.photo_fit import project
 body=next(o for o in bpy.context.scene.objects if o.get('c3d_source')=='mpfb' and o.get('c3d_style')=='anime')
 root,body,meshes=_family(body.name)
 neutral=neutral_coords(body)
+cutouts={m.name:m.material_slots[0].material.get('c3d_toon_cutout') for m in meshes if m.material_slots and m.material_slots[0].material.get('c3d_toon_cutout')}
 ids,vertices=photo.correspondence(neutral,body,meshes)
 pairs=photo.modifier_deltas(body)
 known=np.linspace(-.15,.2,len(photo.MODIFIERS))
@@ -122,6 +127,8 @@ with patch.object(photo,'model_files',return_value=[]),patch.object(photo,'infer
  assert report['local_only'] and not report['texture'] and report['fit_error_px']<10,report
  report_texture=photo.face_from_photo(root.name,'toon_synthetic_photo.png',strength=.3,texture=True,consent=True)
  assert report_texture['texture']
+ for name,image in cutouts.items():
+  assert bpy.data.objects[name].material_slots[0].material.get('c3d_toon_cutout')==image,'photo repaint lost toon hair alpha'
 assert 'eyeBlinkLeft' in body.data.shape_keys.key_blocks and 'aa_02' in body.data.shape_keys.key_blocks
 assert not any(x.startswith('.face-local-') for x in os.listdir(os.path.join(context.WORKSPACE,'imports')))
 states=[(m,m.show_viewport) for m in body.modifiers if m.type=='MASK']
@@ -186,8 +193,10 @@ async def run(call, text_of):
     # Use only when the engine sources/fixtures have not changed since checkpoint.
     checkpoint=output/'toon_checks.json'
     resume=os.environ.get('CHAR3D_TOON_RESUME')=='1'
-    evidence = json.loads(checkpoint.read_text()) if resume and checkpoint.exists() else {}
-    for style, heads, rig in (('anime', 6.75,'game_engine'), ('cartoon',5,'rigify'), ('chibi',3,'game_engine')):
+    source_hash=hashlib.sha256(b''.join((output.parent/p).read_bytes() for p in ('engine/toon.py','engine/commands/toon.py'))).hexdigest()
+    evidence = json.loads(checkpoint.read_text()) if resume and checkpoint.exists() else {'source_hash':source_hash}
+    assert evidence.get('source_hash')==source_hash,'Checkpoint engine sources changed; run without CHAR3D_TOON_RESUME'
+    for style, heads, rig in (('anime', 6.75,'game_engine'), ('cartoon',4.75,'rigify'), ('chibi',2.8,'game_engine')):
         if style in evidence:
             print('TOON RESUME previously verified',style,flush=True)
             continue
@@ -221,7 +230,16 @@ async def run(call, text_of):
         await call('run_blender_python',code="for name in bpy.context.scene.pop('toon_test_hidden',[]): bpy.data.objects[name].hide_viewport=False\nresult=True")
         walk=await data('walk_path',armature=arm,points=[[0,-.35]],start_frame=wave['next_start_frame'],avoid=False)
         assert .25<walk['distance_m']<.45,walk
-        chair=await data('add_prop',kind='chair',location=[0,-.35,0],scale=.70 if style=='chibi' else .9)
+        # Size the chair from the actual lower leg instead of adult meters.
+        # A tall adult chair cannot keep a short toon character's soles planted.
+        chair_fit=(await data('run_blender_python',code="""
+from engine.commands.anim import semantic_map
+rig=bpy.data.objects[ARMATURE];sm=semantic_map(rig)
+shin=rig.data.bones[sm['shin.L']].length
+ankle=(rig.matrix_world @ rig.data.bones[sm['foot.L']].head_local).z-rig.matrix_world.translation.z
+result=.92*(shin+max(0,ankle))/.515
+""".replace('ARMATURE',repr(arm))))['result']
+        chair=await data('add_prop',kind='chair',location=[0,-.35,0],scale=chair_fit)
         seat=await data('sit_on',character=arm,seat=chair['root'],start_frame=walk['next_start_frame'])
         assert abs(seat['contact_error_m'])<.003 and seat['max_ik_error_m']<.01,seat
         speech=await data('lip_sync',character=arm,text='Mama buka pintu. Halo semuanya!',language='id',start_frame=seat['next_start_frame'])
@@ -286,5 +304,19 @@ result=True
     print('TOON PHOTO MOCK E2E OK | actual MPFB modifiers + local decode + projection + consent + missing models',flush=True)
     for rig in ('game_engine','rigify'):
         await real_photo_checks(call,text_of,rig)
+    # The opt-out path has no facial keys, but still needs a skinned lid line.
+    await call('scene_info')
+    await call('new_scene')
+    optout=await data('create_realistic_human',name='NoFace',style='anime',face=False,
+                      clothes=['female_casualsuit01','shoes01'])
+    assert optout.get('face_rig') is None,optout
+    await call('render_preview',objects=['NoFace_rig'],width=320,height=320)
+    try:
+        await call('set_expression',character='NoFace_rig',expression='smile')
+    except RuntimeError as exc:
+        assert 'face=False' in str(exc),exc
+    else:
+        raise AssertionError('frozen opt-out must reject late unfitted facial targets')
+    evidence['face_false']=optout
     (output/'toon_checks.json').write_text(json.dumps(evidence,indent=2))
     print('TOON E2E OK', flush=True)
