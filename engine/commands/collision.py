@@ -108,7 +108,10 @@ def _window_snapshot(rigs, first, last):
         for frame in (first-1,last+1):
             bpy.context.scene.frame_set(frame)
             for rig in rigs:
-                for name in set(anim.semantic_map(rig).values()):
+                names=set(anim.semantic_map(rig).values())
+                names.update(n for ch in json.loads(rig.get('char3d_secondary','{}')).get('chains',[])
+                             for n in ch['bones'] if n in rig.pose.bones)
+                for name in names:
                     pb=rig.pose.bones[name]
                     for prop in ('location','rotation_euler','rotation_quaternion','rotation_axis_angle'):
                         path=pb.path_from_id(prop)
@@ -149,8 +152,16 @@ def _restore_window(window,first,last):
     for rig in rigs:
         future=bpy.context.scene.frame_end>last or bool(rig.animation_data and rig.animation_data.action and
                                                       rig.animation_data.action.frame_range[1]>last)
+        owned={rig.pose.bones[n].path_from_id('rotation_quaternion')
+               for ch in json.loads(rig.get('char3d_secondary','{}')).get('chains',[])
+               for n in ch['bones'] if n in rig.pose.bones}
         for fc in _data_curves(rig):
             key=(rig.name,fc.data_path,fc.array_index)
+            if key not in known and (*key,first-1) not in defaults and fc.data_path in owned:
+                # Newly installed elastic bones have an identity pose outside
+                # this requested range; they had no channels to snapshot.
+                for frame in (first-1,last+1):
+                    defaults[(*key,frame)]=1. if fc.array_index==0 else 0.
             if key in known or (*key,first-1) not in defaults:continue
             for frame in (first-1,last+1):
                 if frame==last+1 and not future:continue
@@ -733,8 +744,11 @@ def _plan_leg(body, cols, side, matrices, geometry, clearance):
     if not initial:
         return pole, initial, None
     best = (initial[0][0] if initial else 0., pole.copy())
-    for direction in ((1. if side == 'L' else -1., 0., .5), (0., 0., 1.)):
-        for amount in (.05, .1, .2):
+    # The nearest triangle normal also permits lowering a knee away from a
+    # desk underside; an upward-only pole search cannot repair that contact.
+    directions=(initial[0][1],(1. if side == 'L' else -1., 0., .5),(0.,0.,1.))
+    for direction in directions:
+        for amount in (.015, .03, .06, .12):
             candidate = pole+np.array(direction)*body.height*amount
             joint, target = two_bone(hip, ankle, np.linalg.norm(knee-hip), np.linalg.norm(ankle-knee), candidate)
             if np.linalg.norm(joint-knee) > body.height*.08:
