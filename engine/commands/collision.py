@@ -888,8 +888,14 @@ def _seat_contact_samples(rigs, first, last):
             contacts = {}
             for frame in sorted({max(first, settled), last}):
                 scene.frame_set(frame)
-                contacts[frame] = _contact_height(rig, center, front, body)
-            samples[rig.name] = (center, front, body, contacts)
+                try:
+                    contacts[frame] = _contact_height(rig, center, front, body)
+                except ValueError:
+                    # Older or edited scenes can retain seating metadata after
+                    # deleting the mesh contact surface or moving the character.
+                    continue
+            if contacts:
+                samples[rig.name] = (center, front, body, contacts)
     return samples
 
 
