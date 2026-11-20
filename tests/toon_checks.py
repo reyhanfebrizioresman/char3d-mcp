@@ -242,6 +242,7 @@ result=.92*(shin+max(0,ankle))/.515
         chair=await data('add_prop',kind='chair',location=[0,-.35,0],scale=chair_fit)
         seat=await data('sit_on',character=arm,seat=chair['root'],start_frame=walk['next_start_frame'])
         assert abs(seat['contact_error_m'])<.003 and seat['max_ik_error_m']<.01,seat
+        assert not seat['collisions'].get('garments'), 'Fitted clothing must retain its authored weights'
         speech=await data('lip_sync',character=arm,text='Mama buka pintu. Halo semuanya!',language='id',start_frame=seat['next_start_frame'])
         await call('set_expression',character=arm,expression='smile',strength=.35,frame=speech['frames'][0],keyframe=True)
         await call('set_timeline',frame_end=speech['frames'][1]+24)

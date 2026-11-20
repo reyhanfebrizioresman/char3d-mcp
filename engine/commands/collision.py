@@ -1205,10 +1205,13 @@ def resolve_collisions(characters=None, frame_start=None, frame_end=None, parts=
             if not report_only:
                 from .secondary import secondary_motion
                 for rig in rigs:
+                    meshes = [obj.name for obj in _garment_meshes(rig)]
+                    if not meshes:
+                        continue
                     with _bones_only():
                         state=json.loads(rig.get('char3d_secondary', '{}'))
                         settings = state.get('settings_by_part',{}).get('clothes',state.get('settings', {}))
-                        garment = secondary_motion(rig.name, parts=['clothes'], frame_start=f0, frame_end=f1,
+                        garment = secondary_motion(rig.name, parts=meshes, frame_start=f0, frame_end=f1,
                                                      **dict(settings, collisions=True))
                         garments.append(garment)
                         if garment['bones']:
