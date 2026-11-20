@@ -15,6 +15,7 @@ import * as script from "./script.js";
 import * as scene from "./scene.js";
 import * as characters from "./characters.js";
 import * as render from "./render.js";
+import * as review from "./review.js";
 import * as gallery from "./gallery.js";
 import * as tools from "./tools.js";
 import * as world from "./world.js";
@@ -24,6 +25,7 @@ const pages = {
   adegan: ["Adegan", "scene", scene],
   karakter: ["Karakter", "user", characters],
   render: ["Render", "render", render],
+  review: ["Review", "check", review],
   galeri: ["Galeri output", "gallery", gallery],
   tools: ["Semua tool", "tools", tools],
 };
@@ -147,12 +149,14 @@ document.addEventListener("job-finished", (event) => {
       "render_options",
       "film_render_options",
       "film_info",
+      "remote_targets",
       "director_status",
       "world_schema",
       "list_voices",
     ].includes(job.tool)
   )
     return;
+  if (["quote_required", "consent_required"].includes(job.result?.data?.status)) return;
   if (job.tool === "compose_world" && job.result?.data?.built === false) return;
   if (job.tool === "direct_scene") {
     toast(job.status === "completed" ? "Draf sutradara siap ditinjau." : "Draf sutradara gagal. Periksa pesan pada panel.", job.status === "failed" ? "error" : "success");

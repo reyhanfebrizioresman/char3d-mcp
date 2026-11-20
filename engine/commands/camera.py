@@ -395,9 +395,16 @@ def list_shots():
     shots = []
     for i, (frame, name, cam) in enumerate(marks):
         end = marks[i + 1][0] - 1 if i + 1 < len(marks) else sc.frame_end
-        meta = bpy.data.objects[cam].get("c3d_shot") if cam and cam in bpy.data.objects else None
-        shots.append({"marker": name, "camera": cam, "frames": [frame, end],
-                      "info": dict(meta) if meta else None})
+        camera = bpy.data.objects.get(cam) if cam else None
+        meta = camera.get("c3d_shot") if camera else None
+        row = {"marker": name, "camera": cam, "frames": [frame, end],
+               "info": dict(meta) if meta else None}
+        if camera and camera.get("c3d_shot_reason"):
+            try:
+                row["reason"] = json.loads(camera["c3d_shot_reason"])
+            except (TypeError, ValueError):
+                pass
+        shots.append(row)
     return {"frame_range": [sc.frame_start, sc.frame_end], "fps": sc.render.fps, "shots": shots}
 
 

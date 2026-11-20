@@ -103,6 +103,7 @@ export function mount(root) {
  ${field(
    "Kamera",
    select("script-camera", [
+     ["directed", "Emosi · OTS & reaksi pendengar"],
      ["mixed", "Campuran · sinematik"],
      ["singles", "Per pembicara"],
      ["two_shot", "Dua karakter"],
@@ -221,7 +222,7 @@ export function mount(root) {
     $("#script-location", root).value = "";
     $("#script-weather", root).value = "";
     $("#script-lighting", root).value = draft.build_options.lighting;
-    $("#script-camera", root).value = draft.build_options.camera;
+    $("#script-camera", root).value = draft.build_options.camera || "directed";
     $("#script-seed", root).value = draft.build_options.seed;
     const follow = looks.querySelector('input[value=""]');
     follow.checked = true;
@@ -324,8 +325,10 @@ function setStep(root, current) {
   }
 }
 export function refreshResult(target) {
-  if (target && state.latestScript)
-    showResult(target, state.latestScript.data, state.latestScript.built);
+  if (!target || !state.latestScript) return;
+  showResult(target, state.latestScript.data, state.latestScript.built);
+  const main = target.closest("main");
+  if (main) setStep(main, state.latestScript.built ? 3 : 2);
 }
 function showResult(target, data, built) {
   const plan = data.plan || data;
@@ -341,5 +344,5 @@ function showResult(target, data, built) {
     })
     .join(
       "",
-    )}</div><div class="stack" style="gap:10px;margin-top:16px">${warnings(data)}</div>${built ? `<div class="row" style="margin-top:20px"><a class="button" href="#adegan">${icon("scene")} Periksa adegan</a><a class="button primary" href="#render">${icon("render")} Render draft</a></div><div id="build-previews">${state.previews.length ? filmstrip(state.previews) : '<p class="help" style="margin-top:14px">Menunggu pratinjau kamera…</p>'}</div>` : ""}${json({ frames, timings: data.timings, ...(built ? { shots: data.shots, characters: data.characters } : { plan }) })}</div></div>`;
+    )}</div><div class="stack" style="gap:10px;margin-top:16px">${warnings(data)}</div>${built ? `<div class="row" style="margin-top:20px"><a class="button" href="#adegan">${icon("scene")} Periksa adegan</a><a class="button" href="#review">${icon("check")} Review adegan</a><a class="button primary" href="#render">${icon("render")} Render draft</a></div><div id="build-previews">${state.previews.length ? filmstrip(state.previews) : '<p class="help" style="margin-top:14px">Menunggu pratinjau kamera…</p>'}</div>` : ""}${json({ frames, timings: data.timings, ...(built ? { shots: data.shots, characters: data.characters } : { plan }) })}</div></div>`;
 }

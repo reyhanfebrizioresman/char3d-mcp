@@ -87,6 +87,37 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.queue.join()
         self.assertEqual(film.status, "cancelled")
 
+    async def test_remote_cancel_waits_for_worker_cleanup(self):
+        status_checked = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        async def remote(name, arguments):
+            if name == "render_status":
+                if status_checked.is_set():
+                    await cleaned.wait()
+                    pending = False
+                else:
+                    pending = True
+                    status_checked.set()
+                result = {"job_id": "remote_123", "status": "cancelled", "cleanup_pending": pending}
+            else:
+                result = {"job_id": "remote_123", "status": "running"}
+            return [SimpleNamespace(type="text", text=json.dumps(result))]
+
+        self.mcp.call_tool = remote
+        video = self.queue.submit("render_video", {"target": "remote"})
+        await self.queue.queue.join()
+        self.queue.submit("cancel_render", {"job_id": "remote_123"})
+        await self.queue.queue.join()
+        self.assertEqual(video.status, "rendering")
+        await asyncio.wait_for(status_checked.wait(), 3)
+        self.assertTrue(video.progress["cleanup_pending"])
+        self.assertEqual(video.status, "rendering")
+        cleaned.set()
+        await asyncio.wait_for(asyncio.gather(*self.queue.monitors), 3)
+        self.assertEqual(video.status, "cancelled")
+        self.assertFalse(video.result["data"]["cleanup_pending"])
+
     async def test_film_build_progress_reads_manifest_without_engine_lock(self):
         job = self.queue.submit("script_to_film", {"script": "JUDUL: Test\nADEGAN: One\nA: Hello."})
         job.status, job.started = "running", 0

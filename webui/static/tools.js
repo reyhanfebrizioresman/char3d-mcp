@@ -293,7 +293,7 @@ export function mount(root) {
     $("#upload-file", root).accept = {
       audio: ".wav,.mp3,.flac,.ogg,.m4a",
       images: ".png,.jpg,.jpeg,.webp",
-      models: ".glb,.gltf,.fbx,.obj,.stl,.ply,.usd,.usdz,.bvh,.bin",
+      models: ".vrm,.glb,.gltf,.fbx,.obj,.stl,.ply,.usd,.usdz,.bvh,.bin",
     }[e.target.value];
   };
   $("#upload-file", root).onchange = (e) =>

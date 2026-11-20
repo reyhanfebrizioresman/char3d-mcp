@@ -49,7 +49,7 @@ class Workspace:
         """Tool file inputs/outputs also stay local to the workspace in the browser UI."""
         base = {"save_project": "projects", "open_project": "projects",
                 "export_asset": "exports"}.get(tool, "imports")
-        if tool in {"render_video", "render_film", "ai_text_to_video", "ai_image_to_video"}:
+        if tool in {"render_video", "render_film", "review_video", "ai_text_to_video", "ai_image_to_video"}:
             base = "renders"
 
         def visit(value):

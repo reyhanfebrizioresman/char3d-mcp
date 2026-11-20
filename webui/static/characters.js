@@ -1,5 +1,6 @@
 import { screenRoot } from "./ui.js";
 import { run, state, scene } from "./api.js";
+import { characterAssets, mountCharacterAssets } from "./character-assets.js";
 import {
   icon,
   esc,
@@ -42,15 +43,18 @@ export function mount(root) {
         ["summer", "Musim panas"],
         ["winter", "Musim dingin"],
       ]),
-    )}${field("Jenggot / kumis", select("char-beard", [["", "Tanpa jenggot"]]))}${field("Rig", select("char-rig", ["game_engine", "rigify", "mixamo", "default", "cmu_mb"]))}${field("Seed pakaian", input("char-seed", 0, "number", 'min="0" step="1"'))}<details class="span-2"><summary>Warisan etnis · bobot campuran</summary><div class="form-grid">${slider("race-asian", "Asia", 1)}${slider("race-african", "Afrika", 0)}${slider("race-caucasian", "Kaukasia", 0)}</div></details><div class="span-2">${check("explicit-clothes", "Pilih pakaian dari katalog", false)}<div id="clothes-list" class="catalog-clothes" style="margin-top:10px" hidden></div></div></div></div><div id="mannequin-fields" class="span-2" hidden><div class="form-grid">${field("Gaya proporsi", select("man-style", ["stylized", "realistic", "heroic", "cartoon", "chibi"]))}${field(
+    )}${field("Jenggot / kumis", select("char-beard", [["", "Tanpa jenggot"]]))}${field("Gaya karakter", select("char-style", [
+      ["realistic", "Realistis"], ["anime", "Anime"], ["cartoon", "Kartun"], ["chibi", "Chibi"],
+    ]))}${field("Rig", select("char-rig", ["game_engine", "rigify", "mixamo", "default", "cmu_mb"]))}${field("Seed pakaian", input("char-seed", 0, "number", 'min="0" step="1"'))}<details class="span-2"><summary>Warisan etnis · bobot campuran</summary><div class="form-grid">${slider("race-asian", "Asia", 1)}${slider("race-african", "Afrika", 0)}${slider("race-caucasian", "Kaukasia", 0)}</div></details><div class="span-2">${check("explicit-clothes", "Pilih pakaian dari katalog", false)}<div id="clothes-list" class="catalog-clothes" style="margin-top:10px" hidden></div></div></div></div><div id="mannequin-fields" class="span-2" hidden><div class="form-grid">${field("Gaya proporsi", select("man-style", ["stylized", "realistic", "heroic", "cartoon", "chibi"]))}${field(
       "Gender",
       select("man-gender", [
         ["neutral", "Netral"],
         ["female", "Perempuan"],
         ["male", "Laki-laki"],
       ]),
-    )}${field("Tinggi (meter)", input("man-height", 1.75, "number", 'min="0.3" max="3" step="0.05"'))}${slider("man-build", "Bentuk tubuh", 1, 0.7, 1.4, 0.05)}</div><p class="help" style="margin-top:14px">Manekin halus untuk blockout. Belum memiliki wajah, rambut, pakaian, atau jari.</p></div></div><div class="divider"></div><button class="button primary full" type="submit">${icon("plus")} Buat karakter</button><p class="help" style="text-align:center;margin-top:10px" id="character-tool">create_realistic_human · sudah termasuk rig</p></form></div></section><div class="stack"><section class="panel"><div class="panel-head"><h2>Pratinjau karakter</h2><span class="chip warm">MODEL SHEET</span></div><div class="character-stage" id="character-stage"><span class="stage-label">MODEL SHEET · −Y FRONT</span>${state.characterViews[0] ? `<img src="${esc(state.characterViews[0])}" alt="Karakter terbaru">` : `<div class="empty"><div class="silhouette" aria-hidden="true"></div><strong>Wajah baru untuk dunia Anda.</strong><p>Karakter akan tampil di sini, lengkap dengan tampilan depan, samping, dan belakang.</p></div>`}</div><div id="character-views">${state.characterViews.length ? filmstrip(state.characterViews, ["Depan", "Kanan", "Belakang", "Tiga perempat"]) : ""}</div></section><div id="character-result">${state.character ? json(state.character) : ""}</div><div class="script-hint">${icon("eye")}<div><h3>Periksa sebelum beraksi.</h3><p>Eevee menampilkan kulit dan material. Periksa pakaian dari setiap sisi; pose ekstrem dapat menyebabkan clipping. Rig MPFB siap dipakai tanpa auto-rig ulang.</p></div></div></div></div>`;
+    )}${field("Tinggi (meter)", input("man-height", 1.75, "number", 'min="0.3" max="3" step="0.05"'))}${slider("man-build", "Bentuk tubuh", 1, 0.7, 1.4, 0.05)}</div><p class="help" style="margin-top:14px">Manekin halus untuk blockout. Belum memiliki wajah, rambut, pakaian, atau jari.</p></div></div><div class="divider"></div><button class="button primary full" type="submit">${icon("plus")} Buat karakter</button><p class="help" style="text-align:center;margin-top:10px" id="character-tool">create_realistic_human · sudah termasuk rig</p></form></div></section><div class="stack"><section class="panel"><div class="panel-head"><h2>Pratinjau karakter</h2><span class="chip warm">MODEL SHEET</span></div><div class="character-stage" id="character-stage"><span class="stage-label">MODEL SHEET · −Y FRONT</span>${state.characterViews[0] ? `<img src="${esc(state.characterViews[0])}" alt="Karakter terbaru">` : `<div class="empty"><div class="silhouette" aria-hidden="true"></div><strong>Wajah baru untuk dunia Anda.</strong><p>Karakter akan tampil di sini, lengkap dengan tampilan depan, samping, dan belakang.</p></div>`}</div><div id="character-views">${state.characterViews.length ? filmstrip(state.characterViews, ["Depan", "Kanan", "Belakang", "Tiga perempat"]) : ""}</div></section>${characterAssets()}<div id="character-result">${state.character ? json(state.character) : ""}</div><div class="script-hint">${icon("eye")}<div><h3>Periksa sebelum beraksi.</h3><p>Eevee menampilkan kulit dan material. Periksa pakaian dari setiap sisi; pose ekstrem dapat menyebabkan clipping. Rig MPFB siap dipakai tanpa auto-rig ulang.</p></div></div></div></div>`;
   bindRanges(root);
+  const updateCharacters = mountCharacterAssets(root, refreshViews);
   const toggle = (value) => {
     mode = value;
     $$("[data-mode]", root).forEach((b) =>
@@ -122,7 +126,7 @@ export function mount(root) {
             "seed",
           ])
             args[key] = Number($(`#char-${key}`, root).value);
-          for (const key of ["hair", "skin", "outfit", "rig", "beard"])
+          for (const key of ["hair", "skin", "outfit", "rig", "beard", "style"])
             args[key] = $(`#char-${key}`, root).value || null;
           args.race = Object.fromEntries(
             ["asian", "african", "caucasian"].map((k) => [
@@ -155,6 +159,7 @@ export function mount(root) {
         state.character = r.data;
         state.scene = null;
         target.innerHTML = warnings(r.data) + json(r.data);
+        if (realistic) await updateCharacters(r.data.body || r.data.name);
         toast("Karakter dibuat. Memeriksa keempat sisi…");
         const subject = r.data.armature || r.data.name;
         const preview = await run("render_views", {

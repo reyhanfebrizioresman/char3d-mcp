@@ -26,7 +26,7 @@ MAX_UPLOAD = 100 * 1024 * 1024
 UPLOAD_TYPES = {
     "audio": {".wav", ".mp3", ".flac", ".ogg", ".m4a"},
     "images": {".png", ".jpg", ".jpeg", ".webp"},
-    "models": {".glb", ".gltf", ".fbx", ".obj", ".stl", ".ply", ".usd", ".usdz", ".bvh", ".bin"},
+    "models": {".vrm", ".glb", ".gltf", ".fbx", ".obj", ".stl", ".ply", ".usd", ".usdz", ".bvh", ".bin"},
 }
 GALLERY_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".glb", ".gltf", ".blend", ".srt", ".fbx", ".obj", ".wav"}
 

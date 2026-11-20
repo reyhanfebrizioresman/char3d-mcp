@@ -43,6 +43,8 @@ def _describe(obj):
         "collections": [c.name for c in obj.users_collection],
     }
     if obj.type == "MESH":
+        if obj.get("c3d_source") in ("mpfb", "vrm"):
+            info["source"] = obj["c3d_source"]
         me = obj.data
         info["mesh"] = {
             "vertices": len(me.vertices),

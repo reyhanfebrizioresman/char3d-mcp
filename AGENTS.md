@@ -2378,6 +2378,13 @@ fix with `transform_object`) → `estimate_landmarks` → `auto_rig_humanoid`
   reuse this adapter, never duplicate engine behavior or import `bpy` here.
 - Frontend is buildless vanilla ES modules; three.js r160 and its MIT license are
   vendored. Runtime assets must remain offline. External AI generation needs consent.
+- The screenplay camera picker includes directed emotion, OTS, and listener reactions.
+  Scene controls include manual OTS and collision inspection/correction. Use the
+  character page for MPFB styles, VRM imports and local face fitting with consent.
+  The Render screen reads the target registry and asks for upload consent before
+  remote submission. GPU quotes require a second explicit confirmation.
+  Review checks the current scene, saved scenes of the active film, or a rendered
+  MP4. Its default operation is read-only. The separate correction action is explicit.
 - Run `CHAR3D_PORT=9981 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python
   tests/webui_smoke.py` (starts UI on 8781), `tests/test_webui.py`, and the existing
   `tests/test_phonemes.py`. `tests/webui_e2e.py` exercises a running UI on 8781.

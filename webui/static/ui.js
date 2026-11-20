@@ -48,7 +48,7 @@ export const button = (id, label, symbol = "", cls = "") =>
 export const empty = (symbol, title, copy) =>
   `<div class="empty">${icon(symbol)}<strong>${title}</strong><p>${copy}</p></div>`;
 export const head = (eyebrow, title, copy, action = "") =>
-  `<div class="page-head"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${copy}</p></div>${action}</div>`;
+  `<div class="page-head"><div>${eyebrow ? `<div class="eyebrow">${eyebrow}</div>` : ""}<h1>${title}</h1><p>${copy}</p></div>${action}</div>`;
 export const json = (data) =>
   `<details><summary>Detail hasil · JSON</summary><pre>${esc(JSON.stringify(data, null, 2))}</pre></details>`;
 export const warnings = (data) =>

@@ -1768,3 +1768,54 @@ textarea#director-idea { min-height: 112px; font-size: 15px; padding: 16px 18px;
 .film-build-progress li { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; padding:9px 0; font-size:12px; }
 .film-switcher:empty { display:none; } .film-switcher { margin-bottom:20px; }
 .film-switcher .row { flex-wrap:wrap; } .film-switcher select { max-width:100%; }
+
+/* Scene controls and Review use the same panel and form spacing. */
+.studio-actions { flex-wrap: wrap; }
+.shot-tools { border-bottom: 1px solid var(--line); }
+.shot-tools form { margin-top: 14px; }
+.shot-tools [role="status"]:not(:empty) { margin-top: 10px; }
+.shot-block { text-align: left; }
+.shot-block:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.feature-list { margin: 10px 0 0; padding-inline-start: 18px; }
+.feature-list li { padding-block: 4px; overflow-wrap: anywhere; }
+#vrm-form > button, #photo-form > button { align-self: flex-start; }
+#vrm-result:empty, #photo-result:empty, #collision-result:empty { display: none; }
+#vrm-file, #photo-file { width: 100%; min-width: 0; }
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, .7fr) minmax(0, 1.6fr);
+  gap: 24px;
+  align-items: start;
+}
+.review-layout form { gap: 14px; }
+.review-layout .panel-head { gap: 12px; }
+.review-summary { display: grid; gap: 16px; }
+.review-score { color: var(--muted); font-family: var(--mono); }
+.review-score strong { color: var(--accent); font-size: 37px; line-height: 1; }
+.review-score small { display: block; margin-top: 8px; }
+.review-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  margin: 0;
+  gap: 9px;
+}
+.review-metrics > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.review-metrics dt { color: var(--muted); font-size: 11px; }
+.review-metrics dd { margin: 4px 0 0; font-family: var(--mono); font-weight: 600; }
+.review-sheet img { display: block; width: 100%; height: auto; }
+.review-issues { margin: 0; padding: 0; list-style: none; }
+.review-issues li { display: grid; gap: 9px; padding: 15px 20px; overflow-wrap: anywhere; }
+.review-issues li + li { border-top: 1px solid var(--line); }
+.review-issues li > .button { justify-self: start; }
+.review-issues .chip.error { color: var(--red); }
+@media (max-width: 900px) {
+  .review-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+}
+.render-field-note { margin-bottom: 14px; }
+#render-target-note:empty, #render-error:empty { display: none; }
+#render-error:not(:empty) { margin-top: 12px; }

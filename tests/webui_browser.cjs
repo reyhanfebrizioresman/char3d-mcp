@@ -114,6 +114,7 @@ const output = path.resolve("output/webui_screens");
       "adegan",
       "karakter",
       "render",
+      "review",
       "galeri",
       "tools",
     ];
@@ -266,7 +267,7 @@ const output = path.resolve("output/webui_screens");
       "WCAG A/AA violations; see output/webui_accessibility.json",
     );
     console.log(
-      "WEBUI BROWSER OK — 24 screen captures, no overflow, no external requests, no JS errors" +
+      "WEBUI BROWSER OK — 28 screen captures, no overflow, no external requests, no JS errors" +
         (Axe ? ", WCAG A/AA checks passed" : ""),
     );
   } finally {

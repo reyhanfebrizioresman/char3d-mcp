@@ -152,7 +152,7 @@ class JobQueue:
                     task.add_done_callback(self.monitors.discard)
                 else:
                     job.status, job.finished = "completed", time.time()
-                if job.tool == "cancel_render":
+                if job.tool == "cancel_render" and not job.arguments["job_id"].startswith("remote_"):
                     for other in self.jobs.values():
                         if (other.tool in {"render_video", "render_film"} and other.status == "rendering"
                                 and other.result["data"].get("job_id") == job.arguments.get("job_id")):
@@ -174,7 +174,8 @@ class JobQueue:
                 progress = status["data"]
                 job.progress = progress
                 state = progress.get("status", "")
-                if state in {"done", "complete", "completed", "finished", "failed", "error", "cancelled", "canceled"}:
+                if (state in {"done", "complete", "completed", "finished", "failed", "error", "cancelled", "canceled"}
+                        and not progress.get("cleanup_pending")):
                     job.status = {"failed": "failed", "error": "failed", "cancelled": "cancelled", "canceled": "cancelled"}.get(state, "completed")
                     job.finished, job.result = time.time(), status
                     if job.status == "failed":

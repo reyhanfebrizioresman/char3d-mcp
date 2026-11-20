@@ -90,6 +90,8 @@ def main():
             reject("/api/run", 403, data={"tool": name})
         reject("/api/run", 403, data={"tool": "ai_text_to_video", "confirm_external": "true"})
         reject("/api/run", 400, data={"tool": "open_project", "arguments": {"path": "/etc/passwd"}})
+        reject("/api/run", 400, data={"tool": "review_video", "arguments": {"path": "/etc/passwd"}})
+        reject("/api/run", 400, data={"tool": "face_from_photo", "arguments": {"character": "Test", "image": "../photo.png"}})
         print("PASS local Origin/Host; AI consent; Python invocation blocked", flush=True)
         director = tool("director_status")["data"]
         assert director["generators"]["offline"]["available"]
@@ -159,7 +161,13 @@ def main():
             uploaded = json.load(response)
         assert uploaded["path"].startswith("audio/") and ".." not in uploaded["path"]
         (workspace / "imports" / uploaded["path"]).unlink()
-        print("PASS traversal + symlink escape rejected; sanitized upload", flush=True)
+        req = Request(base + "/api/upload?kind=models", b"glTF", headers={"X-Filename": "avatar.VRM"}, method="POST")
+        with urlopen(req) as response:
+            avatar = json.load(response)
+            assert response.status == 201
+        assert avatar["path"].startswith("models/") and avatar["path"].endswith(".VRM")
+        (workspace / "imports" / avatar["path"]).unlink()
+        print("PASS traversal + symlink escape rejected; sanitized audio and VRM uploads", flush=True)
         # A validation error echoes the sentinel; both the error and all history
         # must be redacted without configuring or contacting an external provider.
         bad = http("/api/run", {"tool": "create_human", "arguments": {"height": "webui-secret-fal-sentinel"}})["job_id"]

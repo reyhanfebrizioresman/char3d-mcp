@@ -1,4 +1,5 @@
 import { switcher } from "./film.js";
+import { otsForm, collisionPanel, mountSceneTools } from "./scene-tools.js";
 import { lookPicker, mountLookPicker } from "./looks.js";
 import { screenRoot } from "./ui.js";
 import { run, state, scene, request } from "./api.js";
@@ -23,14 +24,16 @@ import {
 } from "./ui.js";
 export function mount(root) {
   root = screenRoot(root);
+  const initialFrame = state.reviewFrame ?? 1;
+  state.reviewFrame = null;
   root.innerHTML =
     head(
       "ATUR SETIAP SUDUT",
       "Di balik layar.",
       "Periksa dunia Anda, satu objek dan satu frame pada satu waktu.",
-      `<div class="row">${button("scene-refresh", "Sinkronkan", "refresh", "subtle small")}${button("scene-save", "Simpan proyek", "save", "small")}</div>`,
+      `<div class="row">${button("scene-refresh", "Sinkronkan", "refresh", "subtle small")}${button("scene-save", "Simpan proyek", "save", "small")}<a class="button small" href="#review">${icon("check")} Review</a></div>`,
     ) +
-    `<section id="film-switcher" class="panel film-switcher" aria-label="Adegan film"></section><div class="scene-layout"><div class="stack"><section class="panel"><div class="panel-head"><h2>Objek adegan</h2><span id="object-count" class="chip">—</span></div><div style="padding:13px"><label class="search">${icon("search")}${input("object-search", "", "search", 'placeholder="Cari objek…" aria-label="Cari objek"')}</label></div><div class="object-list" id="object-list" tabindex="0" aria-label="Daftar objek adegan"><div class="skeleton"></div></div></section><div class="row">${button("scene-open", "Buka proyek", "folder", "small subtle")}${button("scene-new", "Adegan baru", "plus", "small subtle")}</div><div class="help">Z ke atas · satuan meter<br>Karakter menghadap −Y (depan).</div></div><div class="stack"><section class="panel"><div class="panel-head"><h2>${icon("camera")} Monitor adegan</h2><span id="scene-meta" class="mono muted">SCENE VIEW</span></div><div class="viewport" id="scene-viewport">${state.previews[0] ? `<img src="${esc(state.previews[0])}" alt="Pratinjau adegan terbaru">` : empty("camera", "Temukan sudut terbaik.", "Pilih frame dan kamera, lalu buat pratinjau untuk memeriksa komposisi.")}</div><form id="preview-form" class="preview-controls">${field("Frame · pisahkan koma", input("preview-frames", "1", "text", 'required pattern="[0-9, ]+"'))}${field(
+    `<section id="film-switcher" class="panel film-switcher" aria-label="Adegan film"></section><div class="scene-layout"><div class="stack"><section class="panel"><div class="panel-head"><h2>Objek adegan</h2><span id="object-count" class="chip">—</span></div><div style="padding:13px"><label class="search">${icon("search")}${input("object-search", "", "search", 'placeholder="Cari objek…" aria-label="Cari objek"')}</label></div><div class="object-list" id="object-list" tabindex="0" aria-label="Daftar objek adegan"><div class="skeleton"></div></div></section><div class="row">${button("scene-open", "Buka proyek", "folder", "small subtle")}${button("scene-new", "Adegan baru", "plus", "small subtle")}</div><div class="help">Z ke atas · satuan meter<br>Karakter menghadap −Y (depan).</div></div><div class="stack"><section class="panel"><div class="panel-head"><h2>${icon("camera")} Monitor adegan</h2><span id="scene-meta" class="mono muted">SCENE VIEW</span></div><div class="viewport" id="scene-viewport">${state.previews[0] ? `<img src="${esc(state.previews[0])}" alt="Pratinjau adegan terbaru">` : empty("camera", "Temukan sudut terbaik.", "Pilih frame dan kamera, lalu buat pratinjau untuk memeriksa komposisi.")}</div><form id="preview-form" class="preview-controls">${field("Frame · pisahkan koma", input("preview-frames", initialFrame, "text", 'required pattern="[0-9, ]+"'))}${field(
       "Kamera / sudut",
       select("preview-camera", [
         ["scene", "Kamera adegan"],
@@ -56,7 +59,7 @@ export function mount(root) {
         ],
         "512",
       ),
-    )}<button class="button primary" type="submit">${icon("eye")} Pratinjau</button></form><div id="scene-filmstrip">${state.previews.length ? filmstrip(state.previews) : ""}</div><div id="scene-error"></div></section><section class="panel" aria-label="Suasana adegan"><div class="panel-head"><h2>${icon("light")} Suasana</h2><span class="chip">SINEMATIK</span></div><div class="scene-look-body">${lookPicker("scene-look", false, state.scene?.cinematic_look?.preset || "none")}<div class="row look-actions"><span class="help">Periksa warna, cahaya, dan fokus.</span>${button("apply-look", "Terapkan & pratinjau", "eye", "primary small")}</div></div></section><section class="panel"><div class="panel-head"><h2>${icon("render")} Linimasa shot</h2><span class="mono muted">list_shots</span></div><div id="shot-list"><div class="skeleton"></div></div></section></div></div>`;
+    )}<button class="button primary" type="submit">${icon("eye")} Pratinjau</button></form><div id="scene-filmstrip">${state.previews.length ? filmstrip(state.previews) : ""}</div><div id="scene-error"></div></section><section class="panel" aria-label="Suasana adegan"><div class="panel-head"><h2>${icon("light")} Suasana</h2><span class="chip">SINEMATIK</span></div><div class="scene-look-body">${lookPicker("scene-look", false, state.scene?.cinematic_look?.preset || "none")}<div class="row look-actions"><span class="help">Periksa warna, cahaya, dan fokus.</span>${button("apply-look", "Terapkan & pratinjau", "eye", "primary small")}</div></div></section><section class="panel"><div class="panel-head"><h2>${icon("render")} Linimasa shot</h2></div>${otsForm()}<div id="shot-list"><div class="skeleton"></div></div></section>${collisionPanel()}</div></div>`;
   const target = $("#scene-error", root);
   let lookRevision = 0;
   const looks = mountLookPicker(root, "scene-look", () => lookRevision++);
@@ -77,6 +80,7 @@ export function mount(root) {
     const revision = lookRevision;
     const info = await scene(true);
     showObjects(root, info);
+    refreshTools(info);
     await switcher(root, refresh);
     const currentLook = info.cinematic_look?.preset || "none";
     if (revision === lookRevision) {
@@ -88,7 +92,11 @@ export function mount(root) {
     state.shots = shots.data;
     showShots(root, shots.data);
   };
-  if (state.scene) showObjects(root, state.scene);
+  const refreshTools = mountSceneTools(root, refresh);
+  if (state.scene) {
+    showObjects(root, state.scene);
+    refreshTools(state.scene);
+  }
   if (state.shots) showShots(root, state.shots);
   action(null, refresh, target);
   $("#scene-refresh", root).onclick = () =>
@@ -277,11 +285,28 @@ function showObjects(root, info) {
 function showShots(root, data) {
   if (!$("#shot-list", root)) return;
   const shots = data?.shots || [];
+  const roles = { establish: "Pembuka", reaction: "Reaksi pendengar", OTS: "Dari balik bahu", speaker: "Pembicara" };
   $("#shot-list", root).innerHTML = shots.length
-    ? `<div class="shot-track">${shots.map((s) => `<div class="shot-block">${esc(s.name || s.camera || "Shot")}<small>${esc(JSON.stringify(s.frames || [s.frame || s.start_frame, s.end_frame]).replaceAll("null", "—"))} f</small></div>`).join("")}</div>${json(data)}`
+    ? `<div class="shot-track">${shots.map(s => {
+      const [first, last] = s.frames;
+      const role = roles[s.reason?.role] || (s.info?.shot === "over_shoulder" ? roles.OTS : "");
+      const emotion = s.reason?.emotion;
+      return `<button type="button" class="shot-block" data-shot-frame="${esc(first)}">
+        ${esc(s.marker || s.camera || "Shot")}
+        <small>${esc(first)}–${esc(last)} f${role ? ` · ${esc(role)}` : ""}${emotion ? ` · ${esc(emotion)}` : ""}</small>
+      </button>`;
+    }).join("")}</div>${json(data)}`
     : empty(
         "render",
         "Linimasa masih kosong.",
         "Kamera dari naskah atau camera_shot akan muncul di sini.",
       );
+  for (const btn of $$("[data-shot-frame]", root)) {
+    btn.onclick = () => {
+      const frame = $("#preview-frames", root);
+      frame.value = btn.dataset.shotFrame;
+      $("#preview-camera", root).value = "scene";
+      frame.focus();
+    };
+  }
 }

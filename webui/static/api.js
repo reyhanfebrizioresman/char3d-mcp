@@ -13,6 +13,8 @@ export const state = {
   characterViews: [],
   character: null,
   renderOptions: null,
+  reviewFrame: null,
+  reviewVideo: null,
   gallery: [],
 };
 const waiters = new Map();
@@ -61,7 +63,7 @@ export async function poll() {
     for (const job of [...state.jobs].reverse()) {
       if (job.status === "completed" && job.result) remember(job);
       if (
-        previous.has(job.id) &&
+        (previous.has(job.id) || waiters.has(job.id)) &&
         previous.get(job.id) !== job.status &&
         ["completed", "failed", "cancelled"].includes(job.status)
       ) {
