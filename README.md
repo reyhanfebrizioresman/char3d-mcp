@@ -491,6 +491,56 @@ Komposisi memakai Blender VSE dan encoder bawaan, tanpa ffmpeg sistem.
 Uji unit: `.venv/bin/python tests/test_film.py` → `FILM UNIT OK`. Uji nyata terisolasi:
 `CHAR3D_PORT=9996 CHAR3D_WORKSPACE="$PWD/output" .venv/bin/python tests/e2e_smoke.py --film-only`.
 
+## Render di mesin remote / GPU sewaan
+
+Video dan film bisa memakai `target="devodo"` atau nama target sendiri. Default
+`target="local"` tetap memakai laptop. Klip film dirender di remote, lalu disusun
+di laptop. Tidak ada perubahan Web UI; gunakan tool MCP.
+
+1. Siapkan mesin Linux dengan SSH, Python 3.9+, rsync dan **versi Blender persis sama**
+   dengan laptop. GPU perlu driver/EGL serta CUDA/OptiX/HIP sesuai perangkat.
+   `scripts/install_remote_worker.sh --help` menjelaskan verifikasi/instalasi arsip resmi.
+   Worker tidak perlu MPFB, repo char3d, atau paket pip tambahan.
+2. Buat `~/.config/char3d/targets.json`, misalnya:
+
+   ```json
+   {"devodo":{"kind":"ssh","host":"devodo","jump_host":"reyhan",
+     "remote_dir":"/opt/char3d/remote","blender":"/opt/char3d/blender-5.2.4-linux-x64/blender",
+     "device":"cpu","max_parallel":1,"max_hours":4}}
+   ```
+
+   Uji `ssh -F ~/.ssh/config -o BatchMode=yes devodo` sendiri. SSH menggunakan
+   kunci/agent dan known_hosts milik pemilik; char3d tidak menerima kata sandi.
+3. Untuk menyewa GPU, **pemilik membuat dan mendanai akun RunPod/Vast.ai sendiri**.
+   Simpan `RUNPOD_API_KEY=...` atau `VAST_API_KEY=...` di `~/.config/char3d/env`,
+   lalu `chmod 600 ~/.config/char3d/env`. Jangan simpan kunci API di repo/targets.
+   Tambahkan target `kind="runpod"` atau `"vast"` dengan `gpu_type`, `image` milik
+   Anda yang sudah berisi Blender, `public_key` (path kunci SSH **publik**),
+   `blender`, `device`, `max_hourly_usd`, `max_budget_usd` dan `max_hours`.
+   Contoh lengkap ada di [AGENTS.md](AGENTS.md#remote-rendering).
+4. Panggil `remote_targets()`, lalu `render_options(quality="final", target="devodo")`.
+   Pilih resolusi dari waktu/biayanya. Untuk mengukur mesin SSH, gunakan
+   `calibrate=True, consent_upload=True`; film memakai `film_render_options`.
+5. Mulai `render_video(..., target="NAMA", consent_upload=True)` atau `render_film`.
+   Consent berarti scene, tekstur/gambar, font, suara/WAV dan overlay diunggah.
+   Pada target berbayar, panggilan pertama hanya mengembalikan **quote**. Periksa
+   GPU, harga per jam, estimasi total dan batas biaya/waktu; ulangi argumen yang sama
+   dengan `quote_id="...", confirm_cost=True` setelah menyetujuinya. Quote berlaku
+   sepuluh menit, sekali pakai; perubahan pengaturan memerlukan quote baru.
+6. Pantau `render_status(job_id)`. `cancel_render(job_id)` atau `stop_target("NAMA")`
+   membatalkan pekerjaan dan mengakhiri instance char3d. Hasil MP4 diverifikasi dengan
+   PyAV; SRT/CREDITS tetap berdampingan dengan video. Uji SSH tanpa biaya sewa:
+   `.venv/bin/python tests/remote_ssh_smoke.py devodo`.
+
+Instance berbayar dihapus setelah selesai/gagal/batal atau batas terlampaui. Supervisor
+tetap berjalan jika MCP ditutup dan mencoba ulang cleanup bila API gagal. **Laptop
+pengendali harus tetap hidup/online**; batas invoice saat laptop mati atau API provider
+putus tidak dapat dijamin. Pasang batas saldo/alert di akun provider juga. Estimasi
+bukan tagihan; pajak/pembulatan/penyimpanan bisa berbeda. Cache blob privat di remote
+tetap tersimpan dengan batas ukuran; scene sementara dibersihkan setelah pengiriman.
+Cache simulasi eksternal, linked library, volume dan UDIM/sequence perlu dikonversi
+sebelum dikirim. Tidak ada dukungan Kaggle/Colab atau akal-akalan free tier.
+
 ## Web UI — studio lokal
 
 Gunakan char3d langsung dari browser, tanpa build frontend atau Node saat runtime:

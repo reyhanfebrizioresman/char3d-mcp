@@ -184,7 +184,7 @@ def saved_scene(path):
 
 
 @command('film_render_options')
-def film_render_options(name=None, quality='final', vertical=False, calibrate=False):
+def film_render_options(name=None, quality='final', vertical=False, calibrate=False, _remote_estimate=False):
     from . import video
     manifest, _ = _read(name)
     name = manifest['name']
@@ -200,13 +200,15 @@ def film_render_options(name=None, quality='final', vertical=False, calibrate=Fa
         for scene in manifest['scenes']:
             dispatch('open_project', {'path': scene['project']})
             reports.append(dispatch('render_options', {'quality': quality, 'vertical': vertical,
-                'calibrate': calibrate and not reports}))
+                'calibrate': calibrate and not reports, '_remote_estimate': _remote_estimate}))
     finally:
         _restore_editor(origin)
     options = []
     for i, choice in enumerate(reports[0]['options']):
         total = sum(r['options'][i]['total_s'] for r in reports) + manifest['frames'][1]*.1
         options.append(dict(choice, total_s=round(total), total=video._fmt_duration(total)))
+        if _remote_estimate:
+            options[-1]['model_total_s'] = sum(r['options'][i]['model_total_s'] for r in reports)
     return dict(kind='film', name=name, quality=quality, frames=manifest['frames'],
         duration_s=manifest['duration_s'], options=options, machine_speed=reports[0]['machine_speed'],
         scenes=[dict(index=s['index'], name=s['name'], **r) for s, r in zip(manifest['scenes'], reports)])
@@ -235,7 +237,8 @@ def _restore_editor(origin):
 
 @command('render_film')
 def render_film(name=None, path='film.mp4', quality='draft', resolution=None, width=None,
-                height=None, vertical=False, subtitles=True, wait=False, resume=True, credits=True):
+                height=None, vertical=False, subtitles=True, wait=False, resume=True, credits=True,
+                _remote=False, _cache_target=None):
     from . import video, subtitles as subs
     if quality not in video.QUALITY:
         raise ValueError('Unknown render quality')
@@ -295,14 +298,20 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
             for strip in _sound_strips(sc):
                 if strip.get(MUSIC_PROP) and not local_cues:
                     strip.mute = True
-            key = content_hash(scene['project'], dict(settings, renderer_version=3))
+            cache_settings = dict(settings, renderer_version=3)
+            if _remote:
+                from ..remote_snapshot import external_fingerprint
+                cache_settings.update(remote_target=_cache_target, external=external_fingerprint(),
+                                      renderer_version='remote_v1')
+            key = content_hash(scene['project'], cache_settings)
             cache = context.resolve(f'film_cache/{key}.mp4', 'renders')
             reuse = bool(resume and os.path.isfile(cache) and os.path.getsize(cache))
             entry = dict(index=scene['index'], name=scene['name'], path=cache, hash=key,
                          status='reused' if reuse else 'pending', reused=reuse)
             job['scenes'].append(entry)
             if not reuse:
-                child = dispatch('render_video', dict(path=cache, subtitles=False, _defer=True, credits=False, **settings))
+                child = dispatch('render_video', dict(path=cache, subtitles=False, _defer=True,
+                    credits=False, _remote=_remote, **settings))
                 entry['job_id'] = child['job_id']
                 job['children'].append(child['job_id'])
             if subtitles and subs.get_config(sc):
@@ -355,6 +364,8 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
     finally:
         _restore_editor(origin)
     job['estimate'] = {'total_s': sum(video.JOBS[c]['estimate']['total_s'] for c in job['children']) + job['frames'][1]*.1}
+    if _remote:
+        return job
     video.JOBS[ident] = job
     if wait:
         while job['status'] == 'running':
@@ -363,12 +374,17 @@ def render_film(name=None, path='film.mp4', quality='draft', resolution=None, wi
     return report(job)
 
 
-def _compose(job):
+def _compose_spec(job):
     fps = job['manifest']['fps']
     spec = dict(width=job['size'][0], height=job['size'][1], fps=fps, frames=job['frames'][1],
                 out_base=os.path.join(job['directory'], 'composed_'), overlays=job['overlays'],
                 music=job.get('music'),
                 scenes=[dict(s, movie=e['path']) for s, e in zip(job['manifest']['scenes'], job['scenes'])])
+    return spec
+
+
+def _compose(job):
+    spec = _compose_spec(job)
     path = os.path.join(job['directory'], 'compose.json')
     _write(path, spec)
     log = os.path.join(job['directory'], 'compose.log')
