@@ -32,7 +32,8 @@ async function waitForSubmit(page, tool, click, complete = true) {
   const args = response.request().postDataJSON().arguments;
   assert.equal(response.status(), 202);
   if (!complete) return args;
-  return { args, ...(await jobResult(page.request, (await response.json()).job_id)) };
+  const { job_id: id } = await response.json();
+  return { args, id, ...(await jobResult(page.request, id)) };
 }
 
 async function tool(request, name, args = {}) {
@@ -260,7 +261,9 @@ BUDI: Terima kasih sudah mendengar. Kita akan menyelesaikan ini bersama.`);
     if (sshTarget !== "local") assert(rendered.data.verified && rendered.args.consent_upload);
     const movie = rendered.files.find(url => url.endsWith("/webui-target-qa.mp4"));
     assert(movie && (await context.request.get(base + movie)).ok());
-    await page.waitForFunction(url => document.querySelector("#render-player video")?.getAttribute("src") === url, movie);
+    await page.waitForFunction(({ url, id }) =>
+      document.querySelector("#render-player video")?.getAttribute("src") === url + "?job=" + id,
+    { url: movie, id: rendered.id });
     await page.locator("#render-review").click();
     await page.waitForFunction(() => document.querySelector("#review-video")?.value === "webui-target-qa.mp4");
     const mediaReview = await waitForSubmit(page, "review_video", () => page.getByRole("button", { name: "Jalankan Review" }).click());

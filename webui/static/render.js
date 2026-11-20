@@ -14,6 +14,7 @@ const usd = (value) => Number.isFinite(value) ? `$${value.toFixed(4)}` : "—";
 export function mount(main) {
   const root = screenRoot(main);
   let quality = "draft", resolution = null, filmName = null, revision = 0, submitting = false;
+  let loadedJob = null;
   root.innerHTML = head("DARI ADEGAN KE FILM", "Saatnya memutar cerita.",
     "Pilih target, kualitas, dan ukuran video.") + `
     <div class="render-layout">
@@ -239,9 +240,9 @@ export function mount(main) {
     outputs.hidden = !complete;
     if (!complete) return;
     const file = job.result?.files?.find(url => url.endsWith(".mp4"));
-    if (!file) return;
-    if ($("video", root)?.getAttribute("src") === file) return;
-    $("#render-player", root).innerHTML = `<video controls preload="metadata" src="${esc(file)}"
+    if (!file || loadedJob === job.id) return;
+    loadedJob = job.id;
+    $("#render-player", root).innerHTML = `<video controls preload="metadata" src="${esc(file)}?job=${encodeURIComponent(job.id)}"
       ${state.previews[0] ? `poster="${esc(state.previews[0])}"` : ""} aria-label="Video hasil render"></video>`;
     outputs.innerHTML =
       `<a class="button full" href="${esc(file)}?download=1">${icon("download")} Unduh MP4</a>
