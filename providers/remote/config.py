@@ -53,11 +53,22 @@ def positive(value, name, zero=False):
     return value
 
 
+TRANSPORT_FIELDS={'connect_timeout_s','rpc_timeout_s','upload_timeout_s','download_timeout_s',
+                  'offline_grace_s','server_alive_interval_s','server_alive_count_max'}
+
+
+def render_profile(target):
+    """Connection policy cannot change rendered pixels or invalidate existing clips."""
+    return {key:value for key,value in target.items() if key not in TRANSPORT_FIELDS}
+
+
 COMMON = {'kind', 'host', 'user', 'port', 'jump_host', 'remote_dir', 'blender', 'device',
           'max_parallel', 'threads', 'hourly_usd', 'max_hours', 'max_budget_usd',
           'idle_timeout_s', 'cache_bytes', 'gpu_type', 'max_hourly_usd', 'image', 'disk_gb',
           'public_key', 'cloud_type', 'startup_seconds', 'os', 'python', 'shell',
-          'blender_version', 'vram_gb'}
+          'blender_version', 'vram_gb', 'connect_timeout_s', 'rpc_timeout_s',
+          'upload_timeout_s', 'download_timeout_s', 'offline_grace_s',
+          'server_alive_interval_s', 'server_alive_count_max'}
 
 
 def validate_remote_dir(value, system='auto'):
@@ -84,7 +95,9 @@ def targets():
             raise RemoteError(f'{name}: unknown fields; never put keys/passwords in targets.json')
         t = dict(remote_dir='/tmp/char3d', blender='blender', device='cpu', max_parallel=1,
                  threads=4, max_hours=4, idle_timeout_s=900, cache_bytes=2**30,
-                 startup_seconds=300, disk_gb=20)
+                 startup_seconds=300, disk_gb=20, connect_timeout_s=10,
+                 rpc_timeout_s=30, upload_timeout_s=120, download_timeout_s=120,
+                 offline_grace_s=150, server_alive_interval_s=5, server_alive_count_max=2)
         t.update(raw)
         t.setdefault('os', 'auto' if t.get('kind') == 'ssh' else 'linux')
         t.setdefault('shell', 'auto')
@@ -116,6 +129,9 @@ def targets():
         if 'port' in t and (type(t['port']) is not int or not 1 <= t['port'] <= 65535):
             raise RemoteError('Invalid SSH port')
         for field in ('max_hours', 'idle_timeout_s', 'startup_seconds'):
+            t[field] = positive(t[field], field)
+        for field in ('connect_timeout_s', 'rpc_timeout_s', 'upload_timeout_s',
+                      'download_timeout_s', 'offline_grace_s', 'server_alive_interval_s', 'server_alive_count_max'):
             t[field] = positive(t[field], field)
         if 'vram_gb' in t:
             t['vram_gb'] = positive(t['vram_gb'], 'vram_gb')

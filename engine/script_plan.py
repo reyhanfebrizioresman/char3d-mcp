@@ -69,6 +69,10 @@ def _target(text):
 
 
 def _descriptors(text, char, warnings):
+    vrm = re.search(r'\bvrm\s*:\s*(?:"([^"]+)"|\'([^\']+)\'|([^,()]+))', text, re.I)
+    if vrm:
+        char['vrm'] = next(v for v in vrm.groups() if v is not None).strip()
+        text = text[:vrm.start()] + ' ' + text[vrm.end():]
     # Preserve case in engine voice IDs (Edge names are case-sensitive), before
     # age/catalog parsing can mistake digits/underscores inside a voice for assets.
     voice = re.search(r"\b(?:suara|voice)\s*:\s*([^\s,()]+)", text, re.I)
@@ -253,6 +257,9 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
             raise ValueError(f"duplicate character id: {ident}")
         ids[ident.casefold()] = ident
         char["id"] = ident
+        if 'vrm' in char:
+            from .vrm import actor_declaration
+            actor_declaration(char, warnings)
         if 'look' in char:
             from .looks import validate_look
             char['look']=validate_look(char['look'])
@@ -262,16 +269,17 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
             char.setdefault('style',char['look']['style'])
         char["gender"] = _number(char.get("gender", 0.5), "gender", 0, 1)
         char["age"] = _number(char.get("age", 28), "age", 1, 90)
-        if 'style' in char or default_body != 'realistic':
+        if 'vrm' not in char and ('style' in char or default_body != 'realistic'):
             char['style'] = character_style(char.get('style', default_body))
         sex = "female" if char["gender"] < 0.5 else "male"
-        char.setdefault("hair", "bob01" if sex == "female" else "short01")
+        if 'vrm' not in char:
+            char.setdefault("hair", "bob01" if sex == "female" else "short01")
         default_clothes = [f"{sex}_casualsuit{rng.randint(1, 2):02d}", "shoes01"]
         if char.get("outfit") is not None and char["outfit"] not in OUTFITS:
             raise ValueError(f"outfit must be one of {list(OUTFITS)} or None")
-        if not char.get("outfit") and not char.get("assets"):
+        if 'vrm' not in char and not char.get("outfit") and not char.get("assets"):
             char.setdefault("clothes", default_clothes)
-        if char["hair"] is not None and not isinstance(char["hair"], str):
+        if char.get("hair") is not None and not isinstance(char["hair"], str):
             raise ValueError("hair must be a catalog name or None")
         if char.get("beard") is not None and not isinstance(char["beard"], (str, bool)):
             raise ValueError("beard must be a catalog name, boolean or None")
@@ -295,7 +303,7 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
                 char[key] = _number(char.get(key, default), key, low, high)
         if "materials" in char and char["materials"] not in ("enhanced", "mpfb"):
             raise ValueError("materials must be enhanced or mpfb")
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style", "look"}:
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style", "look", "vrm", "vrm_meta"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):

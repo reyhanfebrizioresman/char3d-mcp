@@ -176,11 +176,15 @@ def parse_film(script, name=None, environment=None, seed=0, fps=24, look=None, l
             if not isinstance(beat, dict):
                 raise ValueError('Each beat must be a dict')
             if beat.get('do') in ('outfit', 'change_outfit'):
-                if beats:
-                    raise ValueError('Put outfit changes before scene dialogue/actions; costume changes apply at scene boundaries')
                 ident = ids.get(str(beat.get('who', '')).casefold())
                 if ident is None:
                     raise ValueError('Outfit change needs a declared character')
+                if chars[ident].get('vrm'):
+                    warnings.append(f'{ident}: outfit change ignored for VRM actor; same VRM persists across scenes')
+                    used.add(ident)
+                    continue
+                if beats:
+                    raise ValueError('Put outfit changes before scene dialogue/actions; costume changes apply at scene boundaries')
                 change = {'id': ident}
                 _descriptors(str(beat.get('outfit', '')), change, warnings)
                 if not change.get('outfit') and 'clothes' not in change and 'assets' not in change:

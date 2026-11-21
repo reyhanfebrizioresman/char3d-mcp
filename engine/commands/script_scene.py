@@ -109,7 +109,7 @@ from .collision import deferred
 def script_to_scene(script, name=None, environment=None, lighting="studio", camera="directed",
                     subtitles=True, language="auto", seed=0, build=True, sound=True, look=None,
                     body_language=True, character_seeds=None, style=None, life=1., music="auto",
-                    previous_shot_size=None, collisions=True):
+                    previous_shot_size=None, collisions=True, vrm_cache=None):
     """Parse only, or build 1-4 talking characters and sequential physical beats. Never save."""
     from .anim import CLIPS, POSES
     from .dialog import line_frames, _look_schedule
@@ -171,12 +171,14 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             beat["speech_frames"] = line_frames(beat, sc.render.fps)
     sc.name = plan["name"]
     with timed("characters"):
-        try:
-            catalog = dispatch("mpfb_assets", {})
-            realistic = bool(catalog["assets"].get("skins"))
-        except RuntimeError:
-            catalog, realistic = {}, False
-        if not realistic:
+        catalog, realistic = {}, False
+        if any(not c.get('vrm') for c in plan['characters']):
+            try:
+                catalog = dispatch("mpfb_assets", {})
+                realistic = bool(catalog["assets"].get("skins"))
+            except RuntimeError:
+                pass
+        if not realistic and any(not c.get('vrm') for c in plan['characters']):
             warnings.append("MPFB unavailable: using mannequins without facial animation; install scripts/install_mpfb.sh")
         for i, char in enumerate(plan["characters"]):
             ident = char["id"]
@@ -185,6 +187,13 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             while objname in bpy.data.objects or f"{objname}_rig" in bpy.data.objects:
                 objname = f"{ident}_{suffix}"
                 suffix += 1
+            if char.get('vrm'):
+                from .vrm_actor import build_actor
+                actor = build_actor(char, objname, dispatch, vrm_cache)
+                warnings.extend(f'{ident}: {w}' for w in actor.pop('warnings'))
+                characters[ident] = actor
+                _skeleton('apply_pose', {'armature': actor['rig'], 'pose': 'relaxed', 'keyframe': True, 'frame': 1})
+                continue
             if realistic:
                 args = _appearance(char, catalog, (character_seeds or {}).get(ident, seed + i * 101), warnings)
                 h = dispatch("create_realistic_human", {"name": objname, **args})
@@ -689,7 +698,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 "duration_s": (beat["frames"][1] - beat["frames"][0] + 1) / fps, "name": prefix + f"Title{i}"})
     with timed("secondary_motion"), _bones_only():
         for char in characters.values():
-            dispatch("secondary_motion", {"character": char["rig"], "parts": ["hair"] if collisions else ["hair", "clothes"],
+            result.setdefault('secondary_motion', {})[char['rig']] = dispatch("secondary_motion", {"character": char["rig"], "parts": ["hair", "clothes"] if char.get('vrm') or not collisions else ["hair"],
                                           "frame_start": 1, "frame_end": final, "collisions": collisions})
     from .collision import automatic
     with timed('collisions'):

@@ -74,6 +74,8 @@ def _legs(rig):
 def _sole_points(rig, leg, floor):
     """Heel, ball and toe-tip sole points in the foot bone's rest space."""
     mw = rig.matrix_world
+    if rig.get('c3d_vrm_ground_local') is not None:
+        floor = (mw @ Vector(rig['c3d_vrm_ground_local'])).z
     B = rig.data.bones
     foot = B[leg["foot"]]
     ankle = mw @ foot.head_local
@@ -167,7 +169,9 @@ def foot_lock(rig, frame_start, frame_end, floor=None, height_tolerance=None,
         raise ValueError(f"{rig.name}: no recognisable thigh/shin/foot bones")
     hips_name = smap.get("hips")
     mw = rig.matrix_world
-    floor = float(mw.translation.z if floor is None else floor)
+    default_floor = ((mw @ Vector(rig['c3d_vrm_ground_local'])).z
+                     if rig.get('c3d_vrm_ground_local') is not None else mw.translation.z)
+    floor = float(default_floor if floor is None else floor)
     if ground is None and terrain:
         from .terrain import GroundQuery
         query = GroundQuery(floor)

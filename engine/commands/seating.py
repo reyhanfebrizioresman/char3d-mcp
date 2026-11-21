@@ -124,6 +124,8 @@ def _body_samples(rig, smap):
         for obj in rig.children_recursive:
             if obj.type != "MESH" or obj.hide_render or obj.get("c3d_role") == "environment":
                 continue
+            if rig.get('c3d_rig_type') == 'vrm' and not obj.get('c3d_vrm_body'):
+                continue
             ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
             mesh = ev.to_mesh()
             try:
@@ -134,6 +136,14 @@ def _body_samples(rig, smap):
                 use = ((delta[:, 2] > -0.20) & (delta[:, 2] < 0.15)
                        & (np.abs(delta @ np.asarray(left)) < 0.24)
                        & (delta @ np.asarray(forward) < 0.035))
+                if rig.get('c3d_rig_type') == 'vrm':
+                    from .vrm_actor import skin_slots
+                    slots=skin_slots(obj)
+                    ids={i for p in mesh.polygons if p.material_index in slots for i in p.vertices}
+                    skin=np.zeros(len(mesh.vertices),dtype=bool)
+                    if ids:skin[list(ids)]=True
+                    if np.count_nonzero(use & skin)>=8:
+                        use &= skin
                 if use.any():
                     samples[obj.name] = np.flatnonzero(use)
             finally:
@@ -207,6 +217,13 @@ def _key(rig, smap, f, prev):
 
 
 def _bake(rig, smap, initial, target, feet, front, f0, transition, standing=False):
+    if rig.get('c3d_rig_type') == 'vrm' and any(o.type == 'MESH' and not o.hide_viewport and any(m.type=='ARMATURE' for m in o.modifiers)
+            for o in rig.children_recursive):
+        # The contact solve above uses skin; this final pass keys only bones.
+        # Avoid evaluating VRoid outline geometry after every IK bone update.
+        from .script_scene import _bones_only
+        with _bones_only():
+            return _bake(rig, smap, initial, target, feet, front, f0, transition, standing)
     sc = bpy.context.scene
     end = f0+transition
     hold = max(sc.frame_end, end)

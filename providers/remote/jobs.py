@@ -12,8 +12,8 @@ import time
 import uuid
 
 from .cloud import Cloud
-from .config import RemoteError, config_dir, target, targets, digest, positive, read_json, write_json, clean_env
-from .transport import file_hash
+from .config import RemoteError, config_dir, target, targets, digest, positive, read_json, write_json, clean_env, render_profile
+from .transport import file_hash, SSH
 from engine.render_compat import memory_warning
 
 PRIVACY = ('Uploads a Blender scene snapshot, referenced textures/user images, fonts, '
@@ -35,7 +35,7 @@ class RemoteRenders:
         os.chmod(self.root, 0o700)
 
     def factor(self, name, quality, t):
-        e = read_json(self.root/'speed.json', {}).get(digest([name, t, engine_key(quality)]), {})
+        e = read_json(self.root/'speed.json', {}).get(digest([name, render_profile(t), engine_key(quality)]), {})
         return e.get('factor', 1.), e
 
     def options(self, kind, name, params, calibrate=False, consent_upload=False,
@@ -115,14 +115,33 @@ class RemoteRenders:
             child['remote_assets'] = frozen
 
     def start(self, kind, name, params, consent_upload=False, confirm_cost=False,
-              quote_id=None, max_budget_usd=None, max_hours=None, calibration=False):
+              quote_id=None, max_budget_usd=None, max_hours=None, calibration=False, fallback=None):
         t = target(name)
         params = {k: v for k, v in params.items() if v is not None and k != 'wait'}
-        signature = digest([kind, name, t, params, calibration, max_budget_usd, max_hours])
+        signature = digest([kind, name, t, params, calibration, max_budget_usd, max_hours, fallback])
         if not self._consent(name, t, consent_upload):
             return dict(status='consent_required', target=name, privacy=PRIVACY,
                         instruction='Repeat with consent_upload=True to authorize this target')
         paid = t['kind'] != 'ssh'
+        fallback_target=None
+        if fallback and fallback!='local':
+            fallback_target=target(fallback)
+            if fallback==name or fallback_target['kind']!='ssh' or fallback_target.get('hourly_usd',0):
+                raise RemoteError('Fallback must be local or a different unpaid SSH target; paid fallback is forbidden')
+            if not self._consent(fallback,fallback_target,consent_upload):
+                return dict(status='consent_required',target=fallback,fallback_for=name,privacy=PRIVACY,
+                    instruction='Authorize this fallback SSH upload with consent_upload=True')
+        initial_endpoint=name
+        preflight_error=None
+        if not paid:
+            try:SSH(t).rpc('ping')
+            except RemoteError as exc:
+                if not fallback:
+                    raise RemoteError(f'Target {name} unreachable at preflight; check WireGuard/VPN, jump host and SSH. '+str(exc)) from None
+                if fallback_target:
+                    try:SSH(fallback_target).rpc('ping')
+                    except RemoteError:raise RemoteError('Primary and fallback targets are unreachable at preflight') from None
+                initial_endpoint=fallback;preflight_error=str(exc)
         if quote_id:
             if not quote_id.isalnum():
                 raise RemoteError('Invalid quote_id')
@@ -137,7 +156,7 @@ class RemoteRenders:
         else:
             # No provider mutation here. Quote returned before any paid launch is possible.
             if kind == 'film':
-                params['_cache_target'] = digest([name, t])
+                params['_cache_target'] = digest([name, render_profile(t)])
             prepared = self.engine.call('prepare_remote_render', kind=kind, params=params)
             self._freeze_assets(prepared)
             quality = prepared['job']['quality']
@@ -164,7 +183,8 @@ class RemoteRenders:
                 billing_note='Estimate; compute/storage hourly charges only, taxes excluded. '
                              'No persistent volumes. Provider totals are reported only when available.')
             plan = dict(signature=signature, quote=quote, offer=offer, prepared=prepared,
-                        target=t, target_name=name, calibration=calibration)
+                        target=t, target_name=name, calibration=calibration,fallback=fallback,
+                        fallback_target=fallback_target,initial_endpoint=initial_endpoint)
             pending = self.root/'quotes'/(quote_id+'.json')
             write_json(pending, plan)
             if paid and prepared['children']:
@@ -175,7 +195,8 @@ class RemoteRenders:
             if not pending.exists():
                 raise RemoteError('Quote already consumed')
             active = [read_json(p, {}) for p in (self.root/'jobs').glob('*/state.json')]
-            if sum(j.get('target_name') == name and j.get('status') not in TERMINAL for j in active) >= t['max_parallel']:
+            occupied=sum(j.get('target_name') == name and j.get('status') not in TERMINAL for j in active) >= t['max_parallel']
+            if paid and occupied:
                 raise RemoteError('Target max_parallel reached')
             ident = 'remote_'+uuid.uuid4().hex[:16]
             state_path = self.root/'jobs'/ident/'state.json'
@@ -185,6 +206,11 @@ class RemoteRenders:
             plan.update(quality=job['quality'], size=job.get('size'), frames=job.get('frames'),
                         scenes=copy.deepcopy(job.get('scenes', [])),
                         estimate={'total_s': plan['quote']['estimated_runtime_s']})
+            plan.update(attempt=uuid.uuid4().hex,attempt_started=time.time(),last_progress_at=time.time(),cleanup_protocol=2)
+            if occupied:plan['stage']='waiting for target slot'
+            if initial_endpoint!=name:
+                plan.update(fallback_used=initial_endpoint,stage='fallback after unreachable preflight',
+                    offline_since=time.time(),offline_target=name,warnings=['Primary target unreachable at preflight; using explicit fallback '+initial_endpoint])
             write_json(state_path, plan)
             pending.unlink()
             self._launch(state_path)
@@ -217,23 +243,41 @@ class RemoteRenders:
         state = read_json(path)
         if not state:
             raise RemoteError('Unknown remote job')
+        # Old versions could store false without an acknowledgement. Treat that as
+        # unknown, never as proof a disconnected worker stopped.
+        if state.get('cleanup_protocol')!=2 and state['target']['kind']=='ssh' and state['status'] in ('failed','cancelled') and state.get('active_remote_id') and not state.get('remote_jobs') and not state.get('cleanup_acknowledgements'):
+            with open(path.parent/'state.lock','w') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX)
+                state=read_json(path)
+                if state['status'] in ('failed','cancelled') and not state.get('remote_jobs') and not state.get('cleanup_acknowledgements'):
+                    state.update(cleanup_pending=True,remote_jobs=[dict(id=state['active_remote_id'],connection=state['target'])],
+                        cleanup_error='Legacy cancellation/cleanup has no acknowledgement; target state unknown')
+                    write_json(path,state)
         if state['status'] not in TERMINAL or state.get('cleanup_pending'):
             # A lock in supervisor prevents duplicate work. Reattach after MCP restart/crash.
             self._launch(path)
             state = read_json(path)
+        watchdog=read_json(path.parent/'watchdog.json',{})
+        if watchdog.get('attempt')==state.get('attempt') and watchdog.get('at'):
+            state['watchdog_at']=watchdog['at']
+            if state['status'] not in TERMINAL:state.update(status='cancelled',error=watchdog['error'])
         fields = ('kind', 'status', 'stage', 'path', 'quality', 'size', 'frames', 'estimate',
                   'progress', 'frame_progress', 'progress_unit', 'eta_s', 'device', 'gpu', 'instance_id',
                   'ssh_host', 'ssh_port',
                   'scenes', 'cost_so_far_usd', 'elapsed_s', 'billing', 'error', 'bytes',
                   'subtitles', 'credits', 'has_audio', 'cleanup_pending', 'cleanup_error', 'learned_speed', 'verified',
-                  'target_os', 'blender_remote_version', 'warnings', 'gpus', 'vram_bytes', 'vram_source', 'estimated_vram_bytes')
+                  'target_os', 'blender_remote_version', 'warnings', 'gpus', 'vram_bytes', 'vram_source', 'estimated_vram_bytes',
+                  'last_seen','last_seen_target','last_seen_by_target','fallback_last_seen',
+                  'last_progress_at','offline_since','offline_target','reconnect_attempts',
+                  'fallback_used','frame_sources','scene_frame_sources','checkpoint_frames','worker_restarts',
+                  'cleanup_acknowledgements','retained_remote_jobs','terminal_at','watchdog_at')
         return dict(job_id=ident, target=state['target_name'],
                     **{k: state[k] for k in fields if k in state}, quote=state['quote'])
 
     def wait(self, ident):
         while True:
             result = self.report(ident)
-            if result['status'] in TERMINAL and not result.get('cleanup_pending'):
+            if result['status'] in TERMINAL:
                 return result
             time.sleep(.5)
 
@@ -245,6 +289,32 @@ class RemoteRenders:
         (self.root/'jobs'/ident/'cancel').touch()
         return self.report(ident)
 
+    def resume_job(self,ident,fallback=None,consent_upload=False):
+        if not ident.startswith('remote_') or not ident.replace('_','').isalnum():raise RemoteError('Invalid remote job id')
+        path=self.root/'jobs'/ident/'state.json'
+        state=read_json(path)
+        if not state:raise RemoteError('Unknown remote job')
+        if state['target']['kind']!='ssh':raise RemoteError('Paid instances require a fresh quote; resume_job never creates or resumes rentals')
+        if state['status']=='done' and Path(state['path']).is_file():return self.report(ident)
+        if any(not Path(c['blend']).is_file() for i,c in enumerate(state['prepared']['children']) if i not in state.get('completed',[])):
+            raise RemoteError('Snapshot unavailable (legacy cleanup may have deleted it); prepare a new render')
+        fb=state.get('fallback') if fallback is None else fallback
+        ft=target(fb) if fb and fb!='local' else None
+        if ft:
+            if fb==state['target_name'] or ft['kind']!='ssh' or ft.get('hourly_usd',0):raise RemoteError('Fallback must be different and unpaid')
+            if not self._consent(fb,ft,consent_upload):return dict(status='consent_required',target=fb,privacy=PRIVACY)
+        if state['status'] not in TERMINAL:return self.report(ident)
+        with open(path.parent/'state.lock','w') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            state=read_json(path)
+            state.update(status='queued',stage='resume requested',resuming=True,attempt=uuid.uuid4().hex,
+                attempt_started=time.time(),last_progress_at=time.time(),fallback=fb,fallback_target=ft,
+                initial_endpoint=state['target_name'],error=None,offline_since=None,reconnect_attempts=0)
+            write_json(path,state)
+            (path.parent/'cancel').unlink(missing_ok=True)
+        self._launch(path)
+        return self.report(ident)
+
     def list_targets(self):
         running = self.status()
         return {'targets': [dict(name=n, **t) for n, t in targets().items()], 'jobs': running,
@@ -253,4 +323,4 @@ class RemoteRenders:
     def stop_target(self, name):
         target(name)
         return {'target': name, 'jobs': [self.cancel(j['job_id']) for j in self.status()
-            if j['target'] == name and (j['status'] not in TERMINAL or j.get('cleanup_pending'))]}
+            if name in (j['target'],j.get('fallback_used')) and (j['status'] not in TERMINAL or j.get('cleanup_pending'))]}

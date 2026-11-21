@@ -1,6 +1,159 @@
 """VRM 0/1 semantic adapters, independent of Blender and add-on installation."""
 import re
+import json
+import os
+import struct
+from pathlib import Path
 import numpy as np
+
+
+WARDROBE = ('hair', 'clothes', 'outfit', 'beard', 'assets', 'accessories')
+
+
+def gaze_degrees(document):
+    """Maximum authored eye rotations, not the target-input angular range."""
+    extensions=document.get('extensions',{})
+    v1=extensions.get('VRMC_vrm',{}).get('lookAt',{})
+    v0=extensions.get('VRM',{}).get('firstPerson',{})
+    result={}
+    for direction,field,default in (('In','HorizontalInner',20.),('Out','HorizontalOuter',20.),
+                                    ('Up','VerticalUp',17.1887),('Down','VerticalDown',17.1887)):
+        value=(v1.get('rangeMap'+field,{}).get('outputScale',default) if v1 else
+               v0.get('lookAt'+field,{}).get('yRange',default))
+        try:value=float(value)
+        except (TypeError,ValueError):value=default
+        result[direction]=float(np.clip(value,0.,89.)) if np.isfinite(value) else default
+    return result
+
+
+def face_regions(heights, eye, mouth, brow_indices=()):
+    """Localize authored whole-face presets for independent semantic layers.
+
+    No new motion is invented: these masks select the existing authored delta.
+    In particular, an eye-only listener reaction must never animate the lips.
+    """
+    gap = float(eye-mouth)
+    if not np.isfinite(gap) or gap < .005:
+        raise ValueError('facial eye/mouth anchors must be ordered and separated')
+    heights = np.asarray(heights, dtype=float)
+    def smooth(value):
+        t = np.clip(value, 0., 1.)
+        return t*t*(3-2*t)
+    upper = smooth((heights-(mouth+.25*gap))/(.6*gap))
+    brow = smooth((heights-(eye+.20*gap))/(.35*gap))
+    if len(brow_indices):brow[np.asarray(brow_indices,dtype=int)] = 1.
+    return dict(mouth=1-upper, eye=upper*(1-brow), brow=brow)
+
+
+def dialog_declarations(characters):
+    """Normalize optional VRM dict actors for the existing-rig dialog API."""
+    entries = [c for c in characters or [] if isinstance(c, dict)]
+    if not entries:
+        return characters, [], {}
+    if any(not c.get('vrm') for c in entries):
+        raise ValueError('dialog dict actors require id and vrm; existing actors use rig names')
+    from .script_plan import parse_script
+    plan = parse_script({'characters': entries, 'beats': [{'do':'pause', 'seconds':1}]})
+    normalized = {c['id'].casefold():c for c in plan['characters']}
+    return [normalized[c['id'].casefold()] if isinstance(c, dict) else c for c in characters], plan['warnings'], normalized
+
+
+def actor_path(value, workspace=None):
+    """Resolve an actor strictly inside imports, including symlink targets.
+
+    Bare filenames prefer imports/vrm. Planning may reference a missing file;
+    building subsequently requires it. No directories or files are created here.
+    """
+    if not isinstance(value, str) or not value.strip() or Path(value).suffix.lower() != '.vrm':
+        raise ValueError('vrm must be a nonempty .vrm path under imports/')
+    if workspace is None:
+        from . import context
+        workspace = context.WORKSPACE or os.environ.get('CHAR3D_WORKSPACE', 'output')
+    workspace = Path(workspace).expanduser().resolve()
+    root = (workspace / 'imports').resolve()
+    if not root.is_relative_to(workspace):
+        raise ValueError('workspace imports/ must not resolve outside the workspace')
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        if len(path.parts) == 1:
+            preferred = root / 'vrm' / path
+            path = preferred if preferred.is_file() else root / path
+        else:
+            path = root / path
+    path = path.resolve()
+    if not path.is_relative_to(root):
+        raise ValueError('VRM actor path must stay under workspace imports/ (including symlinks)')
+    return path, path.relative_to(root).as_posix()
+
+
+def read_document(path):
+    """Read only the bounded GLB JSON chunk; never load embedded textures/geometry."""
+    with open(path, 'rb') as stream:
+        header = stream.read(20)
+        if len(header) != 20:
+            raise ValueError('truncated VRM GLB header')
+        magic, version, total, length, kind = struct.unpack('<4sIIII', header)
+        if magic != b'glTF' or version != 2 or kind != 0x4e4f534a or not 0 < length <= 32*1024*1024 or total < 20+length:
+            raise ValueError('invalid VRM GLB JSON header')
+        raw = stream.read(length)
+        if len(raw) != length:
+            raise ValueError('truncated VRM JSON')
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            raise ValueError('VRM JSON must be an object')
+        return document
+
+
+def metadata(path):
+    """Embedded declarations are provenance, not verification of a rights grant."""
+    doc = read_document(path)
+    ext = doc.get('extensions', {})
+    if not isinstance(ext, dict):
+        raise ValueError('invalid VRM extensions')
+    v1 = 'VRMC_vrm' in ext
+    source = ext.get('VRMC_vrm' if v1 else 'VRM', {})
+    if not isinstance(source, dict):
+        raise ValueError('invalid VRM extension')
+    meta = source.get('meta', {})
+    if not isinstance(meta, dict) or not meta:
+        raise ValueError('VRM humanoid metadata missing')
+    return dict(status='embedded', version='1.0' if v1 else '0.x',
+                title=meta.get('name' if v1 else 'title', 'Untitled'),
+                author=meta.get('authors' if v1 else 'author', 'Unknown'),
+                licence=meta.get('licenseUrl' if v1 else 'licenseName', 'unverified'),
+                licence_url=meta.get('licenseUrl' if v1 else 'otherLicenseUrl', ''),
+                declarations=meta)
+
+
+def actor_declaration(char, warnings):
+    """Normalize VRM casting without Blender or importing a model."""
+    path, relative = actor_path(char['vrm'])
+    char['vrm'] = relative
+    try:
+        meta = metadata(path)
+    except (OSError, ValueError, TypeError, KeyError):
+        meta = dict(status='unverified', title='unverified', author='unverified', licence='unverified')
+    char['vrm_meta'] = meta
+    hints = ' '.join((path.stem, str(meta.get('title', '')))).replace('_', ' ')
+    # Gender/age are optional voice hints, never a change to the imported body.
+    declared = meta.get('declarations', {})
+    if 'gender' not in char:
+        hint = str(declared.get('sex', declared.get('gender', hints)))
+        if re.search(r'\b(female|woman|girl)\b', hint, re.I) or '女性' in hint:
+            char['gender'] = 0
+        elif re.search(r'\b(male|man|boy)\b', hint, re.I) or '男性' in hint:
+            char['gender'] = 1
+        else:
+            warnings.append(f"{char['id']}: VRM has no sex hint; voice casting uses unspecified gender (override gender)")
+    if 'age' not in char:
+        if isinstance(declared.get('age'), (int, float)):
+            char['age'] = declared['age']
+        else:
+            warnings.append(f"{char['id']}: VRM has no age hint; voice casting defaults to adult 28 (override age)")
+    for key in (*WARDROBE, 'look', 'style', 'materials', 'skin', 'race', 'height', 'weight', 'muscle', 'proportions'):
+        if key in char:
+            warnings.append(f"{char['id']}: {key} ignored for VRM actor; authored appearance persists")
+            del char[key]
 
 BONES = {'hips':'hips', 'spine':'spine', 'chest':'chest', 'neck':'neck', 'head':'head'}
 for side, suffix in (('left','L'), ('right','R')):

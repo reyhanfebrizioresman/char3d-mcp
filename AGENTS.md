@@ -50,7 +50,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `layout_overlays`, `list_graphics`, `remove_graphics`,
-  `render_options`, `render_video`, `render_status`, `cancel_render`
+  `render_options`, `render_video`, `render_status`, `cancel_render`, `resume_job`
 - Multi-scene films: `script_to_film`, `film_info`, `open_film_scene`,
   `film_render_options`, `render_film` (shared `render_status` / `cancel_render`)
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
@@ -324,6 +324,31 @@ are measured in the isolated checks, alongside actual rendered posed meshes.
 
 ## VRM import (optional add-on)
 
+Script actors accept `{"id":"Nara","vrm":"vrm/model.vrm"}` or
+`NARA (vrm: model.vrm, perempuan, 27): Halo!`. Paths stay under imports/;
+bare names prefer imports/vrm/. Parse-only reads embedded title/author/licence
+without importing (missing/invalid metadata is unverified). Gender/age override
+voice hints; absent hints warn. Wardrobe/hair/outfit changes warn and are ignored;
+films reuse the same native actor. Never prepare or auto-rig it.
+`dialog(characters=[{"id":"Nara","vrm":"model.vrm"}, ...], lines=[...])`
+can cast directly; line speakers use the declared ids.
+Native hair/skirt spring bones bake through secondary_motion, preserving weights.
+Combined VRoid meshes use Body Skin for pelvis contact and body-proxy fitting;
+native loose-cloth chains also receive bounded scene/seat collision constraints.
+Lit VRM rendering uses authored MToon pigment/shade/rim/cutout/cull parameters,
+including style none; anime sharpens bands and animated_film softens them with
+outlines off by default. Overrides restore originals for mixed casts/export.
+VRoid whole-face presets are region-masked in semantic aliases so eye reactions
+do not move lips; original targets stay intact. A temporary head-following
+normal field flattens anime face shading (ellipsoid for film), without changing
+exported normals. Anime uses 0.2 of the face's horizontal normal spread so a side
+key never splits the face down the nose. Hair materials lift their shade 30% toward
+the lit colour and scale value 1.25x so black/purple clumps stay readable.
+Bone-based gaze aliases respect declared VRM inward/outward/up/down limits.
+Credits include embedded declarations; each model's licence and permission remain
+the user's responsibility. Test only on port 9976, workspace output/:
+`tests/test_vrm_actors.py`, `tests/e2e_smoke.py --vrm-actors-only`.
+
 `import_model("avatar.vrm")` supports VRM 0.x and 1.0 through the installed
 [VRM Add-on for Blender](https://vrm-addon-for-blender.info/en-us/scripting-api/).
 Missing installations report `scripts/install_vrm.sh`; runtime never downloads.
@@ -340,7 +365,8 @@ expressions, lip sync, blinks, talk motion and face life, within the model's own
 channel inventory. Bone-based VRoid eye looks are baked to gaze morphs when
 authored look expression binds are absent. Five vowels approximate consonants. Combined Blink cannot
 provide independent winks. Missing expressions are not fabricated; material/UV
-binds remain VRM metadata. Spring bones are static; VRM physics is not baked.
+binds remain VRM metadata. Native simulation stays disabled; secondary_motion
+bakes deterministic spring motion.
 Inspect facing and rig mapping after import. Keep the imported rig; do not run
 `prepare_model` (which deliberately removes rigs) or auto-rig it.
 
@@ -1216,7 +1242,7 @@ Other known prop kinds are created as needed. MPFB missing uses rigged
 mannequins, with timing/audio/captions and gestures but no face, hair or clothes.
 Initial dialog in podcast_studio/news_desk/office seats the cast together when no
 sit/stand/walk/enter/interact direction is authored. It adapts the standing-height desk
-to the chairs and folds microphones below the mouth, aimed toward each guest.
+to the chairs (podcast chairs move to 72% of their spacing, about 1.25 m apart) and folds microphones below the mouth, aimed toward each guest.
 Authored physical blocking and world stages retain priority. Results report `staging`.
 Hand-made `stage_dialog` in an existing desk set has the same default; `desk=False`
 keeps standing staging, and `dialog(stage=False)` preserves placement.
@@ -1410,19 +1436,56 @@ not measured allocations. Lower resolution cannot fix oversized geometry/texture
 480p frame remotely and records target-specific speed. Paid calibration follows the
 same quote/confirm flow. `film_render_options(..., calibrate=True)` measures the first
 saved film scene and restores the editor. First-frame cold startup makes single-frame calibration
-approximate. Remote work never updates local speed calibration.
+approximate. Each SSH target learns its own speed; explicit local fallback updates the
+normal local calibration using only frames actually rendered locally.
 
 Transfers use SHA-256 blobs; rsync/SCP send only missing or corrupt content. Windows
 SCP uses a staging folder, Python verifies SHA-256, then atomically publishes blobs.
 Interrupted SCP transfers retry the missing blob/file; they do not resume byte offsets
-as rsync does. SSH disconnects reattach to the detached worker without starting
-another render. Cancel is sent over SSH; TTL remains a fallback during disconnection.
-Completed job directories are removed; a private bounded blob cache remains (default
-`cache_bytes=1073741824`). Set a small cap to reduce retained private assets.
-`idle_timeout_s` defaults to 900; increase it for unusually slow frames. One job uses
-one Blender process at a time; `max_parallel` limits simultaneous jobs, while film
-scenes are serial. A hard host crash may require manual cleanup of the private worker
-directory. Never remove it while a worker is active.
+as rsync does. Both SSH hops use connect/alive limits. Target defaults are
+`connect_timeout_s=10`, `server_alive_interval_s=5`, `server_alive_count_max=2`,
+`rpc_timeout_s=30`, `upload_timeout_s=120`, `download_timeout_s=120`, and
+`offline_grace_s=150`; transfers and OS detection share their operation deadline.
+Timed-out transports kill only their own process group, including the jump subprocess.
+Dead SSH targets fail preflight before snapshots/queueing. A queued job rechecks target
+health instead of waiting behind a dead job with `max_parallel=1`.
+
+During failed reconnects, `render_status`/`remote_targets` expose `last_seen`,
+`offline_since`, and, after the grace, `stage="target offline since HH:MM:SS"`.
+Successful polling alone never resets the frame-progress idle deadline.
+`idle_timeout_s` defaults to 900; increase it for unusually slow frames. An independent
+watchdog records `watchdog_at` without SSH or the state lock. `wait=True` returns a
+terminal timeout/cancel even while cleanup is pending. Every stage/status change is
+timestamped in `output/remote/jobs/<id>/supervisor.log`.
+
+New jobs render atomic numbered PNGs plus an audio WAV, SHA-256 indexed and mirrored
+to `output/remote/jobs/<id>/frames_<scene>/`. Reconnect reattaches; a dead worker restarts
+only missing frames (at most three automatic restarts, without extending the attempt's
+TTL or allocating another paid instance). `resume_job(job_id, fallback=None,
+consent_upload=False)` explicitly resumes a failed/cancelled SSH snapshot with a fresh
+time allowance. It never creates/resumes rentals. The film `resume=True` clip-cache
+option keeps its original meaning. Old direct-MP4 jobs have no frame checkpoints;
+snapshots already deleted by old cleanup cannot be recovered this way.
+
+`render_video`/`render_film(..., fallback=None|"local"|"other_ssh")` require explicit
+fallback selection. After the offline grace (or dead preflight), fallback renders only
+verified missing frames at the requested engine/quality. Another SSH target needs its
+own upload consent; paid fallback is forbidden. `fallback_used`, `frame_sources`, and
+`scene_frame_sources` report source frame ranges. Captions, crossfade handles, credits,
+MP4/AAC verification and film clip-cache keys keep the same pipeline. Different GPU/CPU
+results can vary visually; fallback does not reduce quality automatically.
+
+Cancel goes only to the verified job/process identity; Windows PID + creation-time
+checks remain required. During disconnection TTL is the remote backstop, not proof of
+shutdown. `cleanup_pending=True` persists until a successful terminal/missing response
+and, for delivered jobs, cleanup acknowledgement. Detached cleanup retries when the
+target returns; `remote_targets` lists pending jobs even after `wait` returns. Legacy
+cancellation records without acknowledgements are treated as unknown/pending.
+Failed/cancelled jobs retain snapshots/checkpoints for resume; these can be large and
+are not limited by `cache_bytes`. Completed remote directories are removed; a private
+bounded blob cache remains (default `cache_bytes=1073741824`). Remove retained private
+files only after verifying no worker is active. One job uses one Blender process at a
+time; film scenes are serial. A hard disk loss can recover only mirrored frames.
 
 Troubleshooting: first verify `ssh -F ~/.ssh/config -o BatchMode=yes HOST` yourself,
 including known_hosts entries for rented host/port, then Python/rsync/Blender paths
@@ -1434,6 +1497,9 @@ two Eevee frames and a tiny two-scene film/cache check against an SSH target, us
 isolated editor port **9969**. `--loopback` uses fake SSH/rsync with real Blender workers.
 `tests/test_remote.py` runs offline fake RunPod/Vast APIs and cleanup tests;
 success prints `REMOTE UNIT OK`. No paid account or real rental is used by tests.
+`tests/test_remote_robust.py` covers hung transports/offline/watchdog/queue contracts;
+`--integration` uses real Blender for partial-frame fallback, worker restart and
+cancel/resume. Run it separately from the loopback smokes, one Blender at a time.
 
 ### Target SSH Windows (penyiapan oleh pemilik PC)
 

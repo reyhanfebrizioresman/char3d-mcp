@@ -81,7 +81,7 @@ def transport_checks(root):
             if corrupt: out.write_bytes(b'corrupt')
         return SimpleNamespace(returncode=0,stdout=b'',stderr=b'')
 
-    with patch('providers.remote.transport.subprocess.run',side_effect=run):
+    with patch('providers.remote.transport.run_bounded',side_effect=run):
         ssh=SSH(t)
         files={}
         for name in ('scene.blend','textures/é.png'):

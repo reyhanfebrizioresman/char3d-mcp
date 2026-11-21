@@ -126,6 +126,12 @@ def _light_role(obj, cast):
 
 
 def _eye(rig):
+    if rig.get('c3d_rig_type') == 'vrm':
+        from .vrm_actor import face_sites
+        sites = face_sites(rig)
+        if sites:
+            from .anim import semantic_map
+            return rig.matrix_world @ rig.pose.bones[semantic_map(rig)['head']].matrix @ sites['eyes']
     from .gaze import head_frame
     center, orientation = head_frame(rig)
     # Anatomical front (not bone-local -Y), at the eye plane rather than neck.

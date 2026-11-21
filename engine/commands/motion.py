@@ -218,6 +218,11 @@ def face_sites(rig, smap, height):
     lip, eye and forehead heights; a mannequin uses its authored head proportions.
     Rest mesh coordinates avoid dependence on the current pose or facial keys.
     """
+    if rig.get('c3d_rig_type') == 'vrm':
+        from .vrm_actor import face_sites as vrm_sites
+        sites = vrm_sites(rig)
+        if sites:
+            return sites
     head_bone = rig.data.bones[smap["head"]]
     rest = rig.matrix_world @ head_bone.matrix_local
     left = (rig.matrix_world.to_3x3() @ (rig.data.bones[smap["thigh.L"]].head_local-
@@ -232,10 +237,13 @@ def face_sites(rig, smap, height):
              "eyes": Vector((0, -.060, -.022 if mpfb else .015))*height,
              "forehead": Vector((0, -.060, .002 if mpfb else .04))*height}
     for obj in rig.children_recursive:
-        if obj.type != "MESH":
+        # Stylized builds hide the undeformed source brows/lashes and render
+        # fitted ink ribbons instead; only visible parts describe the face.
+        if obj.type != "MESH" or obj.hide_render:
             continue
         name = obj.name.lower()
-        kind = "mouth" if "teeth" in name else "eyes" if "eyelash" in name else "forehead" if "eyebrow" in name else None
+        kind = ("mouth" if "teeth" in name else "eyes" if "eyelash" in name or name.endswith("lid_ink")
+                else "forehead" if "eyebrow" in name or name.endswith("simple_brows") else None)
         if kind is None:
             continue
         points = [q.inverted() @ (obj.matrix_world @ v.co-origin) for v in obj.data.vertices]

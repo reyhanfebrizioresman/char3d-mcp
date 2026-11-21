@@ -197,6 +197,8 @@ def rpc(req):
         os.chmod(root, 0o700)
     (root/'blobs').mkdir(exist_ok=True)
     action = req['action']
+    if action == 'ping':
+        return {'reachable':True,'os':'windows' if WINDOWS else 'linux','time':time.time()}
     if action in ('stage_upload', 'finish_upload', 'discard_upload'):
         token = req['token']
         if not re.fullmatch('[0-9a-f]{32}', token):
@@ -243,12 +245,29 @@ def rpc(req):
     if not re.fullmatch('[a-zA-Z0-9_-]+', ident):
         raise ValueError('Invalid job id')
     directory = root/'jobs'/ident
-    if action == 'start':
+    if action == 'frames':
+        return read(directory/'frames.json',{'version':1,'files':{}})
+    if action in ('start','resume'):
         (root/'jobs').mkdir(exist_ok=True)
         with queue_lock(root/'queue.lock'):
-            if (directory/'status.json').exists():
+            if (directory/'status.json').exists() and action=='start':
                 return read(directory/'status.json')
-            active = [read(p, {}) for p in (root/'jobs').glob('*/status.json')]
+            if action=='resume':
+                old=read(directory/'status.json',{})
+                if (old.get('status')=='done' or
+                        (old.get('status') not in TERMINAL and owned_process(read(directory/'pid.json'),directory))):
+                    settings=read(directory/'spec.json',{})
+                    if req.get('spec',{}).get('attempt'):
+                        settings['attempt']=req['spec']['attempt'];write(directory/'spec.json',settings)
+                        old['attempt']=settings['attempt'];write(directory/'status.json',old)
+                    (directory/'cancel').unlink(missing_ok=True)
+                    return old
+                if not read(directory/'spec.json',{}).get('durable'):
+                    raise RuntimeError('Legacy direct-MP4 job cannot restart durably')
+                req=dict(req,files=req.get('files',read(directory/'files.json',{})),
+                         spec=req.get('spec',read(directory/'spec.json')))
+                (directory/'cancel').unlink(missing_ok=True)
+            active = [read(p, {}) for p in (root/'jobs').glob('*/status.json') if p.parent!=directory]
             if sum(s.get('status') not in TERMINAL for s in active) >= req['max_parallel']:
                 raise RuntimeError('Target max_parallel reached')
             directory.mkdir(mode=0o700, exist_ok=True)
@@ -261,6 +280,10 @@ def rpc(req):
                         raise ValueError('Blob verification failed')
                     dest = safe_path(directory, name)
                     dest.parent.mkdir(parents=True, exist_ok=True)
+                    if name=='frames.json' and dest.exists():
+                        # The remote disk may contain newer frames than the mirror.
+                        continue
+                    if dest.exists() and hash_file(dest)!=h:dest.unlink()
                     if not dest.exists():
                         try:
                             os.link(root/'blobs'/h, dest)
@@ -296,14 +319,19 @@ def rpc(req):
                 worker = read(directory/'worker_pid.json')
                 stop_tree(worker, directory)
                 state.update(status='failed', error='Remote supervisor exited; owned worker stopped')
+                state['recoverable']=bool(read(directory/'spec.json',{}).get('durable'))
                 write(directory/'status.json', state)
         return state
     if action == 'cancel':
+        if req.get('attempt') and read(directory/'spec.json',{}).get('attempt')!=req['attempt']:
+            return {'acknowledged':True,'superseded':True}
         (directory/'cancel').touch()
         if WINDOWS:
             stop_tree(read(directory/'worker_pid.json'), directory)
-        return {'cancel_requested': True}
+        return {'cancel_requested': True,'acknowledged':True,'at':time.time()}
     if action == 'cleanup':
+        if req.get('attempt') and read(directory/'spec.json',{}).get('attempt')!=req['attempt']:
+            return {'cleaned':True,'superseded':True}
         if read(directory/'status.json', {}).get('status') not in TERMINAL:
             raise RuntimeError('Cannot clean an active job')
         for attempt in range(40):
@@ -317,7 +345,7 @@ def rpc(req):
                     raise RuntimeError('Worker files still in use; retry cleanup') from None
                 time.sleep(.05)
         prune(root, req['cache_bytes'])
-        return {'cleaned': True}
+        return {'cleaned': True,'at':time.time()}
     raise ValueError('Unknown remote action')
 
 
@@ -334,7 +362,8 @@ def run(directory):
 
     signal.signal(signal.SIGTERM, stopping)
     signal.signal(signal.SIGINT, stopping)
-    state = {'status': 'running', 'stage': 'render', 'progress': f"0/{spec['frames']}"}
+    state = {'status': 'running', 'stage': 'render', 'progress': f"0/{spec['frames']}",
+             'durable':bool(spec.get('durable')),'attempt':spec.get('attempt')}
     proc = None
 
     def execute(command, logname, stage):
@@ -352,7 +381,7 @@ def run(directory):
                 last_size, changed = size, now
             if stop or Path('cancel').exists():
                 raise InterruptedError('Render cancelled')
-            if now-started > spec['max_seconds']:
+            if now-started > spec['max_seconds'] or time.time()>spec.get('deadline_at',float('inf')):
                 raise TimeoutError('Remote time/budget cap reached')
             if now-changed > spec['idle_timeout_s']:
                 raise TimeoutError('Remote idle watchdog expired')
@@ -363,6 +392,10 @@ def run(directory):
             state.update(stage=stage, progress=f'{done}/{spec["frames"]}',
                          elapsed_s=round(now-started, 1))
             state.update(read('device.json', {}))
+            if spec.get('durable'):
+                index=read('frames.json',{'files':{}})
+                done=sum(e.get('channel')=='main' for e in index['files'].values())
+                state.update(progress=f'{done}/{spec["frames"]}',durable=True,frames_done=done)
             write('status.json', state)
             time.sleep(.5)
         if stop or Path('cancel').exists():
@@ -375,6 +408,10 @@ def run(directory):
                    '-t', str(spec['threads']), '--python-exit-code', '1', '--python',
                    str(directory/'worker.py'), '--', str(directory/'spec.json')]
         execute(command, 'render.log', 'render')
+        if spec.get('durable'):
+            execute([spec['blender'],'-b','--factory-startup','--disable-autoexec','-t',str(spec['threads']),
+                '--python-exit-code','1','--python',str(directory/'encode.py'),'--',str(directory/'spec.json')],
+                'encode.log','encode durable frames')
         movies = sorted(Path('.').glob('raw_*.mp4'))
         if not movies:
             raise RuntimeError('Worker produced no MP4')
@@ -399,6 +436,11 @@ def run(directory):
                      timing=read('timing.json', {}))
     except Exception as exc:
         state.update(status='cancelled' if isinstance(exc, InterruptedError) else 'failed', error=str(exc))
+        if proc and proc.poll() is not None:
+            # Windows native crash exit codes are positive NTSTATUS values, unlike
+            # POSIX signal exits. Retry unexpected worker exits on the same lease;
+            # cancellation and TTL/idle expiry must never restart automatically.
+            state['recoverable']=bool(spec.get('durable') and proc.returncode and isinstance(exc,RuntimeError))
     finally:
         if proc and proc.poll() is None:
             if WINDOWS:

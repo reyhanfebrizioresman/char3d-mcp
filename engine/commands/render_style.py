@@ -84,6 +84,8 @@ def _input(tree, target, source):
 
 
 def _styled_material(original, cfg, engine, materials, groups, images, filtered):
+    if original and original.get('c3d_vrm_material'):
+        return original
     role=original.get('c3d_toon_role') if original else None
     if role:cfg={**cfg,'_toon_role':role}
     if original and original.get('c3d_toon_mouth'):cfg={**cfg,'_toon_mouth':True}
@@ -765,6 +767,14 @@ def _compositor(sc, cfg, images, tree):
 
 @contextmanager
 def applied_style(sc):
+    from .vrm_render import applied
+    with applied(sc, get_config(sc)):
+        with _applied_style(sc) as images:
+            yield images
+
+
+@contextmanager
+def _applied_style(sc):
     """Apply only for the render duration; user datablocks are never edited."""
     from .cinematic import compositor_config
     cfg = get_config(sc)
@@ -861,7 +871,7 @@ def applied_style(sc):
             for obj in list(sc.objects):
                 if obj.type != 'MESH' or obj.hide_render or obj.get('c3d_role') in ('weather', 'cinematic'):
                     continue
-                hull = cfg['outline'] and _opaque(obj)
+                hull = cfg['outline'] and _opaque(obj) and not any(s.material and s.material.get('c3d_vrm_material') for s in obj.material_slots)
                 if not obj.material_slots:
                     old = obj.data
                     obj.data = old.copy()

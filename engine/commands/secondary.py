@@ -329,6 +329,7 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
     from .secondary_cloth import constrain_ring, constrain_cloth
     stats = {ch['mesh']: dict(max_tip_offset_m=0., final_tip_offset_m=0.,
                               min_collider_clearance_m=float('inf')) for ch in chains}
+    native_tips = {ch['bones'][0]:dict(max_tip_offset_m=0.,final_tip_offset_m=0.) for ch in chains if ch.get('native')}
     for i, f in enumerate(range(f0, f1 + 1), 1):
         targets, cols, mw, parents, normals, scene_field = samples[i]
         inverse = mw.inverted()
@@ -382,11 +383,27 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
                         st = stats[ch['mesh']]
                         st['scene_max_penetration_m'] = max(st.get('scene_max_penetration_m', 0.), penetration)
                     offsets[k] = [p - t for p, t in zip(all_points[k], targets[k])]
+        if scene_field is not None:
+            from .secondary_cloth import constrain_scene
+            for k,ch in enumerate(chains):
+                if not ch.get('native') or ch.get('public_part')!='clothes':continue
+                radius=ch['radius']*max(mw.to_scale())
+                constrain_scene(all_points[k],targets[k],all_lengths[k],scene_field,radius,
+                                iterations=18 if f==f0 else 3)
+                _constrain(all_points[k],targets[k],all_lengths[k],all_cols[k],radius)
+                penetration=constrain_scene(all_points[k],targets[k],all_lengths[k],scene_field,radius,iterations=0)
+                st=stats[ch['mesh']]
+                st['scene_max_penetration_m']=max(st.get('scene_max_penetration_m',0.),penetration)
+                offsets[k]=[p-t for p,t in zip(all_points[k],targets[k])]
         for k, ch in enumerate(chains):
             points, rest, own_cols = all_points[k], targets[k], all_cols[k]
             radius = ch['radius'] * max(mw.to_scale())
             st = stats[ch['mesh']]
             displacement = offsets[k][-1].length
+            if ch.get('native'):
+                tip = native_tips[ch['bones'][0]]
+                tip['max_tip_offset_m'] = max(tip['max_tip_offset_m'], displacement)
+                if f == f1:tip['final_tip_offset_m'] = displacement
             st['max_tip_offset_m'] = max(st['max_tip_offset_m'], displacement)
             if f == f1:
                 st['final_tip_offset_m'] = max(st['final_tip_offset_m'], displacement)
@@ -417,11 +434,11 @@ def _bake(rig, chains, colliders, samples, f0, f1, stiffness, damping, gravity, 
             st[key] = round(st[key], 6)
     garments = [dict(object=mesh, chains=sum(c['mesh'] == mesh for c in chains),
                      bones=[n for c in chains if c['mesh'] == mesh for n in c['bones']], **stats[mesh])
-                for mesh in sorted({c['mesh'] for c in chains if c.get('part') == 'clothes'})]
+                for mesh in sorted({c['mesh'] for c in chains if c.get('part') == 'clothes' or c.get('public_part')=='clothes'})]
     return dict(max_tip_offset_m=max(st['max_tip_offset_m'] for st in stats.values()),
                 final_tip_offset_m=max(st['final_tip_offset_m'] for st in stats.values()),
                 min_collider_clearance_m=min(st['min_collider_clearance_m'] for st in stats.values()),
-                garments=garments)
+                garments=garments, **({'chain_tip_offsets':native_tips} if native_tips else {}))
 
 
 @command('secondary_motion')
@@ -443,6 +460,9 @@ def secondary_motion(character, parts=('hair',), frame_start=None, frame_end=Non
     f1 = sc.frame_end if frame_end is None else int(frame_end)
     if f0 < 0 or f1 < f0 or f1 - f0 > 23999:
         raise ValueError('expected 0 <= frame_start <= frame_end and at most 24000 frames')
+    if rig.get('c3d_rig_type') == 'vrm':
+        from .vrm_secondary import bake
+        return bake(rig, parts, f0, f1, stiffness, damping, gravity, wind, clear, collisions)
     state = json.loads(rig.get(_STATE, '{"meshes": {}, "chains": [], "colliders": []}'))
     skipped = []
     saved = sc.frame_current
