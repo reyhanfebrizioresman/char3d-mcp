@@ -250,9 +250,25 @@ def policy_checks(root):
     print('windows: minor/exact refusal, GTX 750 Ti VRAM inventory and report warnings OK')
 
 
+def compose_path_checks(root):
+    # Windows Blender resolves drive-less relative strip paths against the drive
+    # root, so the agent must hand compose absolute overlay files (2026-11 PC bug).
+    job=root/'job';(job/'overlays').mkdir(parents=True)
+    (job/'overlays/0.png').write_bytes(b'png')
+    spec=dict(size=[640,360],fps=24,frames=12,audio=True,crf='MEDIUM',transitions=[],
+              overlays=[dict(path='overlays/0.png',start=1,end=6)])
+    compose=agent.compose_spec(spec,job,job/'raw_0001-0012.mp4')
+    path=Path(compose['overlays'][0]['path'])
+    assert path.is_absolute() and path==(job/'overlays/0.png').resolve() and path.is_file(), compose
+    assert spec['overlays'][0]['path']=='overlays/0.png', 'spec must not be mutated'
+    assert Path(compose['movie']).is_absolute() and compose['out_base']==str(job/'composed_')
+    print('windows: compose receives absolute overlay paths OK')
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         root=Path(tmp)
+        compose_path_checks(root/'compose')
         transport_checks(root/'transport')
         lifecycle_checks(root/'lifecycle')
         policy_checks(root/'policy')

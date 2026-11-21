@@ -349,6 +349,25 @@ def rpc(req):
     raise ValueError('Unknown remote action')
 
 
+def compose_spec(spec, directory, movie):
+    """Compose settings with absolute overlay paths.
+
+    Windows Blender resolves a drive-less relative strip path against the drive
+    root, not the working directory, so overlays/N.png silently loaded nothing.
+    """
+    directory = Path(directory)
+    overlays = []
+    for ov in spec.get('overlays', []):
+        ov = dict(ov)
+        path = Path(ov['path'])
+        ov['path'] = str(path if path.is_absolute() else (directory/path).resolve())
+        overlays.append(ov)
+    return dict(movie=str(Path(movie).resolve()), out_base=str(directory/'composed_'),
+        width=spec['size'][0], height=spec['size'][1], fps=spec['fps'], frames=spec['frames'],
+        audio=spec['audio'], crf=spec['crf'], overlays=overlays,
+        transitions=[dict(t) for t in spec.get('transitions', [])])
+
+
 def run(directory):
     os.chdir(directory)
     directory = Path(directory)
@@ -417,9 +436,7 @@ def run(directory):
             raise RuntimeError('Worker produced no MP4')
         movie = movies[-1]
         if spec.get('overlays') or spec.get('transitions'):
-            compose = dict(movie=str(movie.resolve()), out_base=str(directory/'composed_'),
-                width=spec['size'][0], height=spec['size'][1], fps=spec['fps'], frames=spec['frames'],
-                audio=spec['audio'], crf=spec['crf'], overlays=spec['overlays'], transitions=spec['transitions'])
+            compose = compose_spec(spec, directory, movie)
             # Blender appends the frame range to outgoing-camera handles too.
             for trans in compose['transitions']:
                 if trans['kind'] == 'crossfade':

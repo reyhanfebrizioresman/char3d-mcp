@@ -1439,6 +1439,9 @@ saved film scene and restores the editor. First-frame cold startup makes single-
 approximate. Each SSH target learns its own speed; explicit local fallback updates the
 normal local calibration using only frames actually rendered locally.
 
+Remote compose passes absolute overlay paths (Windows Blender resolves drive-less
+relative strip paths against the drive root) and fails on a missing overlay image
+instead of silently dropping captions/titles.
 Transfers use SHA-256 blobs; rsync/SCP send only missing or corrupt content. Windows
 SCP uses a staging folder, Python verifies SHA-256, then atomically publishes blobs.
 Interrupted SCP transfers retry the missing blob/file; they do not resume byte offsets

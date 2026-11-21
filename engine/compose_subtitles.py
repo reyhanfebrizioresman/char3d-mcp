@@ -7,6 +7,7 @@ spec: {"movie", "out_base", "width", "height", "fps", "frames", "audio", "crf",
        "overlays": [{"path", "start", "end", "pop", "origin": [x, y], "keys"}]}
 """
 import json
+import os
 import sys
 
 import bpy
@@ -68,7 +69,12 @@ def main(spec_path):
         # Reuse channels for disjoint caption states, even on long word-heavy videos.
         channel = max([3] + [ch for a, b, ch in placed if a <= ov["end"] and b >= ov["start"]]) + 1
         placed.append((ov["start"], ov["end"], channel))
-        st = strips.new_image(f"overlay{i}", ov["path"], channel=channel, frame_start=int(ov["start"]))
+        # A missing overlay otherwise becomes an empty strip and the caption silently
+        # disappears (seen with drive-less relative paths on Windows).
+        path = os.path.abspath(ov["path"])
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Overlay image missing: {path}")
+        st = strips.new_image(f"overlay{i}", path, channel=channel, frame_start=int(ov["start"]))
         st.frame_final_duration = max(1, int(ov["end"]) - int(ov["start"]) + 1)
         st.blend_type = "ALPHA_OVER"
         if ov.get("keys"):
