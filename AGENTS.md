@@ -180,9 +180,13 @@ Skin uses flat sampled albedo with soft UV blush and no pores;
 hair retains a reduced cutout mask and broad clump values. Generic stylized
 `bob01`/`bob02` requests choose installed `toigo_curled_under_bob` (system
 `ponytail01` fallback); `short01` chooses `culturalibre_hair_02` (`short04`
-fallback), with the requested asset's pigment retained. Results report the actual
+fallback); generic `short02` chooses installed `culturalibre_hair_05`
+(`short04` fallback; CC0, culturalibre/swift502), with the requested asset's
+pigment retained. Results report the actual
 asset and a warning. Explicit look recipes retain their hair asset. A local
 fringe lift clears the eye window on both paths, including photo/look replay.
+Stylized scalp cards keep their neutral facial-unit deltas so a blink cannot
+pull the fringe over the brow; head-bone weights and secondary motion remain.
 Clothes retain 128 px simplified albedo/prints; their dominant pigment is sampled
 inside the material's actual UV islands, excluding unused atlas margins.
 These PBR textures/materials export without downloading
@@ -238,8 +242,8 @@ face edge instead of darkening the lower cheeks/jaw). Anime skin/clothes use one
 threshold, avoiding multi-light/cast-shadow camouflage; animated-film skin uses
 a broad continuous key gradient. Realistic characters keep their existing shaders.
 Hair shares its pigment response across both styles, with a soft cutout edge and
-smoothed frontal card boundaries; the authored short02 cap can still read as a
-helmet at close range. The normal proxy, modifier and vertex group are removed
+smoothed frontal card boundaries; explicit look recipes retaining the authored
+short02 cap can still read as a helmet. The normal proxy, modifier and vertex group are removed
 after rendering, including on failure; GLB retains the actual rest geometry and
 native morphs, without this temporary normal field. Techniques were informed by
 the owner's MIT blender-agent-skills NPR, facial-shapekeys and hair references;
@@ -266,6 +270,22 @@ inclusive measurements and mask overlays remain in the evidence for inspection.
 Hair hue/saturation assertions cover the audited ponytail01/short02 assets;
 the eye-safe replacement bob additionally records its warmer PBR-highlight hue
 mismatch as a diagnostic. Anime/animated-film retain the same dark bob pigment.
+Round 7 slides lower-socket expression deltas with the lid; iris/gaze and native
+blink channels remain. Native blink/wink guards cancel smile/brow separation,
+with a bounded closed-lash depth fit. A rounded graded mouth pocket, single upper
+tooth band and low red-brown tongue replace the detailed inserts (hidden with
+portable alpha). These skinned, column-sampled meshes retain native targets,
+packed textures and `tongueOut`; photo recolouring preserves their palette.
+Cartoon/chibi receive a common chin/upper-neck rest offset on every target,
+preserving body topology, head endpoints and weights. Skin retains its Round 4b
+response: a warm hue/value trial breached the dark floor and was rejected.
+Realistic PBR stays unchanged. `tests/toon_round7.py` captures pinned d92d70d
+portraits at 512 px, expressions, socket-ID passes, articulation and asset QA.
+Use only 9971/workspace `output/`; reference scripts are not run. Small outer-eye
+dimples, some segmented closed-lid ink, oblique lip rims and card clumps remain.
+The bob's existing near-black film grade is recorded separately, with unchanged
+baseline RGB required; ponytail/short-hair colour bounds remain strict.
+Rebuild characters for these changes; HM08 is not a replacement facial sculpt.
 `tests/toon_round5.py` captures ab28f51-equivalent `--case before` snapshots (the
 correction is disabled only inside that test fixture), then `--case after`,
 `articulation`, `colour` and `check`. The contract covers Caucasian/Asian/African

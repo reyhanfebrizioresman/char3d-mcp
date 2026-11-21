@@ -104,11 +104,15 @@ def stylize(body, meshes, rig, style):
     soften_midface(body)
     from .toon_refine import refine_rest,refine_motion,refine_hair_roots
     refine_rest(body,meshes,rig)
+    from .toon7_face import round_neck
+    round_neck(body,meshes,style)
     refine_hair_roots(body,meshes)
     fit_hair(body,meshes)
     lift_smile(body,meshes)
     soften_face_motion(body)
     refine_motion(body,meshes)
+    from .toon7_face import polish_squints
+    polish_squints(body,meshes)
     fit_mouth(body,meshes)
     fit_ankles(body,meshes)
     blink_report = calibrate_blinks(body,meshes) if body.data.shape_keys else {}
@@ -127,6 +131,8 @@ def stylize(body, meshes, rig, style):
             part.hide_render=True
             part.hide_viewport=True
     blink_correctives(body,meshes)
+    from .toon7_face import guard_blinks
+    guard_blinks(body,meshes)
     from ..toon_appearance import scan_pigment
     pigment,gain=scan_pigment(skin,reference)
     material_report = toon_materials(body, meshes, skin=tuple(pigment),hair=body.get('c3d_toon_requested_hair_rgb'))
@@ -141,6 +147,11 @@ def stylize(body, meshes, rig, style):
             slot.material['c3d_toon_scan_style_gain']=style_gain
     material_report.update(scan_value_gain=gain,toon_value_gain=style_gain,scan_reference_rgb=list(reference))
     head_surface(body)
+    from .toon7_face import calibrate_closed_ink,steady_scalp_hair
+    calibrate_closed_ink(body,meshes)
+    steady_scalp_hair(body,meshes)
+    from .toon7_mouth import build_mouth
+    build_mouth(body,meshes)
     bottom, top, chin, _ = anatomy(body, meshes)
     body['c3d_head_ratio'] = float((top-bottom)/(top-chin))
     return dict(style=style, head_ratio=body['c3d_head_ratio'], head_height_m=top-chin,
@@ -344,6 +355,7 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
     _, top, chin, centers = anatomy(body, meshes)
     changed = []
     for obj in meshes:
+        if obj.get('c3d_toon_mouth') or obj.get('c3d_toon_hidden_mouth'):continue
         role = _role(obj, body)
         if role == 'accessory':
             continue
@@ -813,8 +825,10 @@ def head_surface(body):
     for face in body.data.polygons:
         if any(i>=13380 for i in face.vertices):continue
         center=p[list(face.vertices)].mean(0)
-        if abs(center[0])<.26*h and center[1]<eye_y+.15*h and chin+.10*h<center[2]<top-.15*h:
-            omit.append(face.index)
+        outline_floor=chin-.07*h if body.get('c3d_style') in ('cartoon','chibi') else chin+.10*h
+        front=abs(center[0])<.26*h and center[1]<eye_y+.15*h and outline_floor<center[2]<top-.15*h
+        soft_jaw=body.get('c3d_style') in ('cartoon','chibi') and abs(center[0])<.38*h and center[1]<eye_y+.30*h and chin-.16*h<center[2]<chin+.15*h
+        if front or soft_jaw:omit.append(face.index)
     # Facial ink is authored by lids/brows and the mouth contour. The expanded
     # silhouette shell must not leak a black stroke down a tiny nose bridge.
     body['c3d_toon_outline_omit']=omit
@@ -855,6 +869,19 @@ def fit_hair(body,meshes):
         # Uneven tips keep a broad clump edge; the lowest point clears the brow.
         floor=ez+h*(.16+.012*np.cos(q[:,0]/h*38))
         lift=np.maximum(0,floor-q[:,2])*front*window
+        if 'culturalibre_hair_05' in obj.get('c3d_material_part',obj.name).lower():
+            # Preserve the installed card clumps' taper instead of flattening
+            # every fringe row to one height (MIT hair-grooming guide principle).
+            from ..toon import monotone
+            candidates=(front>.6)&(window>.6)
+            if candidates.any():
+                lowest=float(q[candidates,2].min());anchor=top+.03*h
+                if lowest<ez+.13*h and anchor-.10*h>ez+.19*h:
+                    moved=monotone(q[:,2],[lowest,anchor-.10*h,anchor],
+                        [ez+.16*h,anchor-.10*h,anchor],endpoint_slopes=(.3,1.))
+                    tip=1-smooth((q[:,2]-lowest)/max(.01*h,anchor-.10*h-lowest))
+                    moved+=.028*h*np.cos(q[:,0]/h*38)*tip
+                    lift=np.maximum(0,moved-q[:,2])*front*window
         delta=np.zeros_like(q);delta[:,2]=lift;delta=delta@inv[:3,:3].T
         for data in [obj.data.vertices]+([k.data for k in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else []):
             data.foreach_set('co',(coords(data)+delta).astype(np.float32).ravel())
@@ -984,3 +1011,5 @@ def sync_ink(body,meshes):
                 source=keys[key.name]
                 key.slider_min=source.slider_min;key.slider_max=source.slider_max
                 key.value=source.value
+    from .toon7_face import calibrate_closed_ink
+    calibrate_closed_ink(body,meshes)

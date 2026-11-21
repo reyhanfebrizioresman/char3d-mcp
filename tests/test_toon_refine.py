@@ -1,12 +1,56 @@
-"""Offline invariants for the Round 6 geometry/alpha kernels."""
+"""Offline invariants for the Round 6/7 topology, facial-delta and alpha kernels."""
 from pathlib import Path
 import sys
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from engine.toon_refine import profile_displacement,mouth_width_map,aperture_map,soften_cutout,projected_concavity,harmonic_correction,ellipsoid_mesh
+from engine.toon_refine import squint_field,round_chin_offset,disk_grid,mouth_points
 
 
 def main():
+    # A rolling socket must move with its rim, with no change to the neutral
+    # separation of the inner wall. Other face regions retain their deltas.
+    rim=np.array([[-.2,-.2,.5],[0,-.2,.48],[.2,-.2,.5]])
+    move=np.array([[0,0,.01],[0,0,.02],[0,0,.01]])
+    points=np.array([[0,-.2,.48],[0,-.19,.44],[0,-.2,1.]])
+    delta=np.array([[0,-.01,.02],[0,-.04,-.03],[.1,.2,.3]])
+    fixed=squint_field(points,delta,1.,[rim],[move])
+    assert np.allclose(fixed[:2],[[0,0,.02],[0,0,.02]])
+    assert np.array_equal(fixed[2],delta[2])
+    assert np.allclose((points+fixed)[1]-(points+fixed)[0],points[1]-points[0])
+    for x in (0,.1,.2,.3):
+        z=np.linspace(-.2,.6,2001);line=np.c_[np.full(len(z),x),np.full(len(z),-.2),z]
+        rounded=line+round_chin_offset(line,1.,0.,-.2)
+        assert np.diff(rounded[:,2]).min()>0,(x,np.diff(rounded[:,2]).min())
+    assert not round_chin_offset([[0,-.2,0],[0,-.2,1]],1.,0.,-.2).any()
+    uv,faces=disk_grid()
+    assert len(uv)==281 and len(faces)==256
+    # One connected disk, with a deliberate open rear boundary, no tiny teeth.
+    edges={tuple(sorted((a,b))) for f in faces for a,b in zip(f,f[1:]+f[:1])}
+    assert len(uv)-len(edges)+len(faces)==1
+    upper=np.c_[np.linspace(-.12,.12,21),np.full(21,-.2),np.full(21,.14)]
+    lower=upper.copy();lower[:,2]=0
+    mouth=np.r_[upper,lower];up=list(range(21));low=list(range(21,42))
+    for part in ('cavity','teeth_band','tongue'):
+        built=mouth_points(mouth,up,low,uv,1.,part)
+        assert np.isfinite(built).all() and (built[:,1]>-.2).all()
+        translated=mouth_points(mouth+[1,2,3],up,low,uv,1.,part)
+        assert np.allclose(translated,built+[1,2,3])
+        if part=='teeth_band':assert built[:,2].max()<.14 and np.ptp(built[:,2])<=.020001
+        if part=='tongue':assert built[:,2].max()<=.020001
+    resting=mouth_points(mouth,up,low,uv,1.,'tongue')
+    extended=mouth_points(mouth,up,low,uv,1.,'tongue',extension=1)
+    assert np.linalg.norm(extended-resting,axis=1).max()>.02
+    assert extended[:,1].min()>-.2 and extended[:,2].max()>resting[:,2].max()
+    # A thin band following a sharply curved lip must keep its winding. A
+    # radial grid folds here even though the continuous surface is monotone.
+    triangles=np.array([t for f in faces for t in ([f] if len(f)==3 else [(f[0],f[1],f[2]),(f[0],f[2],f[3])])])
+    curved=mouth.copy();curved[up,2]=.02-.12*(curved[up,0]/.12)**2
+    curved[low,2]=-.01+.08*(curved[low,0]/.12)**2
+    for part in ('cavity','teeth_band','tongue'):
+        q=mouth_points(curved,up,low,uv,1.,part)
+        normals=np.cross(q[triangles[:,1]]-q[triangles[:,0]],q[triangles[:,2]]-q[triangles[:,0]])
+        assert (normals[:,1]<-1e-10).all(),(part,normals[:,1].max())
     x,z=np.meshgrid(np.linspace(-.35,.35,81),np.linspace(0,.48,81))
     t=np.clip(z/.49,0,1)
     convex=-.068-.162*np.sqrt(t*(2-t))+.07*(x/.35)**2

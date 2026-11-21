@@ -86,6 +86,7 @@ def _input(tree, target, source):
 def _styled_material(original, cfg, engine, materials, groups, images, filtered):
     role=original.get('c3d_toon_role') if original else None
     if role:cfg={**cfg,'_toon_role':role}
+    if original and original.get('c3d_toon_mouth'):cfg={**cfg,'_toon_mouth':True}
     toon_skin=original and original.get('c3d_toon_role')=='skin'
     enhanced_skin=original and original.get('c3d_material_role')=='skin'
     if toon_skin or enhanced_skin:
@@ -137,6 +138,9 @@ def _styled_material(original, cfg, engine, materials, groups, images, filtered)
                         _toon_skin_response(tree,bsdf,cfg.get('_toon_scan_style_gain',1.))
                         if role=='skin':
                             warmth=tree.nodes.new('ShaderNodeHueSaturation')
+                            # Retain the measured Round 4b pigment response.
+                            # A Round 7 +4% value / warm-hue trial increased
+                            # saturation but lowered dark cheek Y' below .33.
                             warmth.inputs['Saturation'].default_value=1.04
                             _input(tree,warmth.inputs['Color'],bsdf.inputs['Base Color'])
                             tree.links.new(warmth.outputs[0],bsdf.inputs['Base Color'])
@@ -353,6 +357,9 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
     """
     nodes, links = tree.nodes, tree.links
     k = cfg['strength']
+    if cfg.get('_toon_mouth'):
+        from .toon7_mouth import styled_shader
+        return styled_shader(tree,bsdf,cfg['strength'])
     if cfg.get('_toon_role') in ('hair','skin'):
         from .toon_render import key_bands
         return key_bands(tree,bsdf,cfg)
@@ -551,6 +558,9 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
 
 def _styled_shader(tree, bsdf, cfg, engine):
     nodes, links = tree.nodes, tree.links
+    if cfg.get('_toon_mouth') and cfg['style']=='anime':
+        from .toon7_mouth import styled_shader
+        return styled_shader(tree,bsdf,cfg['strength'])
     if cfg['style']=='anime' and cfg.get('_toon_role') in ('skin','clothes','hair'):
         from .toon_render import key_bands
         return key_bands(tree,bsdf,cfg)
@@ -610,6 +620,7 @@ def _styled_shader(tree, bsdf, cfg, engine):
 
 def _opaque(obj):
     # Thin alpha cards and facial inserts must never acquire an opaque black shell.
+    if obj.get('c3d_toon_mouth'):return False
     if any(word in obj.name.lower() for word in ('eye', 'brow', 'lash', 'teeth', 'tongue', 'hair', 'beard')):
         return False
     for slot in obj.material_slots:

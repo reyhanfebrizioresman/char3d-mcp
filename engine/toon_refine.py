@@ -3,6 +3,42 @@ import numpy as np
 from .toon import smooth,monotone
 
 
+def squint_field(points,delta,head_height,rims,rim_deltas,limit=.025):
+    """Slide a lower socket with its rim, without rolling its inner wall out.
+
+    The same spatial rule is used on the body and fitted facial proxies. The
+    neutral surface is untouched; these are relative expression deltas.
+    """
+    p=np.asarray(points);d=np.asarray(delta).copy();h=float(head_height)
+    for rim,motion in zip(rims,rim_deltas):
+        order=np.argsort(rim[:,0]);line=rim[order];move=motion[order]
+        z=np.interp(p[:,0],line[:,0],line[:,2]);y=np.interp(p[:,0],line[:,0],line[:,1])
+        outside=np.maximum(line[:,0].min()-p[:,0],p[:,0]-line[:,0].max())/h
+        w=1-smooth(outside/.070)
+        height=(p[:,2]-z)/h
+        w*=smooth((height+.20)/.10)*(1-smooth((height-.055)/.050))
+        w*=1-smooth((p[:,1]-y-.090*h)/(.09*h))
+        target=np.zeros_like(d)
+        target[:,0]=np.interp(p[:,0],line[:,0],move[:,0])
+        target[:,2]=np.interp(p[:,0],line[:,0],move[:,2])
+        if limit is None:target[:,1]=np.interp(p[:,0],line[:,0],move[:,1])
+        else:target[:,2]=np.clip(target[:,2],0,limit*h)
+        d+=(target-d)*w[:,None]
+    return d
+
+
+def round_chin_offset(points,h,chin,eye_y):
+    """Bounded U-shaped lower contour, preserving the scalp/chin endpoints."""
+    p=np.asarray(points);u=(p[:,2]-chin)/h;x=p[:,0]/h
+    target=chin+.22*h*(1-np.sqrt(np.maximum(0,1-np.clip(abs(x)/.35,0,1)**2)))
+    w=smooth(u/.025)*(1-smooth((u-.10)/.16))
+    w*=1-smooth((abs(x)-.27)/.10)
+    w*=1-smooth((p[:,1]-eye_y-.08*h)/(.18*h))
+    result=np.zeros_like(p,dtype=float)
+    result[:,2]=np.clip(target-p[:,2],-.035*h,.015*h)*w*.45
+    return result
+
+
 def profile_displacement(points,surface_y,head_height,chin,chin_y,eye_y,mouth_z):
     """A convex lower-face support, translating deeper layers with its surface."""
     p=np.asarray(points);h=float(head_height);u=(p[:,2]-chin)/h;x=p[:,0]/h
@@ -137,3 +173,61 @@ def ellipsoid_mesh(center,radii,rows=24,columns=40):
     last=1+(rows-2)*columns
     for i in range(columns):faces.append((last+i,bottom,last+(i+1)%columns))
     return vertices,faces
+
+
+def disk_grid(segments=32,rings=4):
+    """Column-aligned disk: curved, narrow lip bands cannot fold radially.
+
+    Each triangle has two points at the same X. Its projected winding therefore
+    depends on the positive band thickness, not on lip-curve chord curvature.
+    """
+    rows=2*rings+1;uv=[[-1.,0.]];faces=[]
+    for x in np.linspace(-1,1,segments+1)[1:-1]:
+        for v in np.linspace(-1,1,rows):uv.append([x,v*np.sqrt(1-x*x)])
+    last=len(uv);uv.append([1.,0.])
+    for j in range(rows-1):faces.append((0,1+j,2+j))
+    for column in range(segments-2):
+        a=1+column*rows;b=a+rows
+        for j in range(rows-1):faces.append((a+j,b+j,b+j+1,a+j+1))
+    a=1+(segments-2)*rows
+    for j in range(rows-1):faces.append((a+j,last,a+j+1))
+    return np.asarray(uv),faces
+
+
+def mouth_points(points,upper,lower,params,h,part,extension=0.):
+    """Fit each authored relative target; no frame handler or alpha switching."""
+    q=np.asarray(points);u=q[upper];l=q[lower]
+    def curve(values,x):
+        order=np.argsort(values[:,0]);p=values[order]
+        return np.stack([np.interp(x,p[:,0],p[:,axis]) for axis in range(3)],axis=1)
+    left=max(u[:,0].min(),l[:,0].min());right=min(u[:,0].max(),l[:,0].max())
+    center=(left+right)*.5;half=(right-left)*.5
+    t=params[:,0];v=params[:,1];radius=np.sqrt(t*t+v*v)
+    if part=='cavity':
+        x=center+t*half*1.04
+        hi=curve(u,x);lo=curve(l,x)
+        normalized=v/np.sqrt(np.maximum(1e-8,1-t*t))
+        normalized=np.clip(normalized,-1,1)
+        result=lo+(hi-lo)*((normalized+1)*.5)[:,None]
+        result[:,0]=x
+        # Native closed-lip contours can cross locally at the canthi. Keep a
+        # positive hidden lining thickness instead of inverting its corners.
+        low=np.minimum(lo[:,2],hi[:,2])-.004*h;high=np.maximum(lo[:,2],hi[:,2])+.004*h
+        result[:,2]=low+(high-low)*((normalized+1)*.5)
+        result[:,1]+=(.010+.050*(1-radius*radius))*h
+    elif part=='teeth_band':
+        # A single softly curved ivory band. Fixed physical thickness avoids
+        # enlarging individual teeth with the A/O opening; closed lips hide it.
+        x=center+t*half*.70;hi=curve(u,x)
+        result=hi.copy();result[:,2]+=(-.018+.010*v)*h
+        result[:,1]+=(.028-.002*(1-radius*radius))*h
+    else:
+        x=center+t*half*.55;lo=curve(l,x)
+        result=lo.copy();result[:,2]+=(.010+.010*v)*h
+        result[:,1]+=(.035+.004*(1-radius*radius))*h
+        if extension:
+            # A tongue unit moves the low tip forward/up within the opening;
+            # lip-rim-only bindings would silently turn tongueOut into a no-op.
+            tip=(1-t*t)*(.5+.5*v)*float(extension)
+            result[:,1]-=.016*h*tip;result[:,2]+=.018*h*tip
+    return result

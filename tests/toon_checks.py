@@ -34,6 +34,13 @@ for side,pairs in LID_PAIRS.items():
  blink=coords(keys['eyeBlink'+('Left' if side=='L' else 'Right')].data)
  report[side]=dict(pairs=pairs,blink_gap_m=max(abs(float(blink[i,2]-blink[j,2])) for i,j in pairs),blink_gap3d_m=max(float(np.linalg.norm(blink[i]-blink[j])) for i,j in pairs),open_gap_m=max(abs(float(p[i,2]-p[j,2])) for i,j in pairs))
 jaw=coords(keys['aa_02'].data)-p
+inserts=[m for m in meshes if m.get('c3d_toon_mouth')]
+hidden_mouth_materials=list({slot.material.name for m in root.children_recursive if m.type=='MESH' and m.get('c3d_toon_hidden_mouth') for slot in m.material_slots if slot.material})
+assert {m['c3d_toon_mouth'] for m in inserts}=={'cavity','teeth_band','tongue'}
+tongue=next(m for m in inserts if m['c3d_toon_mouth']=='tongue')
+tongue_keys=tongue.data.shape_keys.key_blocks
+tongue_travel=float(np.linalg.norm(coords(tongue_keys['tongueOut'].data)-coords(tongue_keys[0].data),axis=1).max())
+assert tongue_travel>.015*(top-chin),tongue_travel
 states=[(m,m.show_viewport) for m in body.modifiers if m.type=='MASK']
 try:
  for m,_ in states:m.show_viewport=False
@@ -73,7 +80,7 @@ try:
   visibility[state]=visible
 finally:
  _set(_face_meshes(body),dict(eyeBlinkLeft=0.,eyeBlinkRight=0.))
-result=dict(lids=report,helper_state_error=helper_state_error,visible_eye_samples=visibility,rest_face_error_m=rest_error,mouth_open_m=float(np.max(np.linalg.norm(jaw,axis=1))),height_m=float(top-min(p[:13380,2])),head_ratio=float((top-min(p[:13380,2]))/(top-chin)))
+result=dict(mouth_inserts=len(inserts),hidden_mouth_materials=hidden_mouth_materials,tongue_unit_travel_m=tongue_travel,lids=report,helper_state_error=helper_state_error,visible_eye_samples=visibility,rest_face_error_m=rest_error,mouth_open_m=float(np.max(np.linalg.norm(jaw,axis=1))),height_m=float(top-min(p[:13380,2])),head_ratio=float((top-min(p[:13380,2]))/(top-chin)))
 '''
 
 PHOTO_MOCK = '''
@@ -204,7 +211,8 @@ async def run(call, text_of):
     source_hash=hashlib.sha256(b''.join((output.parent/p).read_bytes() for p in (
         'engine/toon.py','engine/commands/toon.py','engine/toon_refine.py',
         'engine/commands/toon_refine.py','engine/commands/toon_render.py',
-        'engine/commands/render_style.py'))).hexdigest()
+        'engine/commands/render_style.py','engine/commands/mpfb.py',
+        'engine/commands/toon7_face.py','engine/commands/toon7_mouth.py'))).hexdigest()
     evidence = json.loads(checkpoint.read_text()) if resume and checkpoint.exists() else {'source_hash':source_hash}
     assert evidence.get('source_hash')==source_hash,'Checkpoint engine sources changed; run without CHAR3D_TOON_RESUME'
     for style, heads, rig in (('anime', 6.75,'game_engine'), ('cartoon',4.75,'rigify'), ('chibi',2.8,'game_engine')):
@@ -275,6 +283,26 @@ result=.92*(shin+max(0,ankle))/.515
         morphs=[m for m in gltf['meshes'] if any(p.get('targets') for p in m['primitives'])]
         assert morphs and any('eyeBlinkLeft' in m.get('extras',{}).get('targetNames',[]) for m in morphs),glb
         assert gltf.get('animations') and gltf.get('skins'),glb
+        insert_meshes=[]
+        for part in ('cavity','teeth_band','tongue'):
+            node=next(n for n in gltf['nodes'] if n.get('name','').endswith('.mouth_'+part))
+            assert 'skin' in node and 'mesh' in node,node
+            mesh=gltf['meshes'][node['mesh']]
+            assert {'jawOpen','aa_02','p_b_m_21'}<=set(mesh.get('extras',{}).get('targetNames',[])),mesh['name']
+            assert any(p.get('targets') for p in mesh['primitives']),mesh['name']
+            insert_meshes.append(mesh['name'])
+        glb['skinned_mouth_inserts']=insert_meshes
+        # Retired detailed teeth must remain absent or transparent in GLB,
+        # independently of Blender's object visibility flags.
+        used={p['material'] for m in gltf['meshes'] for p in m['primitives'] if 'material' in p}
+        hidden_materials=set(measurements['hidden_mouth_materials']);checked=[]
+        for index in used:
+            mat=gltf['materials'][index]
+            if mat.get('name') not in hidden_materials:continue
+            alpha=mat.get('pbrMetallicRoughness',{}).get('baseColorFactor',[1,1,1,1])[3]
+            assert alpha<.00001 and mat.get('alphaMode','OPAQUE') in ('MASK','BLEND'),mat
+            checked.append(mat['name'])
+        glb['transparent_dental_materials_checked']=checked
         # Check exported PNG colour encoding, independently of Blender's shader.
         material=next(m for m in gltf['materials'] if m['name'].startswith('c3d_toon.skin.'))
         texture=gltf['textures'][material['pbrMetallicRoughness']['baseColorTexture']['index']]

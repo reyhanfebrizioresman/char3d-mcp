@@ -363,8 +363,8 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
     if style!='realistic' and look is None:
         # Eye-safe variants of generic descriptors; explicit recipes keep assets.
         preferred={'bob01':'toigo_curled_under_bob','bob02':'toigo_curled_under_bob',
-                   'short01':'culturalibre_hair_02'}.get(hair)
-        fallback={'bob01':'ponytail01','bob02':'ponytail01','short01':'short04'}.get(hair)
+                   'short01':'culturalibre_hair_02','short02':'culturalibre_hair_05'}.get(hair)
+        fallback={'bob01':'ponytail01','bob02':'ponytail01','short01':'short04','short02':'short04'}.get(hair)
         replacement=preferred if preferred in cat['hair'] else fallback
         if replacement and replacement in cat['hair'] and hair in cat['hair']:
             from .toon import asset_hair_color
