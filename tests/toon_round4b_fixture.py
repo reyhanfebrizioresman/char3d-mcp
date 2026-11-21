@@ -20,7 +20,7 @@ def pigment_probe(body):
                 emission=float(bsdf.inputs['Emission Strength'].default_value) if bsdf else None)
 
 
-def matrix(root_path,phase='after',tones=TONES):
+def matrix(root_path,phase='after',tones=TONES,project_prefix='round4b'):
     from toon_round4_fixture import setup,projection
     from engine.commands.materials import _family
     from engine.commands.render import render_preview
@@ -51,7 +51,7 @@ def matrix(root_path,phase='after',tones=TONES):
                 report['cases']=[c for c in report['cases'] if (c['tone'],c['label'])!=(tone,label)]
                 report['cases'].append(record)
                 report_path.write_text(json.dumps(report,indent=2))
-            save_project(path=f'round4b/{phase}_{tone}_{body_style}.blend')
+            save_project(path=f'{project_prefix}/{phase}_{tone}_{body_style}.blend')
     return report
 
 

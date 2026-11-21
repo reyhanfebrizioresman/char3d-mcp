@@ -101,8 +101,10 @@ def stylize(body, meshes, rig, style):
         fit_proportions(body,meshes,rig,style)
     smooth_head(body)
     round_jaw(body)
+    soften_midface(body)
     fit_hair(body,meshes)
     lift_smile(body,meshes)
+    soften_face_motion(body)
     fit_mouth(body,meshes)
     fit_ankles(body,meshes)
     blink_report = calibrate_blinks(body,meshes) if body.data.shape_keys else {}
@@ -683,6 +685,63 @@ def smooth_head(body):
         data.foreach_set('co',q.astype(np.float32).ravel())
     for face in body.data.polygons:face.use_smooth=True
     body.data.update()
+
+
+def soften_midface(body):
+    """Fair the neutral depth once; preserve every native articulation delta.
+
+    Moving the lip rims with their cheek-supported plane avoids the pinned,
+    sunken mouth left by general head smoothing. X/Z and all lid-rim points
+    stay unchanged. The operation also applies to the stored mesh Basis.
+    """
+    if body.get('c3d_toon_midface_version'):
+        return
+    from ..toon_face import midface_offset
+    from ..toon import LID_PAIRS
+    p=neutral_coords(body);_,top,chin,_=anatomy(body,[]);h=top-chin
+    lids=sorted({i for pairs in LID_PAIRS.values() for pair in pairs for i in pair})
+    eye=p[[24,66,6808,6850]].mean(0)
+    from mathutils.bvhtree import BVHTree
+    faces=[list(f.vertices) for f in body.data.polygons if all(i<13380 for i in f.vertices)]
+    exterior=BVHTree.FromPolygons([Vector(v) for v in p],faces)
+    surface_y=p[:,1].copy()
+    selected=(np.arange(len(p))<13380)&(abs(p[:,0])<.29*h)&(p[:,2]>chin)&(p[:,2]<eye[2]+.15*h)&(p[:,1]<eye[1]+.08*h)
+    front=float(p[:13380,1].min()-.1*h)
+    for i in np.flatnonzero(selected):
+        hit=exterior.ray_cast(Vector((p[i,0],front,p[i,2])),Vector((0,1,0)))
+        if hit[0] is not None:surface_y[i]=min(p[i,1],hit[0].y)
+    delta=midface_offset(p,h,eye[1],eye[2],[i for pair in LIP_PAIRS for i in pair],lids,surface_y)
+    for data in [body.data.vertices]+([key.data for key in body.data.shape_keys.key_blocks] if body.data.shape_keys else []):
+        data.foreach_set('co',(coords(data)+delta).astype(np.float32).ravel())
+    body.data.update()
+    body['c3d_toon_midface_version']=2
+    body['c3d_toon_midface_max_offset_m']=float(abs(delta[:,1]).max())
+
+
+def soften_face_motion(body):
+    """Keep small toon lips on the face during native smile/vowel articulation."""
+    if body.get('c3d_toon_motion_version') or not body.data.shape_keys:return
+    from ..toon_face import midface_motion_gain
+    from ..toon import LID_PAIRS
+    from .face import ARKIT,VISEMES
+    p=neutral_coords(body);_,top,chin,_=anatomy(body,[])
+    lids=sorted({i for pairs in LID_PAIRS.values() for pair in pairs for i in pair})
+    gain=midface_motion_gain(p,top-chin,[i for pair in LIP_PAIRS for i in pair],lids)
+    keys=body.data.shape_keys.key_blocks
+    original={key.name:coords(key.data) for key in keys}
+    for key in keys:
+        if key.name not in ARKIT+VISEMES or key.name.startswith(('eye','brow')):continue
+        q=original[key.name].copy()
+        relative=original[key.relative_key.name]
+        q[:,1]+=(q[:,1]-relative[:,1])*(gain-1)
+        if key.name in ('mouthSmileLeft','mouthSmileRight'):
+            # The earlier eight-millimetre corner lift folds a tiny toon mouth
+            # into its cheek. Keep a restrained rise and lateral smile instead.
+            weight=(1-gain)/.88
+            q[:,0]+=(q[:,0]-relative[:,0])*(-.45*weight)
+            q[:,2]+=(q[:,2]-relative[:,2])*(-.75*weight)
+        key.data.foreach_set('co',q.astype(np.float32).ravel())
+    body.data.update();body['c3d_toon_motion_version']=2
 
 
 def round_jaw(body):

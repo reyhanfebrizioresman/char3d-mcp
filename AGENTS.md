@@ -209,6 +209,27 @@ The face's silhouette shell omits the internal bridge so it cannot draw a deep
 nose stroke. Rebuild existing characters for geometry, hair and texture changes;
 rerendering an old packed blend alone retains its old meshes/assets. Head render
 subdivision increases Eevee cost; exported base topology remains native HM08.
+For animated-film faces, a cheek-supported rest-depth surface rounds the nasal
+bridge/tip and supports the lips without the inherited nasolabial grooves. A
+front-surface ray query preserves the depth of hidden nostril/oral linings; every
+relative target receives the same rest offset. A common neutral-space gain then
+reduces excessive native forward/back mouth and cheek articulation, and bounds the
+smile's oversized corner pull/lift. Vowel/bilabial X/Z articulation stays native;
+eyelid rims retain their exact
+positions and blink motion. This affects stylized builds only, including their
+portable morphs; realistic geometry/materials and the global film shader stay
+unchanged. Rebuild existing characters to receive it.
+`tests/toon_round5.py` captures ab28f51-equivalent `--case before` snapshots (the
+correction is disabled only inside that test fixture), then `--case after`,
+`articulation`, `colour` and `check`. The contract covers Caucasian/Asian/African
+scans, female/male, front/three-quarter at 512 px under studio-film lighting.
+It checks projected narrow-shadow contrast in fixed nose/nasolabial ROIs,
+with a separate upper-bridge/glabella diagnostic and a retained nose-tip check,
+unchanged eyelid rims and X/Z contours, vowel/bilabial gaps, and the Round 4b colour
+contract with pixel-identical realistic references. Surface diagnostics exclude
+masked helpers and camera-occluded linings, and record adjacent-normal variation,
+signed Laplacian depth and deterministic short-range BVH occlusion. Evidence is
+under `output/toon_round5/`; use port 9971, one owned engine, workspace `output/`.
 `tests/toon_round4.py` records the lighting/colour matrix, five-angle alpha-aware
 eye visibility, 512 px facial checks, garment colour comparisons and podcast
 stills. Use only port 9971, with one owned engine at a time.
