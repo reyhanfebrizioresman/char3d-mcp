@@ -773,6 +773,10 @@ async def _mpfb_pack_checks(call):
                     assert not _outfit_warnings(a, metadata), a
                     sex = 'female' if gender == 0 else 'male'
                     assert all(metadata[n]['gender'] in ('unisex', sex) for n in a)
+                    if gender == 1:
+                        assert not any(h in n for n in a for h in ('skirt', 'ballet', 'stiletto', 'dress')), a
+                    if outfit in ('casual', 'formal', 'winter'):
+                        assert not any('short' in n for n in a), a
                     checked += 1
         empty, warnings = _outfit_clothes({}, 'winter', 1, 0)
         assert empty == [] and len(warnings) == 4

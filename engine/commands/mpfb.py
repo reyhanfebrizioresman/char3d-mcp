@@ -79,6 +79,10 @@ def _catalog():
     return out
 
 
+FEMININE_HINTS = ("skirt", "dress", "ballet", "stiletto", "heel", "bootie", "blouse",
+                  "camisole", "halter", "gogo", "overknee", "t_bar", "tbar")
+
+
 def _words(text):
     return set(re.findall(r"[a-z]+", text.lower()))
 
@@ -122,8 +126,12 @@ def _clothing_metadata(name, path):
             meta["category"] = category
             break
     words = _words(name + " " + meta["name"] + " " + " ".join(meta["tags"]))
+    text = (name + " " + meta["name"]).lower().replace("-", "_")
+    # Unmarked garments of conventionally feminine type (skirts, ballet flats, heels...)
+    # are not offered to male outfit presets; explicit clothes lists can still use them.
+    feminine = any(h in text for h in FEMININE_HINTS) or bool(words & {"bra", "panties", "bikini"})
     meta["gender"] = ("unisex" if "unisex" in words or {"male", "female"} <= words else
-                      "female" if words & {"female", "fem", "heroine"} else
+                      "female" if words & {"female", "fem", "heroine"} or feminine else
                       "male" if "male" in words else "unisex")
     return meta
 
@@ -135,7 +143,7 @@ def _outfit_clothes(metadata, outfit, gender, seed):
     eligible = {n: m for n, m in metadata.items() if m["gender"] in (sex, "unisex")}
     preferred = {
         "casual": {"top": ("t-shirt", "polo", "casual"), "bottom": ("jeans", "cargo"),
-                   "shoes": ("cloth", "sneaker", "flat" if sex == "female" else "shoes")},
+                   "shoes": ("cloth", "sneaker", "flat") if sex == "female" else ("sneaker", "shoes0")},
         "formal": {"suit": ("formal", "elegant"), "shoes": ("ankle", "flat"),
                    "top": ("shirt", "blouse"), "bottom": ("wool", "pants")},
         "sport": {"suit": ("sport",), "top": ("t-shirt", "polo", "sport"),
@@ -151,8 +159,11 @@ def _outfit_clothes(metadata, outfit, gender, seed):
         pool = sorted(n for n, m in eligible.items() if m["category"] == category)
         if not pool:
             return None
+        # Shorts belong to summer/sport looks; casual, formal and winter prefer full length.
+        short = outfit in ("casual", "formal", "winter")
         scores = {n: 10 * sum(h in (n + " " + " ".join(eligible[n]["tags"])).lower()
                               for h in preferred.get(category, ())) + (eligible[n]["gender"] == sex)
+                     - 15 * (short and category == "bottom" and "short" in n.lower())
                   for n in pool}
         best = max(scores.values())
         return rng.choice([n for n in pool if scores[n] == best])
