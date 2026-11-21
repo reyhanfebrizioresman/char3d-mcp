@@ -41,9 +41,14 @@ def stage(cast, beats=()):
         elif obj.get('c3d_prop_kind') in ('screen','laptop'):
             obj.location.z -= .255
     # Move existing chairs close enough to use the desk, maintaining their spacing.
-    for obj in root.children_recursive:
-        if obj.get('c3d_prop_kind')=='chair':
-            obj.location.y -= .6
+    # Podcast chairs (1.72 m apart) pushed seated faces to the two-shot edges.
+    inward = .72 if root.get('c3d_environment_preset')=='podcast_studio' else 1.
+    chairs = [o for o in root.children_recursive if o.get('c3d_prop_kind')=='chair']
+    anchors = {o.name: o.location.x for o in chairs if o.name==o.get('c3d_prop_group')}
+    for obj in chairs:
+        obj.location.y -= .6
+        # Shift each chair as one rigid group; never squash its parts.
+        obj.location.x += anchors.get(obj.get('c3d_prop_group'),0.)*(inward-1)
     bpy.context.view_layer.update()
     seats = [o for o in root.children_recursive if 'c3d_seat_centers' in o]
     used, rows = set(),[]

@@ -321,7 +321,9 @@ outlines off by default. Overrides restore originals for mixed casts/export.
 VRoid whole-face presets are region-masked in semantic aliases so eye reactions
 do not move lips; original targets stay intact. A temporary head-following
 normal field flattens anime face shading (ellipsoid for film), without changing
-exported normals.
+exported normals. Anime uses 0.2 of the face's horizontal normal spread so a side
+key never splits the face down the nose. Hair materials lift their shade 30% toward
+the lit colour and scale value 1.25x so black/purple clumps stay readable.
 Bone-based gaze aliases respect declared VRM inward/outward/up/down limits.
 Credits include embedded declarations; each model's licence and permission remain
 the user's responsibility. Test only on port 9976, workspace output/:
@@ -1220,7 +1222,7 @@ Other known prop kinds are created as needed. MPFB missing uses rigged
 mannequins, with timing/audio/captions and gestures but no face, hair or clothes.
 Initial dialog in podcast_studio/news_desk/office seats the cast together when no
 sit/stand/walk/enter/interact direction is authored. It adapts the standing-height desk
-to the chairs and folds microphones below the mouth, aimed toward each guest.
+to the chairs (podcast chairs move to 72% of their spacing, about 1.25 m apart) and folds microphones below the mouth, aimed toward each guest.
 Authored physical blocking and world stages retain priority. Results report `staging`.
 Hand-made `stage_dialog` in an existing desk set has the same default; `desk=False`
 keeps standing staging, and `dialog(stage=False)` preserves placement.

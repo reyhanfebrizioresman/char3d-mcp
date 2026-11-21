@@ -145,8 +145,18 @@ def material(original, style, key, owned, field=None):
     links.new(shifted,ramp.inputs[0])
     ramp.inputs['From Min'].default_value=-shift-width
     ramp.inputs['From Max'].default_value=-shift+width
+    hair='hair' in original.name.lower()
+    if hair:
+        # Near-black authored shade textures merge every clump into one mass.
+        # Inspected on Kabar studio_film/blue_hour: a 30% shade lift and 1.25x
+        # value keep black/purple hair readable; a fresnel rim greyed it.
+        toward=node('MixRGB');toward.inputs[0].default_value=.3
+        links.new(shade,toward.inputs[1]);links.new(lit,toward.inputs[2]);shade=toward.outputs[0]
     mix=node('MixRGB');links.new(ramp.outputs[0],mix.inputs[0]);links.new(shade,mix.inputs[1]);links.new(lit,mix.inputs[2])
     pigment=mix.outputs[0]
+    if hair:
+        lift=node('VectorMath');lift.operation='SCALE';links.new(pigment,lift.inputs[0]);lift.inputs['Scale'].default_value=1.25
+        pigment=lift.outputs[0]
     # Rim uses the authored Fresnel colour/power and its multiply texture.
     fresnel=node('LayerWeight')
     if field:links.new(normal,fresnel.inputs['Normal'])
