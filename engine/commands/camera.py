@@ -18,6 +18,7 @@ from . import command
 from .util import RENDERABLE, is_helper, obj_or_raise, scene_bounds
 from .occlusion import VisibilityProbe, adjusted, fit_frame, framing_targets, sample_frames, _prop, _project
 from .gaze import head_frame
+from ..framing import head_framing
 
 # shot size: (visible height as multiple of subject height, aim height fraction, lens mm)
 SHOTS = {
@@ -30,6 +31,14 @@ SHOTS = {
     "close_up": (0.24, 0.9, 85),
     "extreme_close_up": (0.14, 0.905, 100),
 }
+
+
+def _head_framing(targets, size, frac_h, aim_frac):
+    styles = set()
+    for o in targets:
+        rig = o if o.type == "ARMATURE" else o.parent if o.parent and o.parent.type == "ARMATURE" else None
+        styles.add((rig.get("c3d_style") if rig else None) or o.get("c3d_style") or "realistic")
+    return head_framing(styles, size, frac_h, aim_frac, SHOTS["medium"][0])
 
 
 def _ease(u, kind):
@@ -242,6 +251,7 @@ def camera_shot(subject=None, shot="medium", move="static", start_frame=1, end_f
 
     def design(size):
         frac_h, aim_frac, default_lens = SHOTS[size]
+        frac_h, aim_frac = _head_framing(targets, size, frac_h, aim_frac)
         base_lens = float(lens or default_lens)
         probe = VisibilityProbe(targets, size, H, None if face_coverage else angle_limits, action_line,
                                 foreground=foreground if ots else None)
