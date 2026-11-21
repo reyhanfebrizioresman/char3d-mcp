@@ -794,7 +794,7 @@ def applied_style(sc):
     try:
         if cfg['style'] in ('anime','animated_film'):
             from .toon_render import face_normal_proxies
-            normal_context=face_normal_proxies(sc)
+            normal_context=face_normal_proxies(sc,cfg['style'])
             normal_context.__enter__()
         if cfg['style'] == 'film':
             view.view_transform = 'AgX'

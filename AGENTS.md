@@ -232,7 +232,9 @@ No vertices, weights or existing shape-key names are replaced.
 Rebuild existing characters for these changes; opening an old blend retains its
 saved rest geometry and targets.
 Stylized anime/animated-film renders temporarily transfer masked custom normals
-from a head-bone-following ellipsoid. Anime skin/clothes use one key-direction
+from a head-bone-following ellipsoid (anime: vertically elongated, so normals stay
+nearly horizontal and the cel terminator follows the key's horizontal angle down the
+face edge instead of darkening the lower cheeks/jaw). Anime skin/clothes use one key-direction
 threshold, avoiding multi-light/cast-shadow camouflage; animated-film skin uses
 a broad continuous key gradient. Realistic characters keep their existing shaders.
 Hair shares its pigment response across both styles, with a soft cutout edge and

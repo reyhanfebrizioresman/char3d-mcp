@@ -7,8 +7,13 @@ from ..toon import smooth,LID_PAIRS
 
 
 @contextmanager
-def face_normal_proxies(scene):
+def face_normal_proxies(scene,style='anime'):
     """Ellipsoid CUSTOM_NORMAL transfer, masked away from articulated rims.
+
+    Anime uses a vertically elongated proxy: its normals stay nearly horizontal,
+    so the single cel terminator depends on the key's horizontal angle and runs
+    down the face edge instead of cutting a lit cheek below an elevated key.
+    Animated film keeps the head ellipsoid's top-down form gradient.
 
     Technique credit: MIT blender-agent-skills/blender-stylized-npr, supplied by
     the owner. Native Data Transfer follows the head; no reference script runs.
@@ -20,7 +25,7 @@ def face_normal_proxies(scene):
             p=neutral_coords(body);_,top,chin,_=anatomy(body,[]);h=top-chin
             head=p[:13380][(p[:13380,2]>chin)&(p[:13380,2]<top)]
             lo,hi=head.min(0),head.max(0);center=(lo+hi)*.5;radii=(hi-lo)*.5
-            center[2]=chin+.53*h;radii[2]=.56*h
+            center[2]=chin+.53*h;radii[2]=.56*h if style=='animated_film' else 4.*h
             from ..toon_refine import ellipsoid_mesh
             vertices,faces=ellipsoid_mesh(center,radii)
             mesh=bpy.data.meshes.new('__c3d_face_normal_proxy');mesh.from_pydata(vertices,[],faces);mesh.update()
