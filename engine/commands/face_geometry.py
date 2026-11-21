@@ -34,16 +34,26 @@ class FaceGeometry:
             self.sites = face_sites(rig, self.mapping, height)
         # Head-weighted body vertices scale the probe to large/stylised heads.
         # Do not include hair cards or clothing in the anatomical face width.
+        # Stylized MPFB builds also fit jawOpen onto hair/clothes and keep hidden,
+        # undeformed source brows/lashes; measure only the visible body proper.
         xs = []
         orient = rig.matrix_world.to_quaternion().inverted()
-        for obj in rig.children_recursive:
-            keys = obj.data.shape_keys if obj.type == 'MESH' else None
-            if not keys or 'jawOpen' not in keys.key_blocks:
-                continue
+        faces = [o for o in rig.children_recursive if o.type == 'MESH' and not o.hide_render
+                 and o.data.shape_keys and 'jawOpen' in o.data.shape_keys.key_blocks]
+        if rig.get('c3d_rig_type') == 'vrm':
+            from .vrm_actor import face_mesh
+            faces = [face_mesh(rig)] if face_mesh(rig) else []
+        for obj in [o for o in faces if o.get('c3d_source') == 'mpfb'] or faces:
             group = obj.vertex_groups.get(self.bone)
+            body = 13380 if obj.get('c3d_source') == 'mpfb' else len(obj.data.vertices)
+            allowed = None
+            if rig.get('c3d_rig_type') == 'vrm':
+                from .vrm_actor import face_vertex_ids
+                allowed = face_vertex_ids(obj)
             if group:
                 xs.extend((orient @ (obj.matrix_world @ v.co)).x for v in obj.data.vertices
-                          if any(g.group == group.index and g.weight > .6 for g in v.groups))
+                          if v.index < body and (allowed is None or v.index in allowed)
+                          and any(g.group == group.index and g.weight > .6 for g in v.groups))
         if xs:
             self.width = max(.025*height, (max(xs)-min(xs))*.37)
 

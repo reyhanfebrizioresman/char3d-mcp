@@ -20,6 +20,11 @@ from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+if '--vrm-actors-only' in sys.argv:
+    os.environ.setdefault('CHAR3D_PORT', '9976')
+    os.environ.setdefault('CHAR3D_WORKSPACE', os.path.join(ROOT, 'output'))
+    assert os.environ['CHAR3D_PORT']=='9976', 'VRM actors own only port 9976'
+    assert os.path.realpath(os.environ['CHAR3D_WORKSPACE'])==os.path.join(ROOT,'output')
 os.environ.setdefault("CHAR3D_PORT", "9899")  # don't collide with a running engine
 if os.environ.get('CHAR3D_PORT') == '9971':
     os.environ.setdefault('MESA_SHADER_CACHE_DIR', os.path.join(ROOT, 'output', 'mesa_cache'))
@@ -4101,6 +4106,11 @@ async def _toon_checks(call):
     await run(call, text_of)
 
 
+async def _vrm_actors_checks(call):
+    from vrm_actors_checks import run
+    await run(call, text_of)
+
+
 async def _collide_checks(call):
     from collide_checks import run
     return await run(call, text_of)
@@ -4169,6 +4179,7 @@ async def main():
             print("AUDIO E2E OK", flush=True)
             return
         for flag, section in (("--emocam-only", _emocam_checks),
+                              ("--vrm-actors-only", _vrm_actors_checks),
                               ("--toon-only", _toon_checks),
                               ("--collide-only", _collide_checks),
                               ("--interaction-only", _interaction_checks),

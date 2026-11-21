@@ -329,10 +329,16 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
     if not lines or any(not ln.get("speaker") or not (ln.get("text") or ln.get("audio")) for ln in lines):
         raise ValueError("each dialog line needs speaker and text or audio")
     cast = characters or list(dict.fromkeys(ln["speaker"] for ln in lines))
+    actors, actor_warnings = {}, []
+    if any(isinstance(c, dict) for c in cast):
+        from .vrm_actor import cast_dialog
+        from . import dispatch
+        cast, lines, actors, actor_warnings = cast_dialog(cast, lines, dispatch)
     if stage and len(cast) > 1:
         stage_dialog(cast, layout=layout, distance=distance)
     sc = bpy.context.scene
     fps, frame, turns, warnings = sc.render.fps, int(start_frame), [], []
+    warnings.extend(actor_warnings)
     for ln in lines:
         frame += round(float(ln.get("delay_s", 0)) * fps)
         base = _basemesh(ln["speaker"])
@@ -370,5 +376,11 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
                            gestures=gestures, expression=expression, body_language=body_language, life=life, seed=int(seed)+3,
                            collisions=collisions) if perform else {
                                "frames": [int(start_frame), turns[-1]["end"]], "shots": []}
+    if actors:
+        report['actors'] = actors
+        if perform:
+            from .secondary import secondary_motion
+            report['secondary_motion'] = {a['rig']:secondary_motion(a['rig'], parts=['hair','clothes'],
+                frame_start=int(start_frame), frame_end=report['frames'][1]) for a in actors.values()}
     return {**report, "lines": turns, "next_start_frame": max(frame, report["frames"][1] + 1),
             "warnings": list(dict.fromkeys(warnings + report.get('warnings', [])))}

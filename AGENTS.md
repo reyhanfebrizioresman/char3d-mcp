@@ -304,6 +304,29 @@ are measured in the isolated checks, alongside actual rendered posed meshes.
 
 ## VRM import (optional add-on)
 
+Script actors accept `{"id":"Nara","vrm":"vrm/model.vrm"}` or
+`NARA (vrm: model.vrm, perempuan, 27): Halo!`. Paths stay under imports/;
+bare names prefer imports/vrm/. Parse-only reads embedded title/author/licence
+without importing (missing/invalid metadata is unverified). Gender/age override
+voice hints; absent hints warn. Wardrobe/hair/outfit changes warn and are ignored;
+films reuse the same native actor. Never prepare or auto-rig it.
+`dialog(characters=[{"id":"Nara","vrm":"model.vrm"}, ...], lines=[...])`
+can cast directly; line speakers use the declared ids.
+Native hair/skirt spring bones bake through secondary_motion, preserving weights.
+Combined VRoid meshes use Body Skin for pelvis contact and body-proxy fitting;
+native loose-cloth chains also receive bounded scene/seat collision constraints.
+Lit VRM rendering uses authored MToon pigment/shade/rim/cutout/cull parameters,
+including style none; anime sharpens bands and animated_film softens them with
+outlines off by default. Overrides restore originals for mixed casts/export.
+VRoid whole-face presets are region-masked in semantic aliases so eye reactions
+do not move lips; original targets stay intact. A temporary head-following
+normal field flattens anime face shading (ellipsoid for film), without changing
+exported normals.
+Bone-based gaze aliases respect declared VRM inward/outward/up/down limits.
+Credits include embedded declarations; each model's licence and permission remain
+the user's responsibility. Test only on port 9976, workspace output/:
+`tests/test_vrm_actors.py`, `tests/e2e_smoke.py --vrm-actors-only`.
+
 `import_model("avatar.vrm")` supports VRM 0.x and 1.0 through the installed
 [VRM Add-on for Blender](https://vrm-addon-for-blender.info/en-us/scripting-api/).
 Missing installations report `scripts/install_vrm.sh`; runtime never downloads.
@@ -320,7 +343,8 @@ expressions, lip sync, blinks, talk motion and face life, within the model's own
 channel inventory. Bone-based VRoid eye looks are baked to gaze morphs when
 authored look expression binds are absent. Five vowels approximate consonants. Combined Blink cannot
 provide independent winks. Missing expressions are not fabricated; material/UV
-binds remain VRM metadata. Spring bones are static; VRM physics is not baked.
+binds remain VRM metadata. Native simulation stays disabled; secondary_motion
+bakes deterministic spring motion.
 Inspect facing and rig mapping after import. Keep the imported rig; do not run
 `prepare_model` (which deliberately removes rigs) or auto-rig it.
 

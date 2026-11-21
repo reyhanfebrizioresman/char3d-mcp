@@ -17,7 +17,10 @@ def _json(owner, key, default=None):
 
 def evidence(card=False):
     sc = bpy.context.scene
-    result = dict(mpfb=[], soundfonts=[], voices=[], whisper=[], fonts=[], imports=[], procedural=[])
+    result = dict(mpfb=[], vrm=[], soundfonts=[], voices=[], whisper=[], fonts=[], imports=[], procedural=[])
+    for rig in sc.objects:
+        if rig.type == 'ARMATURE' and not rig.hide_render and rig.get('c3d_rig_type') == 'vrm':
+            result['vrm'].append(dict(_json(rig, 'c3d_vrm_meta', {}), path=rig.get('c3d_import_source')))
     bodies = [o for o in sc.objects if o.get('c3d_source') == 'mpfb' and not o.hide_render]
     if bodies:
         for body in bodies:
@@ -88,7 +91,7 @@ def evidence(card=False):
             result['imports'].extend(_json(obj.animation_data.action, 'c3d_import_sources', []))
         if obj.get('c3d_import_source'):
             result['imports'].append(obj['c3d_import_source'])
-        if obj.get('c3d_role') == 'environment' or obj.get('c3d_prop_kind') or obj.get('c3d_nature_kind') or obj.get('c3d_kind') == 'humanoid' and obj.get('c3d_source') != 'mpfb':
+        if obj.get('c3d_role') == 'environment' or obj.get('c3d_prop_kind') or obj.get('c3d_nature_kind') or obj.get('c3d_kind') == 'humanoid' and obj.get('c3d_source') not in ('mpfb', 'vrm'):
             result['procedural'].append('Characters, sets, props and nature geometry')
     # Follow visible material/world references, excluding orphan image datablocks.
     images=set();trees=set()

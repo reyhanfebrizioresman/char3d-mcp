@@ -223,14 +223,18 @@ def evaluated_skin(rigs):
         bpy.context.view_layer.update()
 
 
-def _points(obj, space=None):
+def _points(obj, space=None, material_indices=None):
     ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
     mesh = ev.to_mesh()
     try:
         co = np.empty(len(mesh.vertices)*3)
         mesh.vertices.foreach_get('co', co)
+        co=co.reshape(-1,3)
+        if material_indices:
+            ids=sorted({i for p in mesh.polygons if p.material_index in material_indices for i in p.vertices})
+            if ids:co=co[ids]
         m = np.asarray((space or Matrix.Identity(4)) @ ev.matrix_world)
-        return co.reshape(-1, 3) @ m[:3, :3].T+m[:3, 3]
+        return co @ m[:3, :3].T+m[:3, 3]
     finally:
         ev.to_mesh_clear()
 
@@ -251,6 +255,12 @@ class Body:
         self.inverse = {k: m.inverted() for k, m in self.rest.items()}
         body = [o for o in bpy.context.scene.objects if o.type == 'MESH' and o.find_armature() == rig
                 and o.get('c3d_kind') == 'humanoid']
+        if rig.get('c3d_rig_type') == 'vrm':
+            body = [o for o in bpy.context.scene.objects if o.type == 'MESH' and o.find_armature() == rig
+                    and o.get('c3d_vrm_body') and not o.hide_render]
+            from .vrm_actor import face_mesh
+            face=face_mesh(rig)
+            if face is not None and face not in body:body.append(face)
         if not body:
             candidates = [o for o in bpy.context.scene.objects if o.type == 'MESH'
                           and o.find_armature() == rig and not o.hide_render]
@@ -265,7 +275,11 @@ class Body:
             for modifier, _ in masks:
                 modifier.show_viewport = False
             with evaluated_skin([rig]):
-                points = np.concatenate([_points(o, rig.matrix_world.inverted()) for o in body])
+                if rig.get('c3d_rig_type') == 'vrm':
+                    from .vrm_actor import skin_slots
+                    points = np.concatenate([_points(o,rig.matrix_world.inverted(),skin_slots(o)) for o in body])
+                else:
+                    points = np.concatenate([_points(o, rig.matrix_world.inverted()) for o in body])
         finally:
             rig.data.pose_position = mode
             for modifier, state in masks:

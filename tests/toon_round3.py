@@ -11,7 +11,7 @@ from e2e_smoke import text_of,isolate_mpfb
 OUT=ROOT/'output/toon_round3'
 
 async def run(mode,index=0,versions=(0,1)):
-    assert os.environ.get('CHAR3D_PORT')=='9971'
+    assert os.environ.get('CHAR3D_PORT') in (('9971','9976') if mode=='vrm' else ('9971',))
     OUT.mkdir(parents=True,exist_ok=True)
     params=StdioServerParameters(command=sys.executable,args=['-m','mcp_server.server'],cwd=str(ROOT),env=dict(os.environ))
     async with stdio_client(params) as (r,w),ClientSession(r,w) as session:

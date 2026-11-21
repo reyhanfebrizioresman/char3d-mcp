@@ -72,7 +72,7 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
     for scene in plan['scenes']:
         dispatch('script_to_scene', dict(script=scene['plan'], lighting=scene['lighting'], build=False, **options))
     manifest = copy.deepcopy(plan)
-    manifest.update(manifest=path, options=options, built=False, status='building')
+    manifest.update(manifest=path, options=dict(options), built=False, status='building')
     if scene_index is not None:
         if type(scene_index) is not int or not 1 <= scene_index <= len(plan['scenes']):
             raise ValueError('scene_index is one-based and must refer to an existing scene')
@@ -94,6 +94,9 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
         if scene_index is None or scene['index'] == scene_index:
             scene['status'] = 'pending'
     _write(path, manifest)
+    import tempfile
+    actor_cache = tempfile.TemporaryDirectory(prefix='vrm_cast_', dir=os.path.dirname(path))
+    options['vrm_cache'] = {'_directory': actor_cache.name}
     try:
         for scene in manifest['scenes']:
             if scene_index and scene['index'] != scene_index:
@@ -132,6 +135,9 @@ def script_to_film(script, name=None, environment=None, lighting='studio', camer
         manifest.update(status='failed', error=str(exc))
         _write(path, manifest)
         raise
+    finally:
+        actor_cache.cleanup()
+        options.pop('vrm_cache', None)
     manifest, _ = _read(plan['name'])
     return {'kind': 'film', 'built': True, 'plan': plan, 'film': manifest, 'manifest': path,
             'frames': manifest['frames'], 'duration_s': manifest['duration_s'], 'warnings': manifest['warnings']}

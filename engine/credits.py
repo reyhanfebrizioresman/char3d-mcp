@@ -15,6 +15,10 @@ def collect(evidence):
         records.append(dict(kind=kind, name=name, licence=licence, path=path, **extra))
     for asset in evidence.get('mpfb', []):
         add('MPFB', asset['name'], 'CC0', asset.get('path'), pack=asset.get('pack', 'system'))
+    for asset in evidence.get('vrm', []):
+        add('VRM', asset.get('title', 'Untitled VRM'), asset.get('licence', 'unverified'),
+            asset.get('path'), author=asset.get('author'), licence_url=asset.get('licence_url'),
+            provenance='Embedded model declarations; user is responsible for permission')
     for font in evidence.get('soundfonts', []):
         add('SoundFont', font.get('name', 'GeneralUser GS'), font.get('licence', 'GeneralUser GS licence (see licence file)'), font['path'],
             licence_file=font.get('licence_file'), sha256=font.get('sha256'))

@@ -55,6 +55,16 @@ def import_model(path):
     if ext == '.vrm':
         from .vrm import setup
         vrm = [setup(o) for o in new if o.type == 'ARMATURE']
+        import json
+        from ..vrm import metadata
+        for entry in vrm:
+            try:
+                meta = metadata(path)
+            except (OSError, ValueError, TypeError, KeyError):
+                meta = dict(status='unverified', title='unverified', author='unverified', licence='unverified')
+                entry['warnings'].append('VRM embedded licence metadata is unverified; inspect the source model')
+            bpy.data.objects[entry['armature']]['c3d_vrm_meta'] = json.dumps(meta)
+            entry['meta'] = meta
     return {
         **({'vrm':vrm} if vrm else {}),
         "path": path,
@@ -276,6 +286,9 @@ def open_project(path):
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
     bpy.ops.wm.open_mainfile(filepath=path)
+    if any(o.type == 'ARMATURE' and o.get('c3d_rig_type') == 'vrm' for o in bpy.context.scene.objects):
+        from .vrm import enable_addon
+        enable_addon()
     fixed, missing = _repair_missing_files()
     out = {"path": path, "objects": [o.name for o in bpy.context.scene.objects]}
     if fixed:

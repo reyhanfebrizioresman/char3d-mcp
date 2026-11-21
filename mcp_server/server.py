@@ -114,6 +114,7 @@ async def import_model(path: str) -> dict:
     VRM 0.x/1.0 needs VRM Add-on for Blender (scripts/install_vrm.sh); maps declared
     humanoid bones and authored face morphs for char3d animation. Keep its rig.
     VRM models carry their own licences; the user is responsible for permission.
+    Native hair/clothing springs can be baked by secondary_motion; keep its rig.
     Returns the names of the new objects and VRM mapping report when applicable."""
     return await run("import_model", path=path)
 
@@ -315,6 +316,8 @@ async def secondary_motion(character: str, parts: list[str] = ['hair'],
     Run LAST, after body motion, seating and talk_motion. parts accepts 'hair',
     'clothes' (all eligible garments), or skinned garment object/asset names.
     Geometry below the hips and away from the legs forms short cloth chain rings;
+    VRM actors reuse authored hair/clothing spring bones and collider groups,
+    preserving their weights. Results include native chain and tip-offset details.
     tight trousers/shirts skip with reasons. Original weights blend at the waist.
     Reuses bones and replaces owned keys in the inclusive range; clear=True removes
     them. stiffness/damping: 0..1; gravity >= 0; wind: world XYZ acceleration.
@@ -1692,6 +1695,11 @@ async def script_to_scene(script: dict | str, name: str | None = None,
     beats: [{say: id, text, audio?, emotion?}, {do: walk, who: id, to: [x,y]},
     {do: sit, who: id, on: chair}, {do: stand/hold/gesture/pose/look/pause, ...},
     {do: interact, who: id, with: partner, kind: handshake/hug/high_five/fist_bump/handover/pat_shoulder}]}.
+    VRM actors: {id:'Nara', vrm:'vrm/model.vrm', gender?:0, age?:27}, or
+    NARA (vrm: model.vrm, perempuan, 27): Halo! Paths stay under imports/;
+    bare names prefer imports/vrm/. Parse-only reports embedded title/author/licence
+    without importing. Gender/age are voice hints; wardrobe/hair/outfit descriptors
+    warn and are ignored. The model's licence remains the user's responsibility.
     Text contacts: [Ana dan Budi bersalaman], [mereka berpelukan], [Ana tos dengan Budi],
     [Ana memberikan buku kepada Budi], or English equivalents. Handovers create/hold a
     known procedural prop when needed. Contact keys survive later speaking gestures.
@@ -1928,7 +1936,7 @@ async def stage_dialog(characters: list[str], layout: Literal["angled", "face_to
 
 
 @mcp.tool()
-async def dialog(lines: list[dict], characters: list[str] | None = None, stage: bool = True,
+async def dialog(lines: list[dict], characters: list[str | dict] | None = None, stage: bool = True,
                  layout: Literal["angled", "face_to_face", "side_by_side"] = "angled",
                  distance: float = 1.3, start_frame: int = 1, gap_s: float = 0.35,
                  camera: Literal["directed", "emotional", "emosi", "mixed", "singles", "two_shot", "none"] = "mixed",
@@ -1940,6 +1948,8 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     """A conversation between 2-4 characters (realistic humans with faces work best), in one
     call. lines = [{"speaker": "Ana_rig", "audio": "audio/ana1.wav"},
                    {"speaker": "Budi_rig", "text": "Wah, ide yang bagus!"}, ...]
+    characters also accepts VRM dict actors {id, vrm, gender?, age?}; lines then
+    use their ids. Each actor is imported once, retaining its authored rig/look.
     — each line is lip-synced back to back (audio: local Whisper word timing, the sound goes
     on the timeline; text: mouth motion by default), gap_s apart (per line "pause_s" overrides).
     voice=True synthesizes text with tts_engine (offline Piper by default). voices maps
@@ -1967,7 +1977,10 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
     if not lines or any(not ln.get("speaker") or not (ln.get("audio") or ln.get("text")) for ln in lines):
         raise ValueError("each line needs speaker and audio or text")
     speakers = list(dict.fromkeys(ln["speaker"] for ln in lines))
-    casting = tts.cast([{"id": s} for s in speakers], tts_engine, language, seed, voices) if voice else {}
+    from engine.vrm import dialog_declarations
+    characters, actor_warnings, declared = dialog_declarations(characters)
+    hints = [dict(declared.get(s.casefold(), {}), id=s) for s in speakers]
+    casting = tts.cast(hints, tts_engine, language, seed, voices) if voice else {}
     report = {"generated_files": [], "cache_hits": 0, "warnings": [], "privacy": [], "tts_seconds": 0}
     prepared = [dict(ln) for ln in lines]
     if voice:
@@ -1985,7 +1998,7 @@ async def dialog(lines: list[dict], characters: list[str] | None = None, stage: 
                   camera=camera, shot=shot, gestures=gestures, expression=expression, language=language,
                   body_language=body_language, life=life, seed=seed, collisions=collisions)
     d.update(voices=casting, generated_files=report["generated_files"], cache_hits=report["cache_hits"])
-    d["warnings"] = list(dict.fromkeys(d.get("warnings", []) + report["warnings"]))
+    d["warnings"] = list(dict.fromkeys(actor_warnings + d.get("warnings", []) + report["warnings"]))
     d["timings"] = {"tts": report["tts_seconds"], "total": round(time.perf_counter() - started, 4)}
     if report["privacy"]:
         d["privacy"] = report["privacy"]
