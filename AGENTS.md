@@ -50,7 +50,7 @@ Keep previews ≤ 512 px unless the user asks for more.
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
   `remove_subtitles`, `add_transition`, `add_title`, `layout_overlays`, `list_graphics`, `remove_graphics`,
-  `render_options`, `render_video`, `render_status`, `cancel_render`
+  `render_options`, `render_video`, `render_status`, `cancel_render`, `resume_job`
 - Multi-scene films: `script_to_film`, `film_info`, `open_film_scene`,
   `film_render_options`, `render_film` (shared `render_status` / `cancel_render`)
 - Sets & props: `set_environment`, `add_prop`, `clear_environment`, `sit_on`, `stand_up`,
@@ -1390,19 +1390,56 @@ not measured allocations. Lower resolution cannot fix oversized geometry/texture
 480p frame remotely and records target-specific speed. Paid calibration follows the
 same quote/confirm flow. `film_render_options(..., calibrate=True)` measures the first
 saved film scene and restores the editor. First-frame cold startup makes single-frame calibration
-approximate. Remote work never updates local speed calibration.
+approximate. Each SSH target learns its own speed; explicit local fallback updates the
+normal local calibration using only frames actually rendered locally.
 
 Transfers use SHA-256 blobs; rsync/SCP send only missing or corrupt content. Windows
 SCP uses a staging folder, Python verifies SHA-256, then atomically publishes blobs.
 Interrupted SCP transfers retry the missing blob/file; they do not resume byte offsets
-as rsync does. SSH disconnects reattach to the detached worker without starting
-another render. Cancel is sent over SSH; TTL remains a fallback during disconnection.
-Completed job directories are removed; a private bounded blob cache remains (default
-`cache_bytes=1073741824`). Set a small cap to reduce retained private assets.
-`idle_timeout_s` defaults to 900; increase it for unusually slow frames. One job uses
-one Blender process at a time; `max_parallel` limits simultaneous jobs, while film
-scenes are serial. A hard host crash may require manual cleanup of the private worker
-directory. Never remove it while a worker is active.
+as rsync does. Both SSH hops use connect/alive limits. Target defaults are
+`connect_timeout_s=10`, `server_alive_interval_s=5`, `server_alive_count_max=2`,
+`rpc_timeout_s=30`, `upload_timeout_s=120`, `download_timeout_s=120`, and
+`offline_grace_s=150`; transfers and OS detection share their operation deadline.
+Timed-out transports kill only their own process group, including the jump subprocess.
+Dead SSH targets fail preflight before snapshots/queueing. A queued job rechecks target
+health instead of waiting behind a dead job with `max_parallel=1`.
+
+During failed reconnects, `render_status`/`remote_targets` expose `last_seen`,
+`offline_since`, and, after the grace, `stage="target offline since HH:MM:SS"`.
+Successful polling alone never resets the frame-progress idle deadline.
+`idle_timeout_s` defaults to 900; increase it for unusually slow frames. An independent
+watchdog records `watchdog_at` without SSH or the state lock. `wait=True` returns a
+terminal timeout/cancel even while cleanup is pending. Every stage/status change is
+timestamped in `output/remote/jobs/<id>/supervisor.log`.
+
+New jobs render atomic numbered PNGs plus an audio WAV, SHA-256 indexed and mirrored
+to `output/remote/jobs/<id>/frames_<scene>/`. Reconnect reattaches; a dead worker restarts
+only missing frames (at most three automatic restarts, without extending the attempt's
+TTL or allocating another paid instance). `resume_job(job_id, fallback=None,
+consent_upload=False)` explicitly resumes a failed/cancelled SSH snapshot with a fresh
+time allowance. It never creates/resumes rentals. The film `resume=True` clip-cache
+option keeps its original meaning. Old direct-MP4 jobs have no frame checkpoints;
+snapshots already deleted by old cleanup cannot be recovered this way.
+
+`render_video`/`render_film(..., fallback=None|"local"|"other_ssh")` require explicit
+fallback selection. After the offline grace (or dead preflight), fallback renders only
+verified missing frames at the requested engine/quality. Another SSH target needs its
+own upload consent; paid fallback is forbidden. `fallback_used`, `frame_sources`, and
+`scene_frame_sources` report source frame ranges. Captions, crossfade handles, credits,
+MP4/AAC verification and film clip-cache keys keep the same pipeline. Different GPU/CPU
+results can vary visually; fallback does not reduce quality automatically.
+
+Cancel goes only to the verified job/process identity; Windows PID + creation-time
+checks remain required. During disconnection TTL is the remote backstop, not proof of
+shutdown. `cleanup_pending=True` persists until a successful terminal/missing response
+and, for delivered jobs, cleanup acknowledgement. Detached cleanup retries when the
+target returns; `remote_targets` lists pending jobs even after `wait` returns. Legacy
+cancellation records without acknowledgements are treated as unknown/pending.
+Failed/cancelled jobs retain snapshots/checkpoints for resume; these can be large and
+are not limited by `cache_bytes`. Completed remote directories are removed; a private
+bounded blob cache remains (default `cache_bytes=1073741824`). Remove retained private
+files only after verifying no worker is active. One job uses one Blender process at a
+time; film scenes are serial. A hard disk loss can recover only mirrored frames.
 
 Troubleshooting: first verify `ssh -F ~/.ssh/config -o BatchMode=yes HOST` yourself,
 including known_hosts entries for rented host/port, then Python/rsync/Blender paths
@@ -1414,6 +1451,9 @@ two Eevee frames and a tiny two-scene film/cache check against an SSH target, us
 isolated editor port **9969**. `--loopback` uses fake SSH/rsync with real Blender workers.
 `tests/test_remote.py` runs offline fake RunPod/Vast APIs and cleanup tests;
 success prints `REMOTE UNIT OK`. No paid account or real rental is used by tests.
+`tests/test_remote_robust.py` covers hung transports/offline/watchdog/queue contracts;
+`--integration` uses real Blender for partial-frame fallback, worker restart and
+cancel/resume. Run it separately from the loopback smokes, one Blender at a time.
 
 ### Target SSH Windows (penyiapan oleh pemilik PC)
 

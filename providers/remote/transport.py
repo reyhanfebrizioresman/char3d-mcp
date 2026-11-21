@@ -9,10 +9,16 @@ import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 
 from .config import RemoteError, clean_env, validate_remote_dir
+from .process import run_bounded
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class Unreachable(RemoteError):
+    """SSH could not establish/maintain the authenticated connection."""
 
 
 def powershell_command(script):
@@ -42,13 +48,18 @@ def file_hash(path):
 class SSH:
     def __init__(self, target):
         self.target = dict(target)
+        connect = str(max(1, int(target.get('connect_timeout_s', 10))))
+        alive = str(max(1, int(target.get('server_alive_interval_s', 5))))
+        count = str(max(1, int(target.get('server_alive_count_max', 2))))
         self.options = ['-F', str(Path('~/.ssh/config').expanduser()), '-o', 'BatchMode=yes',
-                     '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=10',
-                     '-o', 'ServerAliveCountMax=3', '-o', 'StrictHostKeyChecking=yes']
+                     '-o', 'ConnectTimeout='+connect, '-o', 'ServerAliveInterval='+alive,
+                     '-o', 'ServerAliveCountMax='+count, '-o', 'StrictHostKeyChecking=yes']
         if target.get('jump_host'):
             # Explicit ProxyCommand ensures the jump also ignores /etc/ssh/config.
             jump = ['ssh', '-F', str(Path('~/.ssh/config').expanduser()), '-o', 'BatchMode=yes',
-                    '-o', 'StrictHostKeyChecking=yes', '-W', '%h:%p', target['jump_host']]
+                    '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout='+connect,
+                    '-o', 'ServerAliveInterval='+alive, '-o', 'ServerAliveCountMax='+count,
+                    '-W', '%h:%p', target['jump_host']]
             self.options += ['-o', 'ProxyCommand=' + shlex.join(jump)]
         self.args = ['ssh', *self.options]
         if target.get('port'):
@@ -58,21 +69,34 @@ class SSH:
         self.host = target['host']
 
     def _run(self, command, wire=''):
-        # Every agent action is idempotent (start returns an existing job's status), so
-        # one retry absorbs an occasional stalled relay/Windows session without a pop.
-        for attempt in range(2):
-            try:
-                return subprocess.run(self.args+[self.host, command], input=wire,
-                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60, env=clean_env())
-            except (OSError, subprocess.TimeoutExpired):
-                if attempt:
-                    raise RemoteError('SSH unavailable or timed out; job can be reattached') from None
-                time.sleep(3)
+        try:
+            return self._bounded(self.args+[self.host, command], input=wire,
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                timeout=self.remaining(self.target.get('rpc_timeout_s',30)), env=clean_env())
+        except (OSError, subprocess.TimeoutExpired):
+            raise Unreachable('Target unreachable or SSH RPC timed out; check WireGuard/VPN, jump host and SSH') from None
+
+    @staticmethod
+    def _bounded(*args, **kwargs):
+        return run_bounded(*args, **kwargs)
+
+    def remaining(self,maximum):
+        remaining=min(maximum,getattr(self,'deadline',float('inf'))-time.monotonic())
+        if remaining<=0:raise RemoteError('Transport operation deadline exceeded')
+        return remaining
+
+    @contextmanager
+    def budget(self,seconds):
+        previous=getattr(self,'deadline',float('inf'))
+        self.deadline=min(previous,time.monotonic()+seconds)
+        try:yield
+        finally:self.deadline=previous
 
     def detect_os(self):
         system = self.target.get('os', 'auto')
         if system == 'auto':
             ver = self._run('ver')
+            if ver.returncode==255:raise RemoteError('Target unreachable; check SSH and WireGuard/VPN')
             if ver.returncode == 0 and 'windows' in ver.stdout.lower():
                 system = 'windows'
             else:
@@ -89,6 +113,10 @@ class SSH:
         return system
 
     def rpc(self, action, **args):
+        with self.budget(self.target.get('rpc_timeout_s',30)):
+            return self._rpc(action,**args)
+
+    def _rpc(self, action, **args):
         system = self.detect_os()
         source = (ROOT/'engine/remote_agent.py').read_bytes()
         # Source goes over stdin, keeping the encoded command below cmd.exe's 8191
@@ -121,6 +149,8 @@ class SSH:
             with open(debug, 'a', encoding='utf-8') as log:
                 log.write(json.dumps({'action': action, 'seconds': round(time.monotonic()-began, 1),
                                       'returncode': p.returncode})+'\n')
+        if p.returncode==255:
+            raise Unreachable('Target unreachable; check SSH host key, WireGuard/VPN and jump host')
         try:
             result = json.loads(p.stdout.lstrip('\ufeff'))
         except ValueError:
@@ -130,6 +160,7 @@ class SSH:
                     log.write(json.dumps({'action': action, 'returncode': p.returncode,
                                           'stdout': p.stdout[-2000:], 'stderr': p.stderr[-2000:]})+'\n')
             raise RemoteError('SSH failed; check host key, BatchMode, config and Python 3') from None
+        if not isinstance(result,dict):raise RemoteError('Invalid SSH agent response')
         if p.returncode or result.get('rpc_error'):
             raise RemoteError('Remote command failed: '+result.get('rpc_error', 'SSH transport error'))
         return result
@@ -143,8 +174,8 @@ class SSH:
             # config parser needs a quoted User value, passed as ONE argv element.
             args += ['-o', 'User='+ps_user(self.target['user'])]
         try:
-            p = subprocess.run(args+['--', *map(str, sources), str(destination)], capture_output=True,
-                timeout=120, env=clean_env())
+            p = self._bounded(args+['--', *map(str, sources), str(destination)], capture_output=True,
+                timeout=self.remaining(self.target.get('_transfer_timeout_s',self.target.get('upload_timeout_s',120))), env=clean_env())
         except (OSError, subprocess.TimeoutExpired):
             raise RemoteError('SCP unavailable or timed out; retry missing blobs') from None
         if p.returncode:
@@ -156,15 +187,19 @@ class SSH:
 
     def rsync(self, source, dest, *extra):
         try:
-            p = subprocess.run(['rsync', '-a', '--protect-args', '--partial', *extra,
+            p = self._bounded(['rsync', '-a', '--protect-args', '--partial', *extra,
                 '-e', shlex.join(self.args), '--', source, dest], capture_output=True,
-                timeout=120, env=clean_env())
+                timeout=self.remaining(self.target.get('_transfer_timeout_s',self.target.get('upload_timeout_s',120))), env=clean_env())
         except (OSError, subprocess.TimeoutExpired):
             raise RemoteError('rsync unavailable or timed out; retry to resume') from None
         if p.returncode:
             raise RemoteError('rsync failed; check SSH access, disk space and remote rsync')
 
     def upload(self, files, blob_dir):
+        with self.budget(self.target.get('upload_timeout_s',120)):
+            return self._upload(files,blob_dir)
+
+    def _upload(self, files, blob_dir):
         blob_dir = Path(blob_dir)
         blob_dir.mkdir(parents=True, exist_ok=True)
         mapping = {}
@@ -201,12 +236,20 @@ class SSH:
         return mapping
 
     def download(self, ident, name, dest):
+        with self.budget(self.target.get('download_timeout_s',120)):
+            return self._download(ident,name,dest)
+
+    def _download(self, ident, name, dest):
         self.detect_os()
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        if self.target['os'] == 'windows':
-            self.scp([self.endpoint('jobs', ident, name)], dest)
-        else:
-            self.rsync(self.endpoint('jobs', ident, name), str(dest))
+        self.target['_transfer_timeout_s'] = self.target.get('download_timeout_s',120)
+        try:
+            if self.target['os'] == 'windows':
+                self.scp([self.endpoint('jobs', ident, name)], dest)
+            else:
+                self.rsync(self.endpoint('jobs', ident, name), str(dest))
+        finally:
+            self.target.pop('_transfer_timeout_s',None)
 
 
 def ps_user(user):

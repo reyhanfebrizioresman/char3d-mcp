@@ -73,7 +73,8 @@ def main():
             assert encoded and len(command)<8191
             req['root'] = translate(req['root'])
             if req['action']=='probe': req['blender']=os.environ['CHAR3D_LOOPBACK_BLENDER']
-            if req['action']=='start': req['spec']['blender']=os.environ['CHAR3D_LOOPBACK_BLENDER']
+            if req['action'] in ('start','resume') and req.get('spec'):
+                req['spec']['blender']=os.environ['CHAR3D_LOOPBACK_BLENDER']
             argv[0] = sys.executable
             p = subprocess.run(argv,input=json.dumps(req),text=True,capture_output=True)
             if req['action']=='probe' and not p.returncode:

@@ -8,6 +8,50 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from render_compat import check_version, memory_warning
+from remote_frames import read_index, write_index, sha256, plan, valid_png
+
+
+def render_durable(sc,spec):
+    import os
+    root=Path.cwd();index=read_index(root)
+    files=index['files'];source=spec.get('endpoint','unknown')
+    r=sc.render
+    if hasattr(r.image_settings,'media_type'):r.image_settings.media_type='IMAGE'
+    r.image_settings.file_format='PNG';r.image_settings.color_mode='RGBA'
+    r.image_settings.color_depth='8';r.use_file_extension=False
+    base_camera=sc.camera
+    markers=sorted((m for m in sc.timeline_markers if m.camera),key=lambda m:m.frame)
+    rendered=[]
+    for item in plan(spec):
+        name=item['path'];dest=root/name;record=files.get(name)
+        if dest.is_file() and ((record and sha256(dest)==record['sha256']) or
+                               (record is None and valid_png(dest,spec['size']))):
+            if record is None:
+                files[name]={**item,'sha256':sha256(dest),'source':source,'recovered':True}
+                write_index(root,index)
+            continue
+        dest.parent.mkdir(parents=True,exist_ok=True)
+        sc.frame_set(item['frame'])
+        if item['camera']:sc.camera=bpy.data.objects[item['camera']]
+        else:sc.camera=next((m.camera for m in reversed(markers) if m.frame<=item['frame']),base_camera)
+        tmp=dest.with_suffix('.part.png');r.filepath=str(tmp)
+        before=time.monotonic()
+        bpy.ops.render.render(write_still=True)
+        with open(tmp,'rb+') as stream:os.fsync(stream.fileno())
+        os.replace(tmp,dest)
+        seconds=time.monotonic()-before
+        files[name]={**item,'sha256':sha256(dest),'source':source,'seconds':seconds}
+        rendered.append(seconds);write_index(root,index)
+        print('C3D durable frame',item['channel'],item['frame'],flush=True)
+    if spec['audio'] and not ((root/'audio.wav').is_file() and files.get('audio.wav') and
+                              sha256(root/'audio.wav')==files['audio.wav']['sha256']):
+        sc.frame_start=spec['start'];sc.frame_end=spec['start']+spec['frames']-1
+        tmp=root/'audio.part.wav'
+        bpy.ops.sound.mixdown(filepath=str(tmp),container='WAV',codec='PCM',format='S16',mixrate=48000)
+        os.replace(tmp,root/'audio.wav')
+        files['audio.wav']={'sha256':sha256(root/'audio.wav'),'source':source}
+        write_index(root,index)
+    return rendered
 
 
 def estimate_memory(scene, width, height, quality):
@@ -82,18 +126,22 @@ def main(path):
     bpy.app.handlers.render_pre.append(grain)
     started = time.monotonic()
     try:
-        bpy.ops.render.render(animation=True)
+        if spec.get('durable'):
+            measured=render_durable(sc,spec)
+        else:
+            measured=[]
+            bpy.ops.render.render(animation=True)
         for marker in list(sc.timeline_markers):
             sc.timeline_markers.remove(marker)
         sc.render.ffmpeg.audio_codec = 'NONE'
-        for handle in spec.get('handles', []):
+        for handle in ([] if spec.get('durable') else spec.get('handles', [])):
             sc.frame_start, sc.frame_end = handle['frames']
             sc.camera = bpy.data.objects[handle['camera']]
             sc.render.filepath = str(Path(handle['path']).resolve())
             bpy.ops.render.render(animation=True)
     finally:
         bpy.app.handlers.render_pre.remove(grain)
-    Path('timing.json').write_text(json.dumps({'render_s': time.monotonic()-started, **info}), encoding='utf-8')
+    Path('timing.json').write_text(json.dumps({'render_s': time.monotonic()-started,'frame_seconds':measured, **info}), encoding='utf-8')
 
 
 if __name__ == '__main__':

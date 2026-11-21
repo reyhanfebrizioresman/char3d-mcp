@@ -864,7 +864,7 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
                        subtitles: bool | None = None, credits: bool = True, target: str = 'local',
                        consent_upload: bool = False, confirm_cost: bool = False,
                        quote_id: str | None = None, max_budget_usd: float | None = None,
-                       max_hours: float | None = None) -> dict:
+                       max_hours: float | None = None, fallback: str | None = None) -> dict:
     """Render the shot timeline to MP4 (H.264) in a BACKGROUND process; returns a job_id
     and an `estimate` of the render time.
     draft = clay workbench, half res (~0.1 s/frame) for checking timing/cameras;
@@ -882,13 +882,16 @@ async def render_video(path: str = "video.mp4", frame_start: int | None = None,
     target="name" uses an SSH/RunPod/Vast registry target. First upload requires
     consent_upload=True. Paid calls first return a quote without renting; repeat the
     same arguments with its quote_id and confirm_cost=True. max_budget_usd/max_hours
-    can lower target caps. Remote jobs reattach by ID after disconnection."""
+    can lower target caps. Remote jobs retain verified frames across disconnection/reboot;
+    resume_job(job_id) resumes a failed/cancelled snapshot. Optional fallback="local" or
+    an unpaid SSH target explicitly renders missing frames after the offline grace;
+    another SSH upload requires its own consent. Frame provenance is in render_status."""
     if target != 'local':
         params = dict(path=path, frame_start=frame_start, frame_end=frame_end, quality=quality,
                       resolution=resolution, vertical=vertical, width=width, height=height, fps=fps,
                       subtitles=subtitles, credits=credits)
         result = await anyio.to_thread.run_sync(lambda: remote.start('video', target, params,
-            consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours))
+            consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours,fallback=fallback))
         if wait and result.get('job_id'):
             return await anyio.to_thread.run_sync(lambda: remote.wait(result['job_id']))
         return result
@@ -1110,6 +1113,14 @@ async def cancel_render(job_id: str) -> dict:
     if job_id.startswith('remote_'):
         return await anyio.to_thread.run_sync(lambda: remote.cancel(job_id))
     return await run("cancel_render", job_id=job_id)
+
+
+@mcp.tool()
+async def resume_job(job_id: str, fallback: str | None = None, consent_upload: bool = False) -> dict:
+    """Resume a failed/cancelled SSH render from verified durable frames on the same target.
+    Optional fallback is local or another unpaid SSH target; new uploads require consent.
+    Never creates/resumes a paid instance. cleanup_pending remains truthful while offline."""
+    return await anyio.to_thread.run_sync(lambda:remote.resume_job(job_id,fallback,consent_upload))
 
 
 @mcp.tool()
@@ -1873,7 +1884,8 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
                        subtitles: bool = True, wait: bool = False, resume: bool = True,
                        credits: bool = True, target: str = 'local', consent_upload: bool = False,
                        confirm_cost: bool = False, quote_id: str | None = None,
-                       max_budget_usd: float | None = None, max_hours: float | None = None) -> dict:
+                       max_budget_usd: float | None = None, max_hours: float | None = None,
+                       fallback: str | None = None) -> dict:
     """Render saved scenes serially then compose one H.264/AAC MP4 with Blender VSE.
     Choose resolution with film_render_options first for preview/final. Scene MP4s
     include voice/music/Foley; transitions fade audio, cards have a continuous silent
@@ -1884,12 +1896,15 @@ async def render_film(name: str | None = None, path: str = "film.mp4",
     target="name" renders clips remotely and composes locally. First-target upload
     requires consent_upload=True; paid allocation requires a returned quote_id and a
     subsequent confirm_cost=True call. Caps and stop_target apply to the whole job.
+    Optional fallback="local" or an unpaid SSH target renders missing scene frames
+    after the offline grace (separate upload consent). resume_job resumes a failed or
+    cancelled remote job; resume=True above still controls the scene clip cache.
     """
     if target != 'local':
         params = dict(name=name, path=path, quality=quality, resolution=resolution, width=width,
                       height=height, vertical=vertical, subtitles=subtitles, resume=resume, credits=credits)
         result = await anyio.to_thread.run_sync(lambda: remote.start('film', target, params,
-            consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours))
+            consent_upload, confirm_cost, quote_id, max_budget_usd, max_hours,fallback=fallback))
         if wait and result.get('job_id'):
             return await anyio.to_thread.run_sync(lambda: remote.wait(result['job_id']))
         return result
