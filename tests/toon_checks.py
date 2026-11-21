@@ -201,7 +201,10 @@ async def run(call, text_of):
     # Use only when the engine sources/fixtures have not changed since checkpoint.
     checkpoint=output/'toon_checks.json'
     resume=os.environ.get('CHAR3D_TOON_RESUME')=='1'
-    source_hash=hashlib.sha256(b''.join((output.parent/p).read_bytes() for p in ('engine/toon.py','engine/commands/toon.py'))).hexdigest()
+    source_hash=hashlib.sha256(b''.join((output.parent/p).read_bytes() for p in (
+        'engine/toon.py','engine/commands/toon.py','engine/toon_refine.py',
+        'engine/commands/toon_refine.py','engine/commands/toon_render.py',
+        'engine/commands/render_style.py'))).hexdigest()
     evidence = json.loads(checkpoint.read_text()) if resume and checkpoint.exists() else {'source_hash':source_hash}
     assert evidence.get('source_hash')==source_hash,'Checkpoint engine sources changed; run without CHAR3D_TOON_RESUME'
     for style, heads, rig in (('anime', 6.75,'game_engine'), ('cartoon',4.75,'rigify'), ('chibi',2.8,'game_engine')):

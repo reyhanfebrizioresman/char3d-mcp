@@ -214,11 +214,56 @@ bridge/tip and supports the lips without the inherited nasolabial grooves. A
 front-surface ray query preserves the depth of hidden nostril/oral linings; every
 relative target receives the same rest offset. A common neutral-space gain then
 reduces excessive native forward/back mouth and cheek articulation, and bounds the
-smile's oversized corner pull/lift. Vowel/bilabial X/Z articulation stays native;
-eyelid rims retain their exact
+smile's oversized corner pull/lift. That Round 5 correction keeps vowel/bilabial
+X/Z articulation native; Round 6 replaces the mouth-contour articulation below.
+Eyelid rims retain their exact
 positions and blink motion. This affects stylized builds only, including their
 portable morphs; realistic geometry/materials and the global film shader stay
 unchanged. Rebuild existing characters to receive it.
+Round 6 adds a convex lower-face rest support shared by the body and fitted
+parts/relative targets. Narrow neutral eyelids are opened to 0.13 head heights;
+their iris atlas is centered on the opening, with the full blink recalibrated.
+Vowel rims use round A/O contours and topology-based delta diffusion through
+the lips/jaw; smiles have an explicit upward corner curve. Oral lining keeps a
+separate dark PBR material. Full-rim M/B/P closure supplements the older central
+gap probes. Four native combination morphs cancel lid squints at full blink;
+their simple drivers remain saved in Blender and are sampled in glTF animation.
+No vertices, weights or existing shape-key names are replaced.
+Rebuild existing characters for these changes; opening an old blend retains its
+saved rest geometry and targets.
+Stylized anime/animated-film renders temporarily transfer masked custom normals
+from a head-bone-following ellipsoid. Anime skin/clothes use one key-direction
+threshold, avoiding multi-light/cast-shadow camouflage; animated-film skin uses
+a broad continuous key gradient. Realistic characters keep their existing shaders.
+Hair shares its pigment response across both styles, with a soft cutout edge and
+smoothed frontal card boundaries; the authored short02 cap can still read as a
+helmet at close range. The normal proxy, modifier and vertex group are removed
+after rendering, including on failure; GLB retains the actual rest geometry and
+native morphs, without this temporary normal field. Techniques were informed by
+the owner's MIT blender-agent-skills NPR, facial-shapekeys and hair references;
+their scripts are not run by char3d.
+`tests/toon_round6.py --case before|after --resume` records matched six-person,
+three-angle, two-look/style portraits (256 px, 8 Eevee samples). The before
+fixture loads the pinned c7720c9 toon/render-style source, not current stylization.
+`--case articulation --phase before|after` checks native gaps and renders the
+mouth/blink row; `--case colour` repeats the Round 4b colour/realistic identity
+contract. Evidence and metrics are under `output/toon_round6/`; port 9971 only.
+Use `--case looks --phase before|after` for all nine cinematic presets plus
+studio; `--case hair` for the audited catalog's realistic pigment references,
+and `--case check` for sheets/contracts. `--all-characters --measure-only` with
+`articulation` compares native gaps, topology, weights, bones and contact metadata
+across the six saved builds. The lower-lid wall can still show a small crescent
+during strong squints; the backface shading guard softens it, without replacing
+the authored MPFB socket topology.
+Silhouette measurements use continuous edge-plane sections of the native control
+mesh at 35/55 degrees; reduced upper-hull deficit does not imply a perfectly convex
+rendered contour. Shadow measurements use one shared cheek/lower-jaw mask,
+excluding the union of both builds' projected eye/mouth rims and silhouette edges.
+Native camera correspondences validate its perspective replay. Broad feature-
+inclusive measurements and mask overlays remain in the evidence for inspection.
+Hair hue/saturation assertions cover the audited ponytail01/short02 assets;
+the eye-safe replacement bob additionally records its warmer PBR-highlight hue
+mismatch as a diagnostic. Anime/animated-film retain the same dark bob pigment.
 `tests/toon_round5.py` captures ab28f51-equivalent `--case before` snapshots (the
 correction is disabled only inside that test fixture), then `--case after`,
 `articulation`, `colour` and `check`. The contract covers Caucasian/Asian/African

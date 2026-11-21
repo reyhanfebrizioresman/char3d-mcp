@@ -84,6 +84,8 @@ def _input(tree, target, source):
 
 
 def _styled_material(original, cfg, engine, materials, groups, images, filtered):
+    role=original.get('c3d_toon_role') if original else None
+    if role:cfg={**cfg,'_toon_role':role}
     toon_skin=original and original.get('c3d_toon_role')=='skin'
     enhanced_skin=original and original.get('c3d_material_role')=='skin'
     if toon_skin or enhanced_skin:
@@ -130,8 +132,14 @@ def _styled_material(original, cfg, engine, materials, groups, images, filtered)
                 continue
             consumers = [link.to_socket for link in bsdf.outputs['BSDF'].links]
             if consumers:
-                if cfg.get('_toon_skin') and cfg['style'] in ('anime','animated_film'):
-                    _toon_skin_response(tree,bsdf,cfg.get('_toon_scan_style_gain',1.))
+                if (cfg.get('_toon_skin') or role=='hair') and cfg['style'] in ('anime','animated_film'):
+                    if cfg.get('_toon_skin'):
+                        _toon_skin_response(tree,bsdf,cfg.get('_toon_scan_style_gain',1.))
+                        if role=='skin':
+                            warmth=tree.nodes.new('ShaderNodeHueSaturation')
+                            warmth.inputs['Saturation'].default_value=1.04
+                            _input(tree,warmth.inputs['Color'],bsdf.inputs['Base Color'])
+                            tree.links.new(warmth.outputs[0],bsdf.inputs['Base Color'])
                     if cfg.get('_skin_aovs'):
                         color_name,mask_name=cfg['_skin_aovs']
                         color_out=tree.nodes.new('ShaderNodeOutputAOV');color_out.aov_name=color_name
@@ -345,6 +353,9 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
     """
     nodes, links = tree.nodes, tree.links
     k = cfg['strength']
+    if cfg.get('_toon_role') in ('hair','skin'):
+        from .toon_render import key_bands
+        return key_bands(tree,bsdf,cfg)
     name = name.lower()
     eye = _eye_material(name)
     if any(w in name for w in ('teeth', 'tongue', 'lash')):
@@ -540,6 +551,9 @@ def _animated_shader(tree, bsdf, cfg, name, engine):
 
 def _styled_shader(tree, bsdf, cfg, engine):
     nodes, links = tree.nodes, tree.links
+    if cfg['style']=='anime' and cfg.get('_toon_role') in ('skin','clothes','hair'):
+        from .toon_render import key_bands
+        return key_bands(tree,bsdf,cfg)
     if cfg['style'] == 'clay':
         shader = nodes.new('ShaderNodeBsdfPrincipled')
         shader.inputs['Base Color'].default_value = (0.48, 0.30, 0.20, 1)
@@ -758,7 +772,7 @@ def applied_style(sc):
     lock_pigment=all(cfg.get('grade',{}).get(k,default_grade.get(k,v))==default_grade.get(k,v)
                      for k,v in dict(saturation=1.,temperature=0.,tint=0.,teal_orange=False).items())
     if cfg['style'] in ('anime','animated_film') and lock_pigment and any(
-            slot.material and (slot.material.get('c3d_toon_role')=='skin' or slot.material.get('c3d_material_role')=='skin')
+            slot.material and (slot.material.get('c3d_toon_role') in ('skin','hair') or slot.material.get('c3d_material_role')=='skin')
             for obj in sc.objects if obj.type=='MESH' and not obj.hide_render for slot in obj.material_slots):
         names=[]
         for base,kind in (('__c3d_skin_pigment','COLOR'),('__c3d_skin_coverage','VALUE')):
@@ -772,11 +786,16 @@ def applied_style(sc):
         post={**post,'_skin_aovs':names}
     lights, helpers, worlds = [], [], []
     compositor = None
+    normal_context = None
     old_group = sc.compositing_node_group
     old_compositing = sc.render.use_compositing
     view = sc.view_settings
     saved_view = {k: getattr(view, k) for k in ('view_transform', 'look', 'exposure', 'gamma')}
     try:
+        if cfg['style'] in ('anime','animated_film'):
+            from .toon_render import face_normal_proxies
+            normal_context=face_normal_proxies(sc)
+            normal_context.__enter__()
         if cfg['style'] == 'film':
             view.view_transform = 'AgX'
             view.look = 'AgX - Medium High Contrast'
@@ -822,6 +841,9 @@ def applied_style(sc):
                     color.inputs['Value'].default_value = 1 + (gain-1)*cfg['strength']
                     _input(nt, color.inputs['Color'], node.inputs['Color'])
                     nt.links.new(color.outputs[0], node.inputs['Color'])
+        if cfg['style'] in ('anime','animated_film'):
+            from .toon_render import key_light
+            cfg={**cfg,'_toon_key':key_light(sc)}
         if cfg['style'] in ('anime', 'clay', 'animated_film') or cfg['outline']:
             cache, filtered, heads = {}, {}, {}
             black = None
@@ -873,6 +895,10 @@ def applied_style(sc):
                         nt.links.new(mix.outputs[0], nt.nodes.get('Material Output').inputs['Surface'])
                     shell = obj.copy()
                     shell.data = obj.data.copy()
+                    # Proxy normals shape lighting; hull extrusion must retain
+                    # its own reversed geometric normals and silhouette.
+                    for modifier in list(shell.modifiers):
+                        if modifier.name.startswith('__c3d_face_normals'):shell.modifiers.remove(modifier)
                     sc.collection.objects.link(shell)
                     hulls.append(shell)
                     shell.name = '__c3d_style_outline'
@@ -899,35 +925,39 @@ def applied_style(sc):
         sc.render.use_compositing = True
         yield images
     finally:
-        for layer,aov in reversed(skin_aovs):
-            layer.aovs.remove(aov)
-        for original, temporary in worlds:
-            sc.world = original
-            bpy.data.worlds.remove(temporary)
-        for obj, original in lights:
-            temporary = obj.data
-            obj.data = original
-            bpy.data.lights.remove(temporary)
-        sc.compositing_node_group = old_group
-        sc.render.use_compositing = old_compositing
-        if compositor:
-            bpy.data.node_groups.remove(compositor)
-        for key, value in saved_view.items():
-            setattr(view, key, value)
-        for shell in hulls:
-            mesh = shell.data
-            bpy.data.objects.remove(shell, do_unlink=True)
-            bpy.data.meshes.remove(mesh)
-        for slot, link, material in slots:
-            slot.material, slot.link = material, link
-        for obj, old, temporary in meshes:
-            obj.data = old
-            bpy.data.meshes.remove(temporary)
-        for mat in materials:
-            bpy.data.materials.remove(mat)
-        for group in groups:
-            bpy.data.node_groups.remove(group)
-        for img in images:
-            bpy.data.images.remove(img)
-        for obj in reversed(helpers):
-            bpy.data.objects.remove(obj, do_unlink=True)
+        try:
+            for layer,aov in reversed(skin_aovs):
+                layer.aovs.remove(aov)
+            for original, temporary in worlds:
+                sc.world = original
+                bpy.data.worlds.remove(temporary)
+            for obj, original in lights:
+                temporary = obj.data
+                obj.data = original
+                bpy.data.lights.remove(temporary)
+            sc.compositing_node_group = old_group
+            sc.render.use_compositing = old_compositing
+            if compositor:
+                bpy.data.node_groups.remove(compositor)
+            for key, value in saved_view.items():
+                setattr(view, key, value)
+            for shell in hulls:
+                mesh = shell.data
+                bpy.data.objects.remove(shell, do_unlink=True)
+                bpy.data.meshes.remove(mesh)
+            for slot, link, material in slots:
+                slot.material, slot.link = material, link
+            for obj, old, temporary in meshes:
+                obj.data = old
+                bpy.data.meshes.remove(temporary)
+            for mat in materials:
+                bpy.data.materials.remove(mat)
+            for group in groups:
+                bpy.data.node_groups.remove(group)
+            for img in images:
+                bpy.data.images.remove(img)
+            for obj in reversed(helpers):
+                bpy.data.objects.remove(obj, do_unlink=True)
+        finally:
+            if normal_context is not None:
+                normal_context.__exit__(None,None,None)

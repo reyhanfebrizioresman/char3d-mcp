@@ -102,9 +102,13 @@ def stylize(body, meshes, rig, style):
     smooth_head(body)
     round_jaw(body)
     soften_midface(body)
+    from .toon_refine import refine_rest,refine_motion,refine_hair_roots
+    refine_rest(body,meshes,rig)
+    refine_hair_roots(body,meshes)
     fit_hair(body,meshes)
     lift_smile(body,meshes)
     soften_face_motion(body)
+    refine_motion(body,meshes)
     fit_mouth(body,meshes)
     fit_ankles(body,meshes)
     blink_report = calibrate_blinks(body,meshes) if body.data.shape_keys else {}
@@ -112,11 +116,22 @@ def stylize(body, meshes, rig, style):
     if rig:
         rig['c3d_style'] = style
     calibrate_bilabials(body)
+    from .toon_refine import close_full_rim,blink_correctives
+    close_full_rim(body,meshes)
     simplify_brows(body,meshes)
     ink_lids(body,meshes)
+    # The native ribbons replace these cards completely. Alpha=0 alone can
+    # still leave Eevee AO/contact silhouettes when a squint folds the cards.
+    for part in meshes:
+        if 'eyelash' in part.get('c3d_material_part',part.name).lower() and not part.get('c3d_toon_lid_ink'):
+            part.hide_render=True
+            part.hide_viewport=True
+    blink_correctives(body,meshes)
     from ..toon_appearance import scan_pigment
     pigment,gain=scan_pigment(skin,reference)
     material_report = toon_materials(body, meshes, skin=tuple(pigment),hair=body.get('c3d_toon_requested_hair_rgb'))
+    from .toon_refine import mouth_lining
+    mouth_lining(body)
     # Native PBR/export uses the same scan correction as realistic skin. The
     # unlit/cel shaders retain half that log exposure correction, applied only
     # to temporary shader copies; photo/recipe paint has no scan compensation.
@@ -344,6 +359,11 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
             blush *= (1-smooth_front(p[:, 1], centers))*smooth((p[:,2]-chin)/(.16*h))
             # Soft cheek value modulation, without mixing a fixed pink pigment.
             colors = np.asarray(skin)[None, :]*(1+blush[:,None]*.08)
+            from .toon_refine import lip_pigment
+            seam=lip_pigment(body,p,h)
+            # Value-only definition survives dark pigments without a fixed
+            # pink lipstick mix. Native UVs retain the curve through a smile.
+            colors *= 1-.52*seam[:,None]
             colors /= np.maximum(1.,colors.max(axis=1,keepdims=True))
             tex = uv_image(obj, colors)
         elif role == 'eyes':
@@ -353,6 +373,8 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
             matrix = body.matrix_world.inverted() @ obj.matrix_world
             ep = np.array([matrix @ v.co for v in obj.data.vertices])
             _, _, _, centers = anatomy(body, meshes)
+            if body.get('c3d_toon_iris_centers'):
+                centers=json.loads(body['c3d_toon_iris_centers'])
             radius = (.085 if body.get('c3d_style')=='anime' else .095)*(top-chin)
             for loop in obj.data.loops:
                 pt = ep[loop.vertex_index]
@@ -361,6 +383,8 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
         for slot_index,slot in enumerate(obj.material_slots):
             old = slot.material
             if not old:
+                continue
+            if old.name.startswith('c3d_toon.oral_lining'):
                 continue
             mat = bpy.data.materials.new('c3d_toon.'+role+'.'+old.name)
             mat.use_nodes = True
@@ -451,8 +475,12 @@ def toon_materials(body, meshes, skin=None, hair=None, iris=None):
                             if role=='hair':
                                 from ..toon_appearance import downsample_rgba
                                 pixels=downsample_rgba(pixels,256)
-                            mask=(pixels[:,:,:3].mean(2) if separate else pixels[:,:,3])>.32
-                            rgba=np.ones_like(pixels);rgba[:,:,3]=mask.astype(np.float32)
+                            coverage=pixels[:,:,:3].mean(2) if separate else pixels[:,:,3]
+                            if role=='hair':
+                                from ..toon_refine import soften_cutout
+                                mask=soften_cutout(coverage)
+                            else:mask=(coverage>.32).astype(np.float32)
+                            rgba=np.ones_like(pixels);rgba[:,:,3]=mask
                             node.image=image('c3d_toon.clean_cutout.'+obj.name,rgba)
                         if not brow:mat['c3d_toon_cutout']=node.image
                         node.name='Opacity Texture'
@@ -785,7 +813,7 @@ def head_surface(body):
     for face in body.data.polygons:
         if any(i>=13380 for i in face.vertices):continue
         center=p[list(face.vertices)].mean(0)
-        if abs(center[0])<.23*h and center[1]<eye_y+.035*h and chin+.30*h<center[2]<top-.15*h:
+        if abs(center[0])<.26*h and center[1]<eye_y+.15*h and chin+.10*h<center[2]<top-.15*h:
             omit.append(face.index)
     # Facial ink is authored by lids/brows and the mouth contour. The expanded
     # silhouette shell must not leak a black stroke down a tiny nose bridge.

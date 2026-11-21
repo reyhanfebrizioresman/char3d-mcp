@@ -258,6 +258,8 @@ def main():
     for installer in ('install_vrm.sh','install_face_landmarks.sh'):
         result=subprocess.run(['bash',str(ROOT/'scripts'/installer),'--dry-run'],capture_output=True,text=True,check=True)
         assert 'TOON INSTALL DRY RUN OK' in result.stdout and 'Licence:' in result.stdout and 'URL:' in result.stdout
+    from test_toon_refine import main as test_refinement
+    test_refinement()
     print('TOON UNIT OK')
 
 
