@@ -5,7 +5,7 @@ import addon_utils
 import bpy
 import numpy as np
 
-from ..vrm import addon_bones, addon_expressions, bone_map, expression_map, eye_rotation_delta, face_regions
+from ..vrm import addon_bones, addon_expressions, bone_map, expression_map, eye_rotation_delta, face_regions, vroid_region_binds
 from .toon import coords
 
 INSTALL = ('VRM Add-on for Blender is required for .vrm (0.x/1.0). '
@@ -110,7 +110,8 @@ def setup(rig):
         keys = mesh.data.shape_keys.key_blocks
         basis = coords(keys[0].data)
         regions = semantic_regions(mesh, rig, source, basis)
-        for channel, binds in channels.items():
+        native = vroid_region_binds(mesh.name, keys.keys())
+        for channel, binds in {**channels, **native}.items():
             if channel in keys:
                 continue
             delta = np.zeros_like(basis)
@@ -124,7 +125,7 @@ def setup(rig):
             if matched:
                 region = ('mouth' if channel.startswith(('mouthSmile','mouthDimple','mouthFrown')) else
                           'eye' if channel.startswith('eyeWide') else 'brow' if channel.startswith('brow') else None)
-                if regions is not None and region:
+                if regions is not None and region and channel not in native:
                     delta *= regions[region][:,None]
                 key = mesh.shape_key_add(name=channel, from_mix=False)
                 key.relative_key = keys[0]

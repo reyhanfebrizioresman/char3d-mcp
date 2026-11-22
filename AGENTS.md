@@ -345,6 +345,10 @@ exported normals. Anime uses 0.2 of the face's horizontal normal spread so a sid
 key never splits the face down the nose. Hair materials lift their shade 30% toward
 the lit colour and scale value 1.25x so black/purple clumps stay readable.
 Bone-based gaze aliases respect declared VRM inward/outward/up/down limits.
+VRoid faces with per-region Fcl_EYE/BRW/MTH keys bind smile, squint, wide-eye,
+brow and frown units directly to those authored shapes (closed MTH_Fun smile with
+EYE_Joy happy eyes, BRW_Surprised, BRW_Sorrow, MTH_Sorrow); other VRMs keep masked
+presets. Rebuild/re-import the actor to receive them.
 Credits include embedded declarations; each model's licence and permission remain
 the user's responsibility. Test only on port 9976, workspace output/:
 `tests/test_vrm_actors.py`, `tests/e2e_smoke.py --vrm-actors-only`.
@@ -2297,7 +2301,8 @@ MP4. `render_frames(camera="scene")` draws them too, so check the look there fir
   `classic` (plain 1–2 line film subtitles). Tune with `position` (bottom, lower_third,
   center, top), `size`, `color` / `highlight_color` (RGB 0..1), `uppercase`, `max_words`,
   `font` (a .ttf/.otf path; default a bold system sans).
-- Captions break at sentence ends, pauses > 0.6 s and long clauses. Calling `add_subtitles`
+- Captions break at sentence ends, pauses > 0.6 s and long clauses. Two-line styles keep a
+  short sentence with the same speaker's quickly following sentence so it can be read. Calling `add_subtitles`
   again replaces the settings; `remove_subtitles` or `render_video(subtitles=False)` skips them.
 - `avoid_overlap=True` (default, also on `add_title`) measures actual glyph outlines
   and title backing boxes, reserving the current shot's face/mouth regions. Captions

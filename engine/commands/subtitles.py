@@ -142,12 +142,17 @@ def chunk_words(words, fps, style):
             chunks.append({"words": list(cur)})
             cur.clear()
 
+    # Multi-line styles keep a short sentence ("Bayu, lihat!") with the same
+    # speaker's next sentence when it follows quickly: alone it could never hold
+    # long enough to read before the next caption replaced it.
+    reading = (style.get('min_hold') or 1.5) * fps if int(style["lines"]) > 1 else 0
     for w in words:
         if cur:
             prev = cur[-1][0]
             text_len = len(" ".join(x[0].strip() for x in cur + [w]))
+            short = w[1] - cur[0][1] < reading
             if (w[1] - cur[-1][2] > 0.6 * fps or prev.endswith("\n") or len(cur) >= max_words
-                    or text_len > max_chars or SENTENCE_END.search(prev.strip())
+                    or text_len > max_chars or (SENTENCE_END.search(prev.strip()) and not short)
                     or (CLAUSE_END.search(prev.strip()) and len(cur) >= max(2, max_words // 2))):
                 flush()
         cur.append(w)

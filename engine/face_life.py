@@ -126,7 +126,9 @@ def score(start, end, fps, words=(), emotions=(), listeners=(), cuts=(), turns=(
             add('eyeWide'+side, max(0, -pitch)*.30)
         for blink in blinks:
             width = max(4, round(blink['width']*fps))
-            for side, delay in (('Left', 0), ('Right', 1)):
+            # Both lids move together: a one-frame lag read as a wink on large
+            # anime eyes (VRoid stills/video, 2026-11-22).
+            for side, delay in (('Left', 0), ('Right', 0)):
                 add('eyeBlink'+side, blink['depth']*pulse(f, blink['frame']+delay, 2, width-2))
         breath = (.5-.5*math.cos(math.tau*(f-start)/fps/3.8+phase))
         add('breath', breath*(.35 if speaking else 1.))

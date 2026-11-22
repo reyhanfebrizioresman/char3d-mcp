@@ -246,6 +246,40 @@ ALIASES = dict(a='aa', i='ih', u='ou', e='ee', o='oh', joy='happy', sorrow='sad'
                lookleft='lookLeft', lookright='lookRight')
 
 
+# VRoid faces also carry per-region authored keys (Fcl_EYE_Joy, Fcl_BRW_Sorrow,
+# Fcl_MTH_Fun...). Where present, emotion units bind straight to those designed
+# anime shapes instead of masked whole-face presets (whose smile opened the mouth
+# and whose surprise barely changed the eyes). Two sides share symmetric keys.
+VROID_REGIONS = {
+    'mouthSmileLeft': (('Fcl_MTH_Fun', .5),), 'mouthSmileRight': (('Fcl_MTH_Fun', .5),),
+    'cheekSquintLeft': (('Fcl_EYE_Joy_L', .8),), 'cheekSquintRight': (('Fcl_EYE_Joy_R', .8),),
+    'eyeSquintLeft': (('Fcl_EYE_Joy_L', .4),), 'eyeSquintRight': (('Fcl_EYE_Joy_R', .4),),
+    'eyeWideLeft': (('Fcl_EYE_Surprised', .5),), 'eyeWideRight': (('Fcl_EYE_Surprised', .5),),
+    'browInnerUp': (('Fcl_BRW_Sorrow', 1.),),
+    'browOuterUpLeft': (('Fcl_BRW_Surprised', .5),), 'browOuterUpRight': (('Fcl_BRW_Surprised', .5),),
+    'browDownLeft': (('Fcl_BRW_Angry', .5),), 'browDownRight': (('Fcl_BRW_Angry', .5),),
+    'mouthFrownLeft': (('Fcl_MTH_Sorrow', .5),), 'mouthFrownRight': (('Fcl_MTH_Sorrow', .5),),
+}
+
+
+def vroid_region_binds(mesh_name, key_names):
+    """{channel: [(mesh, key, weight)]} for authored VRoid region keys (case-insensitive suffix)."""
+    found = {}
+    for name in key_names:
+        tail = name.rsplit('_Fcl_', 1)
+        if len(tail) == 2:
+            found.setdefault('Fcl_'+tail[1].lower(), name)
+        elif name.lower().startswith('fcl_'):
+            found.setdefault(name.lower(), name)
+    result = {}
+    for channel, parts in VROID_REGIONS.items():
+        binds = [(mesh_name, found['Fcl_'+key[4:].lower()], weight) for key, weight in parts
+                 if 'Fcl_'+key[4:].lower() in found]
+        if len(binds) == len(parts):
+            result[channel] = binds
+    return result
+
+
 def expression_map(expressions):
     """{VRM preset: [(mesh, shape, weight 0..1)]} -> canonical bindings."""
     normalized = {}
