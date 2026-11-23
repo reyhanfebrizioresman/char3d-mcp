@@ -154,7 +154,8 @@ mengaktifkan fitur yang sama; default `dialog` tetap tanpa TTS.
 
 `list_voices(language="id")` menampilkan status dan perintah instalasi;
 `text_to_speech("Halo!", engine="piper")` menghasilkan WAV siap untuk
-`lip_sync_audio(..., timing="text", text="Halo!")`. Model disimpan di
+`lip_sync_audio(..., timing="text", text="Halo!")`. Pada adegan dan film Studio, suara Piper yang mendukung alignment otomatis menggerakkan bibir dari timing fonem audio. Model tanpa timing tetap memakai perkiraan dari transkrip.
+Model disimpan di
 `~/.local/share/char3d/tts/` (`CHAR3D_TTS_DIR`), cache di `output/imports/audio/tts/`.
 Tool tidak mengunduh model otomatis; saat TTS belum tersedia, adegan tetap dibangun
 dengan gerak mulut dan peringatan.

@@ -201,6 +201,7 @@ class TTS:
         imports = self.workspace / "imports"
         folder = imports / "audio" / "tts"
         path = folder / (key + ".wav")
+        timing_path = path.with_suffix(".phones.json")
         target = None
         if output:
             target = (imports / output).resolve()
@@ -223,7 +224,19 @@ class TTS:
                                       if reference else backend.synthesize(text, name, lang, rate, pitch, raw))
                     samples, sr = audio.read(raw)
                     normalized = Path(tmp) / "normalized.wav"
-                    audio.write(normalized, audio.normalize(samples, sr), sr)
+                    normalized_samples, offset = audio.normalize(samples, sr, with_offset=True)
+                    audio.write(normalized, normalized_samples, sr)
+                    if engine == 'piper':
+                        duration = len(normalized_samples)/sr
+                        timing = []
+                        for event in backend_result.get('phone_events', []):
+                            a = max(0., event['start']+offset)
+                            b = min(duration, event['end']+offset)
+                            if b > a:
+                                timing.append(dict(event,start=a,end=b))
+                        metadata = Path(tmp)/'phones.json'
+                        metadata.write_text(json.dumps(timing))
+                        os.replace(metadata, timing_path)
                     os.replace(normalized, path)
                     if engine == 'f5':
                         path.with_suffix('.json').write_text(json.dumps(backend_result, indent=2)+'\n')
@@ -236,6 +249,11 @@ class TTS:
         result = {"path": path.relative_to(imports).as_posix(), "duration_s": round(duration, 6),
                   "sample_rate": audio.SAMPLE_RATE, "engine": engine, "voice": f"{engine}:{name}",
                   "rate": rate, "pitch": pitch, "cached": cached}
+        if engine == 'piper':
+            try:
+                result['phone_events'] = json.loads(timing_path.read_text())
+            except (FileNotFoundError, ValueError):
+                result['phone_events'] = []
         if backend.online:
             result["privacy"] = backend.privacy
         if engine == 'f5':
@@ -278,6 +296,10 @@ class TTS:
                                              rate=profile["rate"], pitch=profile["pitch"])
                     line["audio"] = str(self.workspace / "imports" / result["path"])
                     line["tts_generated"] = True
+                    if result.get("phone_events"):
+                        line["phone_events"] = result["phone_events"]
+                    elif result["engine"] == "piper":
+                        warnings.append(f"{ident}: Piper phoneme timing unavailable; using transcript timing.")
                     files.append(dict(result, character=ident))
                     if result.get("privacy"):
                         privacy.append(result["privacy"])

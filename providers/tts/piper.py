@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import threading
+import unicodedata
 import wave
 from pathlib import Path
 
@@ -10,6 +11,41 @@ import numpy as np
 from .audio import pitch_shift, write
 
 DEFAULT_VOICE = "id_ID-news_tts-medium"
+
+
+# eSpeak symbols used by the installed Indonesian Piper model, plus common
+# English vowels. Unsupported models keep the existing transcript timing.
+_PHONES = {
+    **{p:p for p in 'bdfhklmnprstvwz'},
+    'a':'aa', 'ɑ':'aa', 'æ':'ae', 'ɐ':'ah', 'ʌ':'ah', 'ə':'ax', 'ɚ':'er', 'ɝ':'er',
+    'e':'eh', 'ɛ':'eh', 'i':'iy', 'ɪ':'ih', 'u':'uw', 'ʊ':'uh', 'o':'ow', 'ɔ':'ao',
+    'g':'g', 'ɡ':'g', 'ŋ':'ng', 'ɲ':'ny', 'ɾ':'r', 'ɹ':'r', 'j':'y',
+    'ʒ':'zh', 'ʃ':'sh', 'θ':'th', 'ð':'dh', 'ʔ':'q',
+}
+
+
+def _phone_timing(alignments, frames, rate):
+    if not alignments or sum(a.num_samples for a in alignments) != frames:
+        return []
+    cursor, events = 0, []
+    previous = None
+    for item in alignments:
+        symbol = item.phoneme
+        end = cursor + item.num_samples
+        phone = _PHONES.get(symbol)
+        if phone and end > cursor:
+            start = cursor/rate
+            if (previous, symbol) in (('d','ʒ'), ('t','ʃ')) and events:
+                start = events.pop()['start']
+                phone = 'jh' if symbol == 'ʒ' else 'ch'
+            events.append(dict(phoneme=phone, start=start, end=end/rate))
+        elif symbol not in ('^', '$', 'ˈ', 'ˌ', 'ː', 'ˑ') and not all(
+                ch.isspace() or unicodedata.category(ch)[0] in ('P', 'M') for ch in symbol):
+            return []
+        if symbol not in ('ˈ', 'ˌ', 'ː', 'ˑ'):
+            previous = symbol
+        cursor = end
+    return events
 
 
 class Backend:
@@ -66,7 +102,8 @@ class Backend:
         cfg = Path(str(model) + ".json")
         if not cfg.is_file():
             return "missing-config"
-        return f"{model.stat().st_size}:{model.stat().st_mtime_ns}:{cfg.read_text()}"
+        alignment = "alignment-v1" if importlib.util.find_spec("onnx") else "transcript"
+        return f"{alignment}:{model.stat().st_size}:{model.stat().st_mtime_ns}:{cfg.read_text()}"
 
     def synthesize(self, text, voice, language, rate, pitch, out_path):
         model = self.model_path(voice)
@@ -80,7 +117,7 @@ class Backend:
             key = (str(model), self.fingerprint(voice))
             if key not in self._models:
                 self._models.clear()  # one resident ONNX model on small CPU machines
-                self._models[key] = PiperVoice.load(str(model))
+                self._models[key] = PiperVoice.load(str(model), include_alignments=True)
             speaker = self._models[key]
             speaker_id = None
             if "#" in voice:
@@ -91,12 +128,12 @@ class Backend:
                 speaker_id = mapping[name]
             config = SynthesisConfig(length_scale=speaker.config.length_scale / rate, speaker_id=speaker_id)
             with wave.open(str(out_path), "wb") as wav:
-                speaker.synthesize_wav(text, wav, syn_config=config)
-        if pitch:
-            with wave.open(str(out_path), "rb") as wav:
-                sr = wav.getframerate()
-                samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2") / 32768.
-            return write(out_path, pitch_shift(samples, pitch, sr), sr)
+                alignments = speaker.synthesize_wav(text, wav, syn_config=config, include_alignments=True)
         with wave.open(str(out_path), "rb") as wav:
-            return {"path": str(out_path), "duration_s": wav.getnframes() / wav.getframerate(),
-                    "sample_rate": wav.getframerate()}
+            sr, frames = wav.getframerate(), wav.getnframes()
+            if pitch:
+                samples = np.frombuffer(wav.readframes(frames), dtype="<i2") / 32768.
+        if pitch:
+            write(out_path, pitch_shift(samples, pitch, sr), sr)
+        return {"path": str(out_path), "duration_s": frames/sr, "sample_rate": sr,
+                "phone_events": _phone_timing(alignments, frames, sr)}

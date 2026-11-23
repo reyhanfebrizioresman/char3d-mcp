@@ -381,7 +381,7 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
             if "say" in beat:
                 end = start + beat["speech_frames"] - 1
                 ln = {"speaker": characters[beat["say"]]["rig"], "start_frame": start,
-                      **{k: beat[k] for k in ("text", "audio", "words", "emotion", "body_emotion") if k in beat}}
+                      **{k: beat[k] for k in ("text", "audio", "words", "phone_events", "emotion", "body_emotion") if k in beat}}
                 lines.append(ln)
                 frame = end + 1 + round(0.35 * fps)
             elif "title" in beat:

@@ -350,7 +350,8 @@ def dialog(lines, characters=None, stage=True, layout="angled", distance=1.3,
         if face:
             if ln.get("audio"):
                 r = lip_sync_audio(ln["speaker"], ln["audio"], start_frame=frame,
-                                   words=ln.get("words"), text=ln.get("text"), language=language)
+                                   words=ln.get("words"), text=ln.get("text"), language=language,
+                                   phone_events=ln.get("phone_events"))
             else:
                 r = lip_sync(ln["speaker"], ln["text"], start_frame=frame, language=language)
             a, b = r["frames"]

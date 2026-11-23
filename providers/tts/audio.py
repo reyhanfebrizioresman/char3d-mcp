@@ -222,7 +222,7 @@ def pitch_shift(samples, semitones, sample_rate=22050, formant=None):
     return _psola(shaped, sample_rate, 2 ** (semitones / 12) / k, len(x))
 
 
-def normalize(samples, sample_rate=SAMPLE_RATE):
+def normalize(samples, sample_rate=SAMPLE_RATE, *, with_offset=False):
     x = np.nan_to_num(np.asarray(samples, dtype=np.float64), nan=0, posinf=0, neginf=0)
     if not len(x):
         raise ValueError("TTS returned empty audio")
@@ -233,7 +233,8 @@ def normalize(samples, sample_rate=SAMPLE_RATE):
     active = np.flatnonzero(envelope > max(.0003, float(envelope.max()) * .012))
     if not len(active):
         raise ValueError("TTS returned silent audio")
-    x = x[max(0, int(active[0]) * block):min(len(x), (int(active[-1]) + 1) * block)]
+    trim_start = int(active[0]) * block
+    x = x[trim_start:min(len(x), (int(active[-1]) + 1) * block)]
     voiced_rms = float(np.sqrt(np.mean(envelope[active] ** 2)))
     # Ease loud syllables toward the rest of the line before applying makeup gain.
     # Interpolated gain preserves the shape and duration of internal pauses.
@@ -248,8 +249,10 @@ def normalize(samples, sample_rate=SAMPLE_RATE):
         ramp = np.sin(np.linspace(0, np.pi / 2, fade)) ** 2
         x[:fade] *= ramp
         x[-fade:] *= ramp[::-1]
-    x = np.pad(x, (round(sample_rate * .04),) * 2)
+    padding = round(sample_rate * .04)
+    x = np.pad(x, (padding,) * 2)
     # Leave headroom for other stems and for peaks between PCM samples.
     peak = true_peak(x[:, None])
     x *= min(.12 / max(rms, 1e-9), 10 ** (-2 / 20) / max(peak, 1e-9))
-    return x.astype(np.float32)
+    result = x.astype(np.float32)
+    return (result, (padding-trim_start)/sample_rate) if with_offset else result

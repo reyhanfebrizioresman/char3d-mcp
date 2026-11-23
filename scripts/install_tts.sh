@@ -37,7 +37,7 @@ done
 for engine in "${engines[@]}"; do
   case "$engine" in
     piper)
-      "$PYTHON" -m pip install 'piper-tts>=1.8.0,<1.9'
+      "$PYTHON" -m pip install 'piper-tts[alignment]>=1.8.0,<1.9'
       mkdir -p "$TTS_DIR/piper"
       while read -r file bytes sha url; do
         [[ -z "$file" || "$file" == \#* ]] && continue

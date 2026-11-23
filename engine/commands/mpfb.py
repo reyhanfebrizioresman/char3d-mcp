@@ -229,6 +229,43 @@ def _auto_skin(skins, gender, years, race):
     return next(iter(skins), None)
 
 
+def _vary_parting(body, meshes, seed=0):
+    """Offset the crown parting slightly and let it wander, like a real parting.
+
+    A perfectly straight centre line reads as a moulded cap. The same rest offset is
+    added to every shape key, so facial/morph deltas, UVs and weights stay intact.
+    """
+    import numpy as np
+    from .materials import _role
+    side = 1. if random.Random(seed).random() < .5 else -1.
+    for obj in meshes:
+        if _role(obj, body) != 'hair' or len(obj.data.vertices) < 50:
+            continue
+        m = np.array(body.matrix_world.inverted() @ obj.matrix_world)
+        blocks = [k.data for k in obj.data.shape_keys.key_blocks] if obj.data.shape_keys else []
+        n = len(obj.data.vertices)
+        rest = np.empty(n * 3, np.float32)
+        (blocks[0] if blocks else obj.data.vertices).foreach_get('co', rest)
+        q = rest.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+        top = float(q[:, 2].max())
+        crown = q[q[:, 2] > top - .05]
+        y0, y1 = float(crown[:, 1].min()), float(crown[:, 1].max())
+        height = np.clip((q[:, 2] - (top - .075)) / .075, 0, 1) ** 1.5
+        near = np.exp(-(q[:, 0] / .022) ** 2)
+        t = (q[:, 1] - y0) / max(y1 - y0, 1e-6)
+        wave = .003 * np.sin(t * np.pi * 3.1 + .7) + .00135 * np.sin(t * np.pi * 7.3 + 2.1)
+        delta = np.zeros_like(q)
+        delta[:, 0] = (wave + .004 * side) * height * near
+        delta[:, 2] = -.0015 * height * near * np.abs(np.sin(t * np.pi * 5.2))
+        delta = (delta @ np.linalg.inv(m)[:3, :3].T).astype(np.float32)
+        for data in [obj.data.vertices] + blocks:
+            co = np.empty(n * 3, np.float32)
+            data.foreach_get('co', co)
+            data.foreach_set('co', (co.reshape(-1, 3) + delta).ravel())
+        obj['c3d_parting_offset_m'] = round(float(np.abs(delta).max()), 4)
+        obj.data.update()
+
+
 def _pick(catalog, kind, name):
     if not name:
         return None
@@ -541,6 +578,7 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         from .toon import fit_hair
         _, _, parts = _family(root.name)
         fit_hair(basemesh, parts)
+        _vary_parting(basemesh, parts, seed)
         lifts = {o.name: round(o.get('c3d_toon_fringe_lift_m', 0.), 4) for o in parts
                  if o.get('c3d_toon_fringe_lift_m')}
         if lifts:

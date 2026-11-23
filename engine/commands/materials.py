@@ -447,6 +447,16 @@ def _hair(tree, bsdf, detail, brows=False, hair_color=None, coily=False):
     _set(tree, bsdf, 'Subsurface Scale', .00025)
     if detail and not brows:
         _bump(tree, bsdf, noise.outputs['Fac'], .000018*detail, .10)
+    alpha = _source(bsdf.inputs['Alpha'])
+    if not brows and hasattr(alpha, 'node'):
+        # Faint card texels dither into a grey stipple over the neck/cheeks; drop
+        # them and firm up strand bodies, keeping a soft authored edge.
+        firm = _node(tree, 'ShaderNodeMapRange', 'hair alpha: drop faint card texels')
+        firm.inputs['From Min'].default_value = .22
+        firm.inputs['From Max'].default_value = .62
+        firm.clamp = True
+        tree.links.new(alpha, firm.inputs['Value'])
+        _set(tree, bsdf, 'Alpha', firm.outputs['Result'])
 
 
 def _fabric(tree, bsdf, kind):

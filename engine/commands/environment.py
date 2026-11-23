@@ -415,34 +415,155 @@ def _bsdf(mat):
     return next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
 
 
-def _walnut(mat):
-    """Procedural walnut: stretched wave grain over noise, satin finish; no image files."""
+def _surface_noise(mat, scale, stretch=None):
+    """Object-space texture that stays attached to the prop."""
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    bsdf = _bsdf(mat)
-    coords = nodes.new("ShaderNodeTexCoord")
-    stretch = nodes.new("ShaderNodeMapping")
-    stretch.inputs["Scale"].default_value = (0.22, 1.0, 1.0)
-    links.new(coords.outputs["Object"], stretch.inputs["Vector"])
-    grain = nodes.new("ShaderNodeTexWave")
-    grain.wave_type, grain.bands_direction = "BANDS", "Y"
-    grain.inputs["Scale"].default_value = 4.0
-    grain.inputs["Distortion"].default_value = 6.0
-    grain.inputs["Detail"].default_value = 3.0
-    grain.inputs["Detail Roughness"].default_value = 0.6
-    links.new(stretch.outputs["Vector"], grain.inputs["Vector"])
-    ramp = nodes.new("ShaderNodeValToRGB")
-    ramp.color_ramp.elements[0].color = (0.055, 0.020, 0.008, 1)
-    ramp.color_ramp.elements[1].color = (0.11, 0.048, 0.022, 1)
-    links.new(grain.outputs["Fac"], ramp.inputs["Fac"])
-    links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+    coords = nodes.new("ShaderNodeTexCoord").outputs["Object"]
+    if stretch:
+        axis = nodes.new("ShaderNodeVectorMath")
+        axis.operation = "MULTIPLY"
+        links.new(coords, axis.inputs[0])
+        axis.inputs[1].default_value = stretch
+        coords = axis.outputs[0]
+    noise = nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = scale
+    noise.inputs["Detail"].default_value = 2.5
+    links.new(coords, noise.inputs["Vector"])
+    return noise.outputs["Fac"]
+
+
+def _surface_range(mat, signal, low, high):
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    if isinstance(low, tuple):
+        node = nodes.new("ShaderNodeValToRGB")
+        node.color_ramp.elements[0].color = (*low, 1)
+        node.color_ramp.elements[1].color = (*high, 1)
+        links.new(signal, node.inputs["Fac"])
+        return node.outputs["Color"]
+    node = nodes.new("ShaderNodeMapRange")
+    node.inputs["To Min"].default_value = low
+    node.inputs["To Max"].default_value = high
+    links.new(signal, node.inputs["Value"])
+    return node.outputs[0]
+
+
+def _surface_bump(mat, signal, strength, distance):
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
     bump = nodes.new("ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 0.04
-    bump.inputs["Distance"].default_value = 0.0005
-    links.new(grain.outputs["Fac"], bump.inputs["Height"])
-    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
-    bsdf.inputs["Roughness"].default_value = 0.55
-    bsdf.inputs["Specular IOR Level"].default_value = 0.35
-    mat.diffuse_color = (0.12, 0.05, 0.02, 1)
+    bump.inputs["Strength"].default_value = strength
+    bump.inputs["Distance"].default_value = distance
+    links.new(signal, bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], _bsdf(mat).inputs["Normal"])
+
+
+def _walnut(mat):
+    """Lengthwise walnut grain, with irregular fibers and a satin finish."""
+    links = mat.node_tree.links
+    bsdf = _bsdf(mat)
+    grain = _surface_noise(mat, 1., (1.65, 48., 7.))
+    fibers = _surface_noise(mat, 1., (5.5, 166., 15.))
+    mix = mat.node_tree.nodes.new("ShaderNodeMixRGB")
+    mix.blend_type = "MULTIPLY"
+    mix.inputs[0].default_value = .28
+    links.new(grain, mix.inputs[1])
+    links.new(fibers, mix.inputs[2])
+    color = _surface_range(mat, mix.outputs[0], (.034, .012, .004), (.22, .103, .049))
+    links.new(color, bsdf.inputs["Base Color"])
+    links.new(_surface_range(mat, fibers, .54, .71), bsdf.inputs["Roughness"])
+    _surface_bump(mat, fibers, .13, .00028)
+    bsdf.inputs["Specular IOR Level"].default_value = .30
+    mat.diffuse_color = (.12, .054, .019, 1)
+
+
+def _grille_material():
+    """Crossed wires with dark openings on a cylindrical microphone capsule."""
+    mat = make_material("Podcast microphone woven grille", (.13, .135, .14), roughness=.43, metallic=.78)
+    mat["c3d_environment"] = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    xyz = nodes.new("ShaderNodeSeparateXYZ")
+    links.new(nodes.new("ShaderNodeTexCoord").outputs["Object"], xyz.inputs[0])
+
+    def op(kind, a, b=0.):
+        node = nodes.new("ShaderNodeMath")
+        node.operation = kind
+        for inp, value in zip(node.inputs, (a, b)):
+            if isinstance(value, (float, int)):
+                inp.default_value = value
+            else:
+                links.new(value, inp)
+        return node.outputs[0]
+
+    angle = op("MULTIPLY", op("ARCTAN2", xyz.outputs["Y"], xyz.outputs["X"]), 39.)
+    axial = op("MULTIPLY", xyz.outputs["Z"], 1150.)
+    diagonal_a = op("ABSOLUTE", op("SINE", op("ADD", angle, axial)))
+    diagonal_b = op("ABSOLUTE", op("SINE", op("SUBTRACT", angle, axial)))
+    weave = op("MAXIMUM", diagonal_a, diagonal_b)
+    ramp = nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = .63
+    ramp.color_ramp.elements[0].color = (.016, .017, .019, 1)
+    ramp.color_ramp.elements[1].position = .95
+    ramp.color_ramp.elements[1].color = (.32, .33, .35, 1)
+    links.new(weave, ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"], _bsdf(mat).inputs["Base Color"])
+    _surface_bump(mat, weave, .36, .00037)
+    return mat
+
+
+def _rounded_mic(obj, material):
+    """Rebuild the capsule without changing its attachment, size, or rotation."""
+    import bmesh
+    old = obj.data
+    radius = max(math.hypot(v.co.x, v.co.y) for v in old.vertices)
+    depth = max(v.co.z for v in old.vertices) - min(v.co.z for v in old.vertices)
+    mesh = bpy.data.meshes.new(old.name + " Rounded")
+    mesh["c3d_environment"] = True
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=48,
+                          radius1=radius, radius2=radius, depth=depth)
+    for face in bm.faces:
+        face.smooth = len(face.verts) == 4
+    bm.to_mesh(mesh)
+    bm.free()
+    obj.data = mesh
+    mesh.materials.append(material)
+    bevel = obj.modifiers.new("Capsule edge radius", "BEVEL")
+    bevel.width, bevel.segments = min(radius*.09, .003), 3
+    obj.modifiers.new("Capsule weighted normals", "WEIGHTED_NORMAL")
+    if not old.users:
+        bpy.data.meshes.remove(old)
+
+
+def _podcast_surface_details(objects):
+    meshes = [o for o in objects if o.type == "MESH" and not o.get("c3d_podcast_surface")]
+    microphones = [o for o in meshes if "mic_grille" in o.name or "mic_body" in o.name]
+    if microphones:
+        grille = _grille_material()
+        body = make_material("Podcast microphone anodized metal", (.036, .041, .048),
+                             roughness=.46, metallic=.76)
+        body["c3d_environment"] = True
+        _surface_bump(body, _surface_noise(body, 550.), .11, .00009)
+        for obj in microphones:
+            _rounded_mic(obj, grille if "mic_grille" in obj.name else body)
+            obj["c3d_podcast_surface"] = True
+    for obj in meshes:
+        if "mic_clamp" in obj.name:
+            _rounded_mic(obj, obj.data.materials[0])
+            obj["c3d_podcast_surface"] = True
+    for patterns, label, scale, bump in (
+        (("acoustic_panel",), "Podcast acoustic fabric", 410., .0011),
+        (("back_wall",), "Podcast painted wall", 250., .00036),
+    ):
+        surfaces = [o for o in meshes if any(k in o.name for k in patterns)]
+        if not surfaces:
+            continue
+        mat = surfaces[0].data.materials[0].copy()
+        mat.name = label
+        noise = _surface_noise(mat, scale)
+        mat.node_tree.links.new(_surface_range(mat, noise, .78, .96), _bsdf(mat).inputs["Roughness"])
+        _surface_bump(mat, noise, .26, bump)
+        for obj in surfaces:
+            obj.data.materials[0] = mat
+            obj["c3d_podcast_surface"] = True
 
 
 def _podcast_materials(b):
@@ -463,6 +584,7 @@ def _podcast_materials(b):
     for obj in b.objects:
         if obj.type == "MESH" and ("chair_seat" in obj.name or "chair_back" in obj.name):
             obj.data.materials[0] = leather
+    _podcast_surface_details(b.objects)
 
 
 def _build_set(b, preset, variant):

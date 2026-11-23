@@ -88,6 +88,24 @@ class RegistryTests(unittest.TestCase):
             changed[i] = value + 1 if isinstance(value, (int, float)) else value + "x"
             self.assertNotEqual(base, cache_key(*changed))
 
+    def test_piper_phone_timing_follows_normalized_wav_and_cache(self):
+        class AlignedBackend(FakeBackend):
+            def synthesize(self, *args):
+                result = super().synthesize(*args)
+                result["phone_events"] = [{"phoneme": "b", "start": .15, "end": .2}]
+                return result
+
+        self.service.backends["piper"] = AlignedBackend()
+        casting = self.service.cast([{"id": "Ana", "gender": 0}])
+        lines = [{"say": "Ana", "text": "Buka."}]
+        first, report = self.service.prepare(lines, casting)
+        second, cached = self.service.prepare(lines, casting)
+        self.assertEqual(first, second)
+        self.assertEqual(cached["cache_hits"], 1)
+        self.assertEqual(report["warnings"], [])
+        self.assertAlmostEqual(first[0]["phone_events"][0]["start"], .09, places=2)
+        self.assertAlmostEqual(first[0]["phone_events"][0]["end"], .14, places=2)
+
     def test_cache_normalized_reuse_and_output_boundary(self):
         backend = FakeBackend()
         self.service.backends["piper"] = backend

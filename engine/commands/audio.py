@@ -414,7 +414,7 @@ def remove_audio(name=None):
 
 @command("lip_sync_audio")
 def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, strength=0.9,
-                   add_sound=True, expression=None, volume=1.0, language=None, detail="phoneme"):
+                   add_sound=True, expression=None, volume=1.0, language=None, detail="phoneme", phone_events=None):
     """Animate visemes from an audio file (optionally with word timings or a transcript)."""
     if detail not in ("phoneme", "word"):
         raise ValueError("detail must be phoneme or word")
@@ -431,6 +431,23 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
     feat = analyze(samples, rate, fps)
     start = int(start_frame)
     n = feat["frames"]
+    aligned, timing_note = None, None
+    if phone_events and detail == "phoneme" and (words or text):
+        from ..phonemes import PHONEME_VISEMES
+        aligned, previous = [], 0.
+        for event in phone_events:
+            ph = event['phoneme']
+            a, b = float(event['start']), float(event['end'])
+            if ph not in PHONEME_VISEMES or not previous <= a < b <= feat['seconds'] + 1/fps:
+                # Unusable synthesizer timing must not abort a whole scene build.
+                aligned, timing_note = None, 'Piper phoneme timing rejected; using transcript timing'
+                break
+            previous = b
+            a, b = start+a*fps, start+b*fps
+            if ph in ('b', 'p', 'm') and math.ceil(a) >= b:
+                frame = round((a+b)/2)
+                a, b = min(a, frame-.01), max(b, frame+.01)
+            aligned.append(dict(phoneme=ph,viseme=PHONEME_VISEMES[ph],start=a,end=b))
     _clear_mouth_keys(meshes, start, start + n + 1)
     _set(meshes, {v: 0.0 for v in VISEMES}, start)
 
@@ -452,7 +469,7 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
                         start + max(0.0, min(feat["seconds"], float(w["end"]))) * fps)
                        for w in words]
         phones = key_phonemes(meshes, word_frames, start, end, fps, strength, language,
-                              lambda f: 0.45 + 0.55 * _open_at(feat, f - start))
+                              lambda f: 0.45 + 0.55 * _open_at(feat, f - start), phone_events=aligned)
         shapes = len(phones)
     elif mode in ("words", "text"):
         for w in words:
@@ -506,7 +523,8 @@ def lip_sync_audio(character, audio, start_frame=1, words=None, text=None, stren
         _strips(sc.sequence_editor)[sound["strip"]]["char3d_speaker"] = speaker.name
     sc.frame_end = max(sc.frame_end, end)
     voiced_s = float(np.sum(feat["voiced"])) / fps
-    return {"character": base.name, "mode": mode, "frames": [start, end],
+    extra = {"phone_timing": timing_note} if timing_note else {}
+    return {**extra, "character": base.name, "mode": "piper" if aligned else mode, "frames": [start, end],
             "next_start_frame": end + 1, "seconds": round(feat["seconds"], 2),
             "voiced_seconds": round(voiced_s, 2), "mouth_shapes": shapes,
             "words": len(words) if words else 0, "word_times_stored": stored,

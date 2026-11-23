@@ -116,7 +116,10 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   becomes target x texel luminance / median, so strand/root-tip variation stays; the
   highlight is softened. Realistic builds with `face=True` also lift fringe strands that
   hang over the eye window (bob01 covered one eye); `fringe_lift_m` reports the lift.
-  Other grooms are untouched. Rebuild existing characters to receive either change.
+  Other grooms are untouched. Realistic grooms also get a slightly off-centre, wandering
+  crown parting (about 4 mm side shift, 3 mm wave, side chosen by `seed`; the same rest
+  offset on every shape key, `c3d_parting_offset_m` on the hair object). Rebuild
+  existing characters to receive these changes.
 - `skin_tone="light"|"medium"|"dark"` (or linear RGB) rebalances the enhanced skin
   texture toward that tone, keeping its local features. With `race` unset and
   `skin="auto"`, it also starts from the closest scan (light caucasian, medium asian,
@@ -507,7 +510,9 @@ idempotent. Restore before changing a character's material slots/topology.
   no shadows. It is native saved data and is removed by restore/excluded from glTF.
   This is still one surface, without refractive cornea/iris or tear geometry.
   DOF naturally softens the catchlight.
-- Hair keeps authored alpha edges with Eevee DITHERED (legacy HASHED) rendering,
+- Hair keeps authored alpha edges with Eevee DITHERED (legacy HASHED) rendering;
+  head-hair alpha is remapped 0.22..0.62 -> 0..1 so faint card texels no longer
+  dither into a grey stipple over the neck/cheeks (brows/lashes keep raw alpha),
   a height-based root/tip gradient, UV strand variation, restrained sheen and thin
   scattering. Brow/lash undertones follow the hair texture. Principled anisotropy
   is used where supported; strand normals/sheens approximate it in Eevee.
@@ -1065,6 +1070,12 @@ All engines normalize to 48 kHz mono 16-bit PCM, target active RMS ~-18.4 dBFS w
 gentle syllable compression, a -2 dB true-peak ceiling, short fades and 40 ms
 silence pads. Peak limiting can reduce RMS for high-crest audio. Cache keys cover engine/version/model, voice, exact text,
 language, rate, pitch and DSP version under `imports/audio/tts/`.
+Piper with the `alignment` extra (`piper-tts[alignment]`, pulls `onnx`) also returns
+`phone_events`: eSpeak phones mapped to char3d phonemes, shifted onto the normalized
+WAV and cached beside it as `.phones.json`. Script/dialog lines pass them to
+`lip_sync_audio(..., phone_events=...)`, so mouths follow the synthesizer's own timing;
+sub-frame m/b/p keep a full closure. Without alignment support, or when the timing is
+rejected (`phone_timing` in the result), transcript timing is used with a warning.
 
 `script_to_scene(..., voice=True, tts_engine="piper")` casts deterministically per
 character from gender, age and seed. Explicit `voice`/`pitch`/`rate` override the
@@ -1277,7 +1288,10 @@ frontal camera); the eyes cover the rest, so faces stay readable in two-shots.
 Default `studio` lighting in podcast_studio becomes `podcast` (result `lighting`).
 The default podcast set uses procedural walnut, matte black hardware, dark leather
 chairs, a deep navy wall and thin LED edges on the acoustic panels (any explicit
-`color_theme` keeps the previous palette).
+`color_theme` keeps the previous palette). The walnut is lengthwise noise grain with
+fibre roughness/bump; microphones are rebuilt as 48-segment bevelled capsules with an
+anodized body and a shader woven grille (no wire geometry); panels and wall get fine
+roughness/bump noise. The grille only reads at 1080p or in close-ups.
 Podcast scenes raise realistic characters' face_life intensity 1.65x (max 2) so
 listener reactions read in held desk shots; VRM actors keep the normal intensity.
 Authored physical blocking and world stages retain priority. Results report `staging`.
