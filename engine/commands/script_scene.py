@@ -12,15 +12,25 @@ from . import command, dispatch
 from ..script_plan import parse_script
 
 
+# Generic system hair -> fuller installed pack groom (CC0) for realistic script casts.
+GENERIC_HAIR = {"bob01": "toigo_curled_under_bob", "bob02": "toigo_curled_under_bob",
+                "short01": "culturalibre_hair_02", "short02": "culturalibre_hair_05"}
+
+
 def _appearance(char, catalog, seed, warnings):
     """Resolve deferred asset names and accessories only against installed assets."""
     from .mpfb import _outfit_clothes
     from ..script_plan import CLOTHES
 
     ident = char["id"]
-    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate")}
+    args = {k: v for k, v in char.items() if k not in ("id", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "hair_generic")}
     args["seed"] = seed
     assets = catalog["assets"]
+    better = GENERIC_HAIR.get(args.get("hair"))
+    if char.get("hair_generic") and better in assets.get("hair", []) and args.get("style") in (None, "realistic") and not args.get("look"):
+        # Style words ("rambut bob/pendek") prefer the fuller installed CC0 pack grooms;
+        # the system bob01/short01 cards read as a helmet pasted on the head.
+        args["hair"] = better
     metadata = catalog.get("clothing_metadata", {})
     rng = random.Random(seed)
     additions = []
@@ -653,6 +663,10 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
                 s.get('reason', {}).get('role') == 'reaction' and s.get('subject') == r['character']
                 and s['frames'][0] <= r['peak'] <= s['frames'][1] for s in shots)]
     with timed("lighting"):
+        # The podcast set has its own warm key / cool fill / blue rim balance.
+        if lighting == "studio" and plan["environment"] == "podcast_studio":
+            lighting = "podcast"
+        result["lighting"] = lighting
         dispatch("set_lighting", {"preset": lighting, "subject": cast})
     if world_recipe is not None:
         from .world import _atmosphere
@@ -677,9 +691,11 @@ def script_to_scene(script, name=None, environment=None, lighting="studio", came
         for i, char in enumerate(characters.values()):
             if char['realistic']:
                 rig = char['rig']
+                # The podcast camera holds faces long enough for listener reactions to read.
+                intensity = min(2., life * 1.65) if plan['environment'] == 'podcast_studio' and not char.get('vrm') else life
                 result.setdefault('face_life', {})[rig] = dispatch('face_life', {
                     'character': rig, 'frame_start': 1, 'frame_end': final,
-                    'intensity': life, 'seed': seed+11*i,
+                    'intensity': intensity, 'seed': seed+11*i,
                     'listen_to': [n for n in cast if n != rig]})
     with timed("graphics"):
         words_available = any(load_words(bpy.data.objects[c["mesh"]], 1, final) for c in characters.values())

@@ -112,11 +112,33 @@ def _descriptors(text, char, warnings):
     for asset in re.findall(r"\b[\w-]*_[\w-]+\b", rest):
         char.setdefault("assets", []).append(asset)
         rest = rest.replace(asset, " ")
+    skin = re.search(
+        r"\b(?:kulit|skin)\s+(cerah|terang|putih|light|fair|sawo matang|medium|gelap|dark)\b"
+        r"|\b(light|fair|medium|dark)\s+skin\b", rest)
+    if skin:
+        tone = next(value for value in skin.groups() if value)
+        char["skin_tone"] = {
+            "cerah": "light", "terang": "light", "putih": "light", "fair": "light",
+            "sawo matang": "medium", "gelap": "dark",
+        }.get(tone, tone)
+        rest = rest[:skin.start()] + " " + rest[skin.end():]
+    colors = ((r"merah|kemerahan|red|ginger", "red"), (r"auburn|merah kecokelatan|merah kecoklatan", "auburn"),
+              (r"cokelat tua|coklat tua|dark brown", "dark_brown"), (r"cokelat|coklat|brown|brunette", "brown"),
+              (r"pirang|blonde|blond", "blonde"), (r"hitam|black", "black"),
+              (r"uban|abu-abu|abu|grey|gray|silver", "grey"))
+    for words, color in sorted(colors, key=lambda c: -len(c[0])):
+        # Only colours attached to hair: "rambut (bob) merah", "red (bob) hair".
+        hit = (re.search(r"\b(?:rambut|hair)(?:\s+[\w-]+)?\s+(?:" + words + r")\b", rest)
+               or re.search(r"\b(?:" + words + r")(?:\s+[\w-]+)?\s+hair\b", rest))
+        if hit and "hair_color" not in char:
+            char["hair_color"] = color
+            rest = rest[:hit.start()] + re.sub(r"\b(?:" + words + r")\b", " ", hit.group()) + rest[hit.end():]
     for words, asset in ((r"ponytail|ekor kuda", "ponytail01"), (r"braid|kepang", "braid01"),
                          (r"long|panjang", "long01"), (r"short|pendek", "short01"),
                          (r"bob", "bob01"), (r"afro", "afro01")):
         if re.search(r"\b(?:" + words + r")\b", rest):
             char["hair"] = asset
+            char["hair_generic"] = True  # a style word, not a catalog choice
             rest = re.sub(r"\b(?:" + words + r")\b", " ", rest)
     sex = "female" if char.get("gender", 0.5) < 0.5 else "male"
     # A literal suit keeps the original system mapping; style descriptors use
@@ -272,8 +294,9 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
         if 'vrm' not in char and ('style' in char or default_body != 'realistic'):
             char['style'] = character_style(char.get('style', default_body))
         sex = "female" if char["gender"] < 0.5 else "male"
-        if 'vrm' not in char:
-            char.setdefault("hair", "bob01" if sex == "female" else "short01")
+        if 'vrm' not in char and "hair" not in char:
+            char["hair"] = "bob01" if sex == "female" else "short01"
+            char["hair_generic"] = True
         default_clothes = [f"{sex}_casualsuit{rng.randint(1, 2):02d}", "shoes01"]
         if char.get("outfit") is not None and char["outfit"] not in OUTFITS:
             raise ValueError(f"outfit must be one of {list(OUTFITS)} or None")
@@ -303,12 +326,24 @@ def parse_script(script, name=None, environment=None, seed=0, fps=24, look=None,
                 char[key] = _number(char.get(key, default), key, low, high)
         if "materials" in char and char["materials"] not in ("enhanced", "mpfb"):
             raise ValueError("materials must be enhanced or mpfb")
-        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style", "look", "vrm", "vrm_meta"}:
+        for key in set(char) - {"id", "gender", "age", "hair", "clothes", "race", "muscle", "weight", "height", "proportions", "skin", "outfit", "beard", "assets", "accessories", "voice", "pitch", "pitch_offset", "rate", "materials", "style", "look", "vrm", "vrm_meta", "hair_color", "skin_tone", "hair_generic"}:
             warnings.append(f"{ident}: unknown character field {key!r}; ignored")
             del char[key]
         for key in ("muscle", "weight", "height", "proportions"):
             if key in char:
                 char[key] = _number(char[key], key, 0, 1)
+        if "skin_tone" in char:
+            from .materials import options
+            char["skin_tone"] = options(skin_tone=char["skin_tone"])["skin_tone"]
+        if "hair_color" in char:
+            value = char["hair_color"]
+            names = ("black", "dark_brown", "brown", "auburn", "red", "blonde", "grey")
+            if isinstance(value, str) and value not in names:
+                raise ValueError(f"hair_color must be one of {list(names)} or an sRGB triple")
+            if not isinstance(value, str):
+                if not isinstance(value, (list, tuple)) or len(value) != 3:
+                    raise ValueError("hair_color must be a name or an sRGB triple")
+                char["hair_color"] = [_number(c, "hair_color", 0, 1) for c in value]
         if "race" in char:
             if not isinstance(char["race"], dict):
                 raise ValueError("race must be a dict of ethnicity weights")

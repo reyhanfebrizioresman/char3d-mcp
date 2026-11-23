@@ -272,11 +272,56 @@ def _bake(rig, smap, initial, target, feet, front, f0, transition, standing=Fals
             "max_ik_error_m": round(error, 5)}
 
 
+def _desk_top(point, reach=0.45):
+    """Highest desk/table surface under point (world XY) within reach below/above it."""
+    best = None
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or obj.get("c3d_prop_kind") not in ("desk", "table") or not obj.visible_get():
+            continue
+        corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+        xs, ys = [c.x for c in corners], [c.y for c in corners]
+        if not (min(xs) + 0.03 <= point.x <= max(xs) - 0.03 and min(ys) + 0.03 <= point.y <= max(ys) - 0.03):
+            continue
+        top = max(c.z for c in corners)
+        if abs(top - point.z) < reach and (best is None or top > best):
+            best = top
+    return best
+
+
+def _flat_hand(palm, fingers):
+    """World hand-bone rotation with bone +Y along fingers and the palm facing down."""
+    from mathutils import Matrix
+    y = Vector((0, 1, 0))
+    p = (palm - y*palm.dot(y)).normalized()
+    local = Matrix((y, p, y.cross(p))).transposed()
+    f = Vector((fingers.x, fingers.y, 0)).normalized()
+    n = Vector((0, 0, -1))
+    world = Matrix((f, n, f.cross(n))).transposed()
+    return (world @ local.transposed()).to_quaternion()
+
+
+def _desk_rest(rig, smap, side, sign, front, left):
+    """Palm target resting on the desk in front of a seated shoulder, or None."""
+    mw = rig.matrix_world
+    upper, fore = (rig.pose.bones[smap[f"{b}.{side}"]] for b in ("upper_arm", "forearm"))
+    shoulder = (mw @ upper.matrix).translation
+    length = (upper.bone.length + fore.bone.length) * mw.to_scale().x
+    for ahead in (0.50, 0.46, 0.42, 0.36, 0.30):
+        p = shoulder + front * ahead * length / 0.55 - left * sign * 0.05
+        top = _desk_top(Vector((p.x, p.y, shoulder.z - 0.35)))
+        if top is None:
+            continue
+        p.z = top + 0.03
+        if (p - shoulder).length < 0.96 * length:
+            return p
+    return None
+
+
 @command("sit_on")
 def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0, hands="thighs", collisions=True):
     started = time.perf_counter()
-    if hands not in ("thighs", "lap", "armrests", "none"):
-        raise ValueError("hands must be thighs, lap, armrests or none")
+    if hands not in ("thighs", "lap", "armrests", "desk", "none"):
+        raise ValueError("hands must be thighs, lap, armrests, desk or none")
     rig = _rig_of(character)
     bpy.context.view_layer.update()
     center, front, floor, arms = _seat(seat, seat_index)
@@ -304,12 +349,13 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
         m2.translation = m.translation
         pose[b] = m2
     _put(rig, smap, pose)
-    # A small recline, independent of rig-local bone roll.
+    # A small recline (or desk lean), independent of rig-local bone roll.
     spine = smap.get("spine") or smap.get("chest")
     if spine:
         pb = rig.pose.bones[spine]
         left = Vector((-front.y, front.x, 0))
-        anim._set_world_rot(rig, pb, Quaternion(left, math.radians(-5)) @
+        # Lean onto a desk (shoulders come forward over it); otherwise recline.
+        anim._set_world_rot(rig, pb, Quaternion(left, math.radians(9 if hands == "desk" else -5)) @
                             (rig.matrix_world @ pb.matrix).to_quaternion())
         bpy.context.view_layer.update()
     for _ in range(12):
@@ -332,6 +378,10 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
         for s, sign in (("L", 1), ("R", -1)):
             H = (rig.matrix_world @ rig.pose.bones[smap[f"thigh.{s}"]].matrix).translation
             p = H+front*(0.22 if hands == "thighs" else 0.12)+Vector((0, 0, 0.10))
+            pole = left*sign-front*0.2
+            rest = _desk_rest(rig, smap, s, sign, front, left) if hands == "desk" else None
+            if rest is not None:
+                p, pole = rest, left*sign*0.7-front*0.35-Vector((0, 0, 0.9))
             if hands == "lap":
                 p -= left*sign*0.07
             if hands == "armrests":
@@ -342,10 +392,13 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
             q = (rig.matrix_world @ hand.matrix).to_quaternion()
             from .fingers import HandRig
             palm = HandRig(rig).palm_local(s, hand.name)
-            if palm is not None:
+            if palm is not None and rest is not None:
+                # Flat on the desk: palm down, fingers forward and slightly inward.
+                q = _flat_hand(palm, (front - left*sign*0.3).normalized())
+            elif palm is not None:
                 q = (q @ palm).rotation_difference(Vector((0, 0, -1))) @ q
             _chain(rig, [smap[f"{b}.{s}"] for b in ("upper_arm", "forearm", "hand")],
-                   p, left*sign-front*0.2, q)
+                   p, pole, q)
     if hands == "none":
         for n, basis in arm_basis.items():
             rig.pose.bones[n].matrix_basis = basis

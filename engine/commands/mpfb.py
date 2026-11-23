@@ -323,7 +323,8 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
                            hair=None, eyebrows="eyebrow001", eyelashes="eyelashes01",
                            eyes="high-poly", clothes=None, rig="game_engine",
                            subdiv=0, location=(0, 0, 0), face=True, beard=None,
-                           outfit=None, seed=0, materials="enhanced", style=None, look=None):
+                           outfit=None, seed=0, materials="enhanced", style=None, look=None,
+                           hair_color=None, skin_tone=None):
     """Build a realistic human with MPFB. gender 0=female..1=male; age in years;
     muscle/weight/height/proportions 0..1 (0.5 = average); race weights dict."""
     from ..materials import options
@@ -375,10 +376,20 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         raise ValueError(f"outfit must be one of {list(OUTFITS)} or None")
     if not cat["skins"]:
         raise RuntimeError("MakeHuman system assets are not installed (README: 'MPFB').")
+    tone_scan = None
+    if skin_tone is not None:
+        skin_tone = options(skin_tone=skin_tone)["skin_tone"]
+        if not race and skin == "auto":
+            # A mixed default phenotype would pick the first (darkest) scan; brightening
+            # it reads orange. Start from the scan nearest the requested tone instead.
+            from ..materials import TONES, luminance
+            y = luminance(skin_tone) if not isinstance(skin_tone, str) else TONES[skin_tone]["luminance"]
+            tone_scan = "african" if y < .14 else "asian" if y < .35 else "caucasian"
     race = race or {"caucasian": 1 / 3, "african": 1 / 3, "asian": 1 / 3}
     tot = sum(race.values()) or 1.0
     race = {k: float(race.get(k, 0)) / tot for k in ("african", "asian", "caucasian")}
-    skin_name = _auto_skin(cat["skins"], gender, age, race) if skin == "auto" else skin
+    skin_name = (_auto_skin(cat["skins"], gender, age, {tone_scan: 1.} if tone_scan else race)
+                 if skin == "auto" else skin)
     metadata = {n: _clothing_metadata(n, p) for n, p in cat["clothes"].items()}
     warnings = []
     chosen = list(clothes) if clothes is not None else []
@@ -523,14 +534,32 @@ def create_realistic_human(name="Person", gender=0.5, age=25, muscle=0.5, weight
         "parts": sorted(o.name for o in new if o.type == "MESH" and o is not basemesh),
     })
     if hair_adjustment:result['warnings'].append(hair_adjustment)
+    if style == "realistic" and face and hair:
+        # Lift only fringe strands over the eye window (e.g. bob01 covers one eye);
+        # other grooms have nothing there and stay untouched.
+        from .materials import _family
+        from .toon import fit_hair
+        _, _, parts = _family(root.name)
+        fit_hair(basemesh, parts)
+        lifts = {o.name: round(o.get('c3d_toon_fringe_lift_m', 0.), 4) for o in parts
+                 if o.get('c3d_toon_fringe_lift_m')}
+        if lifts:
+            result["fringe_lift_m"] = lifts
     if style != "realistic":
         result["materials"] = result["stylized"]["materials"]
         result["recommended_render_style"] = "anime"
     elif materials == "enhanced":
         from .materials import upgrade_materials
-        result["materials"] = upgrade_materials(root.name)
+        result["materials"] = upgrade_materials(root.name, skin_tone=skin_tone)
     else:
         result["materials"] = {"quality": "mpfb", "materials_cost_factor": 1.}
+    if hair_color is not None:
+        from .materials import _family, hair_rgb, tint_hair
+        rgb = hair_rgb(hair_color)
+        if style != "realistic":
+            result["warnings"].append("hair_color applies to realistic characters only; ignored")
+        else:
+            result["hair_color"] = {"srgb": list(rgb), "materials": tint_hair(basemesh, _family(root.name)[2], rgb)}
     if look is not None:
         from .looks import apply_look,asset_traits
         from .materials import _family

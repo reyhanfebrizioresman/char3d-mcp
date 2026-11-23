@@ -1960,8 +1960,10 @@ async def _script_appearance_checks(call):
     before = await data("scene_info")
     expected = {"name": "ScriptScene", "title": None, "environment": None,
                 "characters": [
-                    {"id": "Ana", "gender": 0., "age": 28., "hair": "bob01", "outfit": "summer"},
-                    {"id": "Budi", "gender": 1., "age": 35., "hair": "short01", "outfit": "casual",
+                    {"id": "Ana", "gender": 0., "age": 28., "hair": "bob01", "hair_generic": True,
+                     "outfit": "summer"},
+                    {"id": "Budi", "gender": 1., "age": 35., "hair": "short01", "hair_generic": True,
+                     "outfit": "casual",
                      "beard": True, "accessories": ["glasses", "hat"]}],
                 "beats": [{"say": "Ana", "text": "Halo.", "estimated_frames": [1, 12]},
                           {"say": "Budi", "text": "Ya.", "estimated_frames": [21, 28]}],
@@ -1990,7 +1992,7 @@ async def _script_appearance_checks(call):
     pack_text = (await data("script_to_scene", build=False,
                  script="Ana (female, toigo_inverted_bob, toigo_shift_dress): Hi."))["plan"]
     assert pack_text["characters"] == [{"id": "Ana", "gender": 0., "age": 28., "hair": "bob01",
-                                       "assets": ["toigo_inverted_bob", "toigo_shift_dress"]}], pack_text
+                                       "hair_generic": True, "assets": ["toigo_inverted_bob", "toigo_shift_dress"]}], pack_text
     assert await data("scene_info") == before, "appearance parse mutated scene"
 
     # Strip only optional assets in the engine's real catalog; the real outfit

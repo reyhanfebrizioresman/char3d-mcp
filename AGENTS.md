@@ -111,6 +111,17 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   `toigo_light_skin_female_freckles`, `toigo_light_skin_male_ginger`;
   `skin="auto"` keeps the system age/gender/ethnicity matches. Alternatives include
   eyebrows `eyebrow001`, `eyebrow012` and eyelashes `eyelashes01`, `eyelashes04`.
+- `hair_color="auburn"` (black, dark_brown, brown, auburn, red, blonde, grey or an sRGB
+  triple) tints realistic hair and brows on private material copies. Base colour
+  becomes target x texel luminance / median, so strand/root-tip variation stays; the
+  highlight is softened. Realistic builds with `face=True` also lift fringe strands that
+  hang over the eye window (bob01 covered one eye); `fringe_lift_m` reports the lift.
+  Other grooms are untouched. Rebuild existing characters to receive either change.
+- `skin_tone="light"|"medium"|"dark"` (or linear RGB) rebalances the enhanced skin
+  texture toward that tone, keeping its local features. With `race` unset and
+  `skin="auto"`, it also starts from the closest scan (light caucasian, medium asian,
+  dark african) instead of the default mixed phenotype's dark scan, which brightened
+  to orange. The phenotype stays mixed; explicit race/skin choices win.
 - `outfit="casual"|"formal"|"sport"|"summer"|"winter"` chooses compatible installed
   top+bottom (or dress/full suit) + shoes, plus a winter hat; `seed=0` makes the choice
   repeatable for the same catalog/gender. Names/tags declaring male/female are respected;
@@ -474,7 +485,8 @@ idempotent. Restore before changing a character's material slots/topology.
 - Skin keeps its original color/alpha/normal textures and UV graph. Automatic
   scatter parameters sample facial texture texels in linear color, independent of
   gender/ethnicity. `skin_tone="light"|"medium"|"dark"` or linear RGB overrides
-  scatter/reflectance tuning, without replacing the texture's color. Red scatters
+  scatter/reflectance tuning and rebalances the texture's colour per channel toward
+  the tone (local features stay). Red scatters
   farther than green/blue, over about 0.85–1.05 mm. T-zone oil, softer cheeks,
   restrained lip/lid darkening and cheek/nose/ear/knuckle warmth use fitted rest
   masks. Bright scans use a stronger monotone portrait normalization, preserving
@@ -1176,7 +1188,16 @@ Weather is applied after final cameras/lighting, before hair/cloth baking. Parse
 reports it without changing the scene; scripts without weather keep the old plan format.
 
 Descriptors recognize gender, age, hair (bob, short/pendek, long/panjang, ponytail/ekor
-kuda, braid/kepang, afro), outfits, facial hair, accessories or exact MPFB catalog names.
+kuda, braid/kepang, afro), hair colour attached to the word rambut/hair (`rambut bob
+merah kecokelatan`, `rambut cokelat`, `pirang`, `hitam`, `uban`, `red bob hair` ->
+dict `hair_color`), skin tone (`kulit cerah/terang/putih`, `kulit sawo matang`,
+`kulit gelap`, `light/fair/medium/dark skin` -> dict `skin_tone`), outfits, facial
+hair, accessories or exact MPFB catalog names.
+For realistic casts, generic hair words and the default hair prefer fuller installed
+CC0 pack grooms: bob -> `toigo_curled_under_bob`, short/pendek -> `culturalibre_hair_02`
+(`short02` -> `culturalibre_hair_05`); the system bob01/short01 cards read as a helmet.
+Without the hair01 pack, or with an explicit dict `hair`/catalog name, the requested
+asset is kept. Hair colour descriptors tint whichever groom is used.
 Outfit descriptors: kasual/casual; formal/jas/resmi/elegant; olahraga/sport;
 musim panas/summer; musim dingin/winter/jaket/coat. Gaun/dress/rok/skirt selects
 summer for females. A literal `suit` still selects the system elegant suit.
@@ -1249,6 +1270,16 @@ mannequins, with timing/audio/captions and gestures but no face, hair or clothes
 Initial dialog in podcast_studio/news_desk/office seats the cast together when no
 sit/stand/walk/enter/interact direction is authored. It adapts the standing-height desk
 to the chairs (podcast chairs move to 72% of their spacing, about 1.25 m apart) and folds microphones below the mouth, aimed toward each guest.
+Guests lean ~9° onto the desk with palms flat on it (`sit_on(hands="desk")`) and
+microphones sit beside the chin line, clear of chest gestures. Desk-seated talkers
+turn their heads at most 35° from the body toward a partner (about three-quarter to a
+frontal camera); the eyes cover the rest, so faces stay readable in two-shots.
+Default `studio` lighting in podcast_studio becomes `podcast` (result `lighting`).
+The default podcast set uses procedural walnut, matte black hardware, dark leather
+chairs, a deep navy wall and thin LED edges on the acoustic panels (any explicit
+`color_theme` keeps the previous palette).
+Podcast scenes raise realistic characters' face_life intensity 1.65x (max 2) so
+listener reactions read in held desk shots; VRM actors keep the normal intensity.
 Authored physical blocking and world stages retain priority. Results report `staging`.
 Hand-made `stage_dialog` in an existing desk set has the same default; `desk=False`
 keeps standing staging, and `dialog(stage=False)` preserves placement.
@@ -2056,7 +2087,9 @@ highest surface and index 0. Set roots enumerate their seat positions too.
 - Buttock contact is measured on the evaluated body/clothes; shared two-bone IK plants
   flat feet. The character turns toward the seat front and blends back/down from the
   current pose, then holds through scene end. None appends after the rig's action.
-  `hands`: thighs, lap, armrests (requires seat metadata), none (keeps arm posture).
+  `hands`: thighs, lap, armrests (requires seat metadata), desk (palms flat on the
+  desk/table in front, torso leaning ~9°; falls back to thighs when no desk surface
+  is reachable), none (keeps arm posture).
   Layer `talk_motion`, `talk_gestures` and `set_hand_pose` afterwards; hips/legs stay seated.
   `stand_up(character, start_frame=None, transition_frames=20)` stands in front of the
   saved seat. Results report frames, contact error, IK error and baking time.
@@ -2201,9 +2234,16 @@ sheets in `output/nature_review/sheets/`, native scenes in
 `tests/nature_review.py --reference --sheets --bench`; original fixtures and
 clips remain intact. Tests: `tests/test_nature.py`, `tests/nature_e2e.py`.
 
-**Lighting** — `set_lighting(preset, subject, follow="auto")`: studio, soft, dramatic, sunset, noon,
-overcast, night, neon, silhouette, horror. Adds a large ground plane indoors by default and
+**Lighting** — `set_lighting(preset, subject, follow="auto")`: studio, podcast, soft, dramatic,
+sunset, noon, overcast, night, neon, silhouette, horror. `podcast` is a warm soft key from
+camera left, a dim cool fill and one thin blue rim per subject (placed behind it, on the
+side away from the group). Adds a large ground plane indoors by default and
 switches the scene to Eevee. `rotate` spins the rig of lights around the subject.
+It also raises Eevee shadow tracing to at least 3 rays x 12 steps: Blender's single
+default ray left a stipple where hair hulls shade cheeks/necks under soft keys.
+Its own shadow-casting lights also use jittered soft shadows, which remove the
+stipple in wide shots where a face covers few shadow-map texels. Higher existing
+values are kept; together these cost roughly 1.3-1.5x per frame in noisy CPU tests.
 Call **after body animation** (`walk_path`, `animate`, `sit_on`) so it can sample the
 whole scene range; rerun after changing motion. `follow="auto"` follows horizontal
 travel > 0.43 x standing height (~0.75 m for a human); `True` follows any motion,

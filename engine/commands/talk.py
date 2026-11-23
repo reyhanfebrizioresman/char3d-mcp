@@ -303,6 +303,7 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
         prev = {}
         chest_b = smap.get("chest")
         person = look_at is not None and look_at != "camera"
+        desk_cap = 35 if rig.get("c3d_desk_seat") and rig.get("c3d_seat_active") else 0
         bones = [b for b in (chest_b if person else None, neck_b, head_b) if b]
         # pass 1: record the untouched base pose for every frame BEFORE inserting keys, so
         # offsets never stack on top of keys we add (matters where the base has no keys)
@@ -340,6 +341,10 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
                         if side.length > 1e-6:
                             point = pos + delta * math.cos(cheat) + side.normalized() * delta.length * math.sin(cheat)
                     yaw_c, pitch_c = _camera_angles(pos, facing, f, target, point)
+                    if desk_cap:
+                        # Seated at a desk facing the camera: a three-quarter head turn,
+                        # with the eyes covering the rest, keeps the face readable.
+                        yaw_c = max(-desk_cap, min(desk_cap, yaw_c))
                     if chest_b:
                         body_turn = math.copysign(min(45, max(0, abs(yaw_c) - 65) * 0.6), yaw_c)
                     yaw_c = max(-135, min(135, yaw_c - body_turn))
@@ -371,7 +376,8 @@ def talk_motion(character, frame_start=None, frame_end=None, intensity=1.0, head
                     # from an angle measured before the torso moved.
                     pos, facing = head_frame(rig)
                     yaw_c, pitch_c = _camera_angles(pos, facing, f, target, point)
-                    yaw_c = max(-135, min(135, yaw_c))
+                    limit = desk_cap or 135
+                    yaw_c = max(-limit, min(limit, yaw_c))
                     pitch_c = max(-40, min(40, pitch_c))
                     q_char = (Quaternion((0, 0, 1), math.radians(turn[i] + yaw_c))
                               @ Quaternion((1, 0, 0), math.radians(nod[i] + pitch_c))

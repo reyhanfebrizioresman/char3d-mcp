@@ -163,10 +163,11 @@ def _clear_mouth_keys(meshes, start, end, names=VISEMES):
                 fc.update()
 
 
-def key_phonemes(meshes, words, start, end, fps, strength, language, loudness=None):
-    """Replace mouth keys in this range with smooth phoneme targets on all face meshes."""
+def key_phonemes(meshes, words, start, end, fps, strength, language, loudness=None,
+                 *, phone_events=None):
+    """Bake mouth keys using supplied phone timing, or estimate it from words."""
     from .talk import _fcurves
-    events = timed_phonemes(words, language)
+    events = timed_phonemes(words, language) if phone_events is None else phone_events
     names = VISEMES + list(MOUTH_UNITS)
     paths = {f'key_blocks["{name}"].value' for name in names}
     _clear_mouth_keys(meshes, start, end, names)

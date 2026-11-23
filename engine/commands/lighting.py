@@ -22,6 +22,13 @@ PRESETS = {
         lights=[("AREA", 40, 35, 1.8, 550, (1, 0.97, 0.93), 0.9),
                 ("AREA", -55, 15, 2.0, 180, (0.92, 0.95, 1), 1.4),
                 ("AREA", 160, 40, 1.8, 420, (1, 1, 1), 0.5)]),
+    "podcast": dict(
+        desc="Warm soft key from camera left, dim cool fill, thin blue rim on each person.",
+        world=((0.012, 0.016, 0.026), 1.0),
+        lights=[("AREA", -42, 24, 2.4, 520, (1, 0.80, 0.62), 1.1),
+                ("AREA", 50, 10, 2.4, 85, (0.70, 0.82, 1), 1.5)],
+        # Per-subject rim: (azimuth, elevation, distance x height, W, rgb, width, length).
+        rims=(140, 22, 0.95, 110, (0.35, 0.60, 1.0), 0.22, 0.75)),
     "soft": dict(
         desc="Large soft sources, low contrast, beauty/commercial look.",
         world=((0.18, 0.18, 0.19), 1.0),
@@ -165,6 +172,43 @@ def _follow_rig(samples):
     return rig
 
 
+def _rims(spec, subject, center, strength, scale, rotate, rig, anchor):
+    """One thin rim per subject, behind it on the side away from the group center."""
+    az0, el, dist, power, rgb, width, length = spec
+    names = list(subject or [])
+    if not names:
+        from .anim import semantic_map
+        names = [o.name for o in bpy.context.scene.objects if o.type == "ARMATURE"
+                 and not o.hide_render and not o.name.startswith("__") and semantic_map(o).get("head")]
+    made = []
+    for i, name in enumerate(names):
+        parts = _subjects([name])
+        if not parts:
+            continue
+        lo, hi = scene_bounds(parts)
+        h = max(hi.z - lo.z, 0.1)
+        target = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z + h * 0.8))
+        side = 1 if target.x >= center.x else -1
+        a, e = math.radians(side * az0 + rotate), math.radians(el)
+        direction = Vector((math.sin(a) * math.cos(e), -math.cos(a) * math.cos(e), math.sin(e)))
+        data = bpy.data.lights.new(f"c3d_rim_{i}", "AREA")
+        data.color = rgb
+        data.energy = power * strength * scale
+        data.shape = "RECTANGLE"
+        data.size, data.size_y = width * h, length * h
+        obj = bpy.data.objects.new(data.name, data)
+        obj["c3d_role"] = "light"
+        bpy.context.scene.collection.objects.link(obj)
+        loc = target + direction * dist * h
+        obj.location = loc
+        if rig is not None:
+            obj.parent = rig
+            obj.location = loc - anchor
+        obj.rotation_euler = (target - loc).to_track_quat("-Z", "Y").to_euler()
+        made.append(obj.name)
+    return made
+
+
 @command("set_lighting")
 def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, background=None,
                  ground=True, ground_color=(0.32, 0.32, 0.33), follow="auto"):
@@ -242,6 +286,8 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
             obj.location = loc - anchor
         obj.rotation_euler = (center - loc).to_track_quat("-Z", "Y").to_euler()
         made.append(obj.name)
+    if p.get("rims") and not outdoors:
+        made += _rims(p["rims"], subject, center, strength, scale, rotate, rig, anchor)
 
     color, wstrength = p["world"]
     if background is not None:
@@ -263,6 +309,19 @@ def set_lighting(preset="studio", subject=None, strength=1.0, rotate=0.0, backgr
         ground_name = g.name
     if sc.render.engine == "BLENDER_WORKBENCH":
         sc.render.engine = "BLENDER_EEVEE"
+    # Blender's default single shadow ray leaves a stipple where hair hulls shade the
+    # cheeks/neck under soft area keys; 3 rays x 12 steps converge it. Never lower a
+    # quality the scene already asks for.
+    eevee = sc.eevee
+    if hasattr(eevee, "shadow_ray_count"):
+        eevee.shadow_ray_count = max(eevee.shadow_ray_count, 3)
+        eevee.shadow_step_count = max(eevee.shadow_step_count, 12)
+    # In wider shots the face covers few shadow-map texels and the stipple returns;
+    # jittered soft shadows on the character lights resolve it (~1.2x frame time).
+    for name in made:
+        light = bpy.data.objects[name].data
+        if getattr(light, "use_shadow", False) and hasattr(light, "use_shadow_jitter"):
+            light.use_shadow_jitter = True
     result = {"preset": preset, "lights": made, "ground": ground_name,
             "world_color": [round(c, 3) for c in color], "follow": following,
             "travel_m": round(travel, 4), "keys": len(samples) if following else 0}

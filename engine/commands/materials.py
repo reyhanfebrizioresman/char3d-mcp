@@ -166,7 +166,7 @@ def _pixels(image):
     return pixels
 
 
-def _sample_skin(body, mat, eye_z):
+def _sample_skin(body, mat, eye_z, limit=80):
     image = _image(mat)
     if not image or not body.data.uv_layers:
         return tuple(mat.diffuse_color[:3])
@@ -182,7 +182,7 @@ def _sample_skin(body, mat, eye_z):
             u, y = uv[loop.index].uv
             index = 4*(min(h-1, max(0, int(y*h)))*w + min(w-1, max(0, int(u*w))))
             indices.append(index)
-            if len(indices) >= 80:
+            if limit and len(indices) >= limit:
                 break
     if not indices:
         return tuple(mat.diffuse_color[:3])
@@ -319,15 +319,18 @@ def _attributes(obj, body, role, frame):
 def _skin(tree, bsdf, profile, detail):
     red, oil, face, lips = _channels(tree)
     color = _source(bsdf.inputs['Base Color'])
+    if 'tone_balance' in profile:
+        color = _mix(tree, color, (*profile['tone_balance'], 1.), 1., 'requested skin tone')
     color = _mix(tree, color, (profile['albedo_gain'],)*3+(1.,), 1., 'skin reflectance')
     color = _mix(tree, color, (*profile['albedo_tint'], 1.), 1., 'restrained rosy undertone')
     # Multiply selectively: no whole-face orange tint, no lift that washes out melanin.
     color = _mix(tree, color, (1.03, .72, .78, 1), _math(tree, 'MULTIPLY', red, profile['redness']*4, 'blood perfusion'), 'warm cheek/ear tint')
-    color = _mix(tree, color, (.78, .50, .52, 1), _math(tree, 'MULTIPLY', lips, .4, 'lip/lid depth'), 'lip/lid tint')
+    color = _mix(tree, color, (.85, .66, .69, 1), _math(tree, 'MULTIPLY', lips, .32, 'lip/lid depth'), 'lip/lid tint')
     _set(tree, bsdf, 'Base Color', color)
     noise = _noise(tree, 1800., 'fine pores 0.55 mm')
     roughness = _math(tree, 'ADD', _math(tree, 'MULTIPLY', noise, .045*detail, 'roughness variation'), profile['roughness'], 'cheek roughness')
     roughness = _math(tree, 'SUBTRACT', roughness, _math(tree, 'MULTIPLY', oil, .095, 'T-zone oil'), 'skin roughness')
+    roughness = _math(tree, 'SUBTRACT', roughness, _math(tree, 'MULTIPLY', lips, .075, 'lip moisture'), 'skin and lip roughness')
     _set(tree, bsdf, 'Roughness', roughness)
     _set(tree, bsdf, 'Specular IOR Level', profile['specular'])
     _set(tree, bsdf, 'IOR', 1.4)
@@ -366,7 +369,7 @@ def _eyes(tree, bsdf, unit=1., brown=True):
     iris, lid, tear, angle = _channels(tree)
     sclera = _math(tree, 'SUBTRACT', 1., iris, 'sclera mask')
     color = _source(bsdf.inputs['Base Color'])
-    color = _mix(tree, color, (.95, .91, .87, 1), sclera, 'warm sclera')
+    color = _mix(tree, color, (.91, .89, .87, 1), sclera, 'warm sclera')
     color = _mix(tree, color, (.55, .52, .53, 1), _math(tree, 'MULTIPLY', lid, .28, 'upper lid occlusion'), 'soft lid shade')
     pigment = _node(tree, 'ShaderNodeHueSaturation', 'natural iris pigment')
     _put(tree, pigment.inputs['Color'], color)
@@ -390,8 +393,8 @@ def _eyes(tree, bsdf, unit=1., brown=True):
     # wet catchlight, with lower central reflection gain and wetter sclera/tears.
     _set(tree, bsdf, 'Specular IOR Level', _math(tree, 'SUBTRACT', .24,
          _math(tree, 'MULTIPLY', iris, .225, 'iris reflection balance'), 'eye specular'))
-    _set(tree, bsdf, 'Coat Weight', _math(tree, 'SUBTRACT', .60,
-         _math(tree, 'MULTIPLY', iris, .555, 'clear iris coat'), 'wet eye coat'))
+    _set(tree, bsdf, 'Coat Weight', _math(tree, 'SUBTRACT', .45,
+         _math(tree, 'MULTIPLY', iris, .405, 'clear iris coat'), 'wet eye coat'))
     _set(tree, bsdf, 'Coat IOR', 1.336)
     bulge = _node(tree, 'ShaderNodeBump', 'corneal cap normal')
     _put(tree, bulge.inputs['Height'], _attribute(tree, CORNEA).outputs['Fac'])
@@ -422,8 +425,11 @@ def _hair(tree, bsdf, detail, brows=False, hair_color=None, coily=False):
     tree.links.new(scale.outputs['Vector'], noise.inputs['Vector'])
     color = _mix(tree, color, noise.outputs['Fac'], .12*detail, 'individual strands')
     _set(tree, bsdf, 'Base Color', color)
-    _set(tree, bsdf, 'Roughness', .52 if brows else .64 if coily else .46)
-    _set(tree, bsdf, 'Specular IOR Level', .20 if brows else .12 if coily else .24)
+    roughness = .52 if brows else .64 if coily else _math(
+        tree, 'ADD', .47, _math(tree, 'MULTIPLY', noise.outputs['Fac'], .14, 'strand roughness variation'),
+        'soft strand highlights')
+    _set(tree, bsdf, 'Roughness', roughness)
+    _set(tree, bsdf, 'Specular IOR Level', .20 if brows else .12 if coily else .18)
     if hair_color and not brows:
         maximum = max(max(hair_color), .001)
         highlight = tuple(.65+.35*v/maximum for v in hair_color)+(1.,)
@@ -567,6 +573,20 @@ def upgrade_materials(character, quality='enhanced', skin_tone=None, skin_detail
     macro_age = body.get('HUM_age', getattr(body, 'HUM_age', .5))
     age = float(body.get('c3d_age', profiles.age_years(macro_age)))
     profile = profiles.skin_profile(rgb, age, skin_detail)
+    if skin_tone is not None:
+        # Rebalance the authored texture instead of replacing its local features. The
+        # first 80 loops can land on red lid/caruncle texels, so balance from the whole
+        # under-eye window, and bound the hue shift: an unbounded per-channel ratio
+        # multiplied green/blue ~5x and turned a light scan green.
+        whole = _sample_skin(body, skin_mat, frame[0], limit=None)
+        target_y, source_y = profiles.luminance(rgb), max(.01, profiles.luminance(whole))
+        gain = min(6., max(.2, target_y / source_y))
+        profile['tone_balance'] = tuple(
+            gain * min(1.3, max(.77, (target / max(target_y, .01)) / (max(source, .005) / source_y)))
+            for target, source in zip(rgb, whole))
+        # An explicit tone should remain visibly distinct from the scan default.
+        gain = max(profile['albedo_gain'], .39)
+        profile.update(albedo_gain=gain, albedo_luminance=profile['luminance']*gain)
     changed, skipped = [], []
     try:
         for obj in meshes:
@@ -798,3 +818,86 @@ def export_materials(objects):
             bpy.data.meshes.remove(copy)
         for mat in temporary:
             bpy.data.materials.remove(mat)
+
+
+# Mean strand colour (sRGB) for named hair colours; texture variation is kept.
+HAIR_COLORS = {"black": (0.045, 0.035, 0.030), "dark_brown": (0.17, 0.10, 0.06),
+               "brown": (0.32, 0.19, 0.10), "auburn": (0.30, 0.095, 0.045),
+               "red": (0.45, 0.13, 0.05), "blonde": (0.78, 0.62, 0.38),
+               "grey": (0.62, 0.62, 0.62)}
+
+
+def hair_rgb(value):
+    """Named colour or sRGB triple 0..1 -> sRGB tuple."""
+    if isinstance(value, str):
+        if value not in HAIR_COLORS:
+            raise ValueError(f"hair_color must be one of {sorted(HAIR_COLORS)} or an sRGB triple")
+        return HAIR_COLORS[value]
+    if (not isinstance(value, (list, tuple)) or len(value) != 3 or not all(
+            isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) and 0 <= c <= 1 for c in value)):
+        raise ValueError("hair_color must be a name or an sRGB triple in 0..1")
+    return tuple(float(c) for c in value)
+
+
+def tint_hair(body, meshes, srgb):
+    """Recolour hair and brow textures toward srgb, keeping their strand luminance.
+
+    Base colour becomes target * (texel luminance / median luminance), so cards keep
+    root/tip and strand variation instead of turning flat. Materials are made private
+    first, so other characters sharing an MPFB hair material keep their colour."""
+    target = profiles.srgb_to_linear(srgb)
+    tinted = []
+    for obj in meshes:
+        role = _role(obj, body)
+        if role not in ("hair", "brows"):
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if not mat or not mat.node_tree:
+                continue
+            if mat.users > 1:
+                source = mat.get('c3d_material_source', mat)
+                mat = _private(mat)
+                mat['c3d_material_source'] = source
+                slot.link, slot.material = 'OBJECT', mat
+            image = _image(mat)
+            median = 0.05
+            if image and image.size[0]:
+                px = _pixels(image).reshape(-1, 4)
+                px = px[px[:, 3] > .6][:, :3] if (px[:, 3] > .6).any() else px[:, :3]
+                if image.colorspace_settings.name == 'sRGB':
+                    px = np.where(px <= .04045, px / 12.92, ((px + .055) / 1.055) ** 2.4)
+                median = max(float(np.median(px @ np.array([.2126, .7152, .0722]))), 1e-3)
+            for tree in _trees(mat.node_tree):
+                nodes, links = tree.nodes, tree.links
+                for bsdf in [n for n in nodes if n.type == 'BSDF_PRINCIPLED']:
+                    socket = bsdf.inputs['Base Color']
+                    value = (*target, 1)
+                    if socket.links:
+                        source = socket.links[0].from_socket
+                        bw = nodes.new('ShaderNodeRGBToBW')
+                        links.new(source, bw.inputs[0])
+                        ratio = nodes.new('ShaderNodeMath')
+                        ratio.operation = 'DIVIDE'
+                        ratio.inputs[1].default_value = median
+                        links.new(bw.outputs[0], ratio.inputs[0])
+                        cap = nodes.new('ShaderNodeMath')
+                        cap.operation, cap.inputs[1].default_value = 'MINIMUM', 1.8
+                        links.new(ratio.outputs[0], cap.inputs[0])
+                        scale = nodes.new('ShaderNodeVectorMath')
+                        scale.operation = 'SCALE'
+                        scale.inputs[0].default_value = target
+                        links.new(cap.outputs[0], scale.inputs['Scale'])
+                        value = scale.outputs[0]
+                        for node in (bw, ratio, cap, scale):
+                            node.label = 'c3d hair tint'
+                    _put(tree, socket, value)
+                    # Coloured strands read through a softer, less grey highlight.
+                    for name, scale in (('Specular IOR Level', .6), ('Sheen Weight', .5)):
+                        inp = bsdf.inputs.get(name)
+                        if inp is not None and not inp.links:
+                            inp.default_value *= scale
+            mat['c3d_hair_tint'] = list(srgb)
+            mat.diffuse_color = (*target, 1)
+            tinted.append(mat.name)
+    return tinted

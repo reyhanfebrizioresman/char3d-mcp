@@ -81,6 +81,7 @@ export function mount(root) {
    "Pencahayaan",
    select("script-lighting", [
      ["studio", "Studio lembut"],
+     ["podcast", "Podcast hangat"],
      ["sunset", "Senja hangat"],
      ["noon", "Siang hari"],
      ["overcast", "Mendung"],

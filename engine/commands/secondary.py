@@ -19,7 +19,7 @@ from .anim import _key_rot, semantic_map
 from .talk import _data_curves, _rig_of
 
 _STATE = "char3d_secondary"
-_HAIR = ("hair", "ponytail", "braid", "long01", "bob01", "bob02", "afro", "short")
+_HAIR = ("hair", "ponytail", "braid", "long01", "bob", "afro", "short")
 
 
 def _asset_name(obj, rig):

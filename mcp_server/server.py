@@ -484,7 +484,7 @@ Move = Literal["static", "push_in", "dolly_in", "dolly_out", "pull_out", "orbit_
                "dolly_zoom", "handheld", "tracking", "tracking_side", "drone_reveal"]
 ShotSize = Literal["extreme_wide", "wide", "full", "medium_full", "medium", "medium_close",
                    "close_up", "extreme_close_up", "over_shoulder", "ots"]
-Light = Literal["studio", "soft", "dramatic", "sunset", "noon", "overcast", "night", "neon",
+Light = Literal["studio", "podcast", "soft", "dramatic", "sunset", "noon", "overcast", "night", "neon",
                 "silhouette", "horror"]
 
 
@@ -694,13 +694,14 @@ async def add_prop(kind: Prop, location: list[float] | None = None, rotation_z: 
 @mcp.tool()
 async def sit_on(character: str, seat: str, start_frame: int | None = None,
                  transition_frames: int = 20, seat_index: int = 0,
-                 hands: Literal["thighs", "lap", "armrests", "none"] = "thighs",
+                 hands: Literal["thighs", "lap", "armrests", "desk", "none"] = "thighs",
                  collisions: bool = True) -> dict:
     """Sit a humanoid on a chair/sofa/bench/stool root or part, or a mesh's top surface.
     Metadata follows moved/rotated/scaled furniture; sofa and bench have two positions.
     Aligns the character to the seat front, measures buttock contact and solves flat feet.
     start_frame=None appends after the rig action; ease into sitting and hold to scene end.
-    hands: thighs, lap, armrests (seat must have them), none. Layer talk_motion,
+    hands: thighs, lap, armrests (seat must have them), desk (palms on the desk/table in
+    front; falls back to thighs when none is reachable), none. Layer talk_motion,
     talk_gestures or set_hand_pose afterwards. Static level seats and flat floors only;
     bounded hand/desk collision repair (collisions=False disables it). Returns contact/IK errors/timing."""
     return await run("sit_on", character=character, seat=seat, start_frame=start_frame,
@@ -1170,7 +1171,9 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
                                  outfit: Outfit | None = None, seed: int = 0,
                                  materials: Literal["enhanced", "mpfb"] = "enhanced",
                                  style: Literal["realistic", "anime", "cartoon", "chibi"] | None = None,
-                                 look: dict | None = None) -> dict:
+                                 look: dict | None = None,
+                                 hair_color: str | list[float] | None = None,
+                                 skin_tone: str | list[float] | None = None) -> dict:
     """Create a REALISTIC human (MakeHuman/MPFB, CC0): textured skin, eyes, eyebrows,
     eyelashes, optional hair and clothes, already rigged with hand-made skin weights.
     gender 0 = female .. 1 = male; age in years (1-90); muscle/weight/height/proportions
@@ -1192,12 +1195,17 @@ async def create_realistic_human(name: str = "Person", gender: float = 0.5, age:
     heads), cartoon (4.75), chibi (2.8, 82% stature). Stylized bodies retain rig/morphs
     and use original flat toon materials. look replays a face_from_photo recipe; explicit
     style overrides the recipe. The recipe pins phenotype, face modifiers and pigment.
-    Result suggests render_style('anime'); no global change."""
+    Result suggests render_style('anime'); no global change.
+    hair_color tints hair and brows (realistic only), keeping strand variation: black,
+    dark_brown, brown, auburn, red, blonde, grey, or an sRGB triple 0..1.
+    skin_tone light/medium/dark (or linear RGB) rebalances the skin texture toward that
+    tone; with race unset and skin="auto" it also starts from the closest scan."""
     return await run("create_realistic_human", name=name, gender=gender, age=age, muscle=muscle,
                      weight=weight, height=height, proportions=proportions, race=race,
                      skin=skin, hair=hair, eyebrows=eyebrows, eyelashes=eyelashes, eyes=eyes,
                      clothes=clothes, rig=rig, subdiv=subdiv, location=location, face=face,
-                     beard=beard, outfit=outfit, seed=seed, materials=materials, style=style, look=look)
+                     beard=beard, outfit=outfit, seed=seed, materials=materials, style=style, look=look,
+                     hair_color=hair_color, skin_tone=skin_tone)
 
 
 @mcp.tool()

@@ -46,7 +46,7 @@ def stage(cast, beats=()):
     chairs = [o for o in root.children_recursive if o.get('c3d_prop_kind')=='chair']
     anchors = {o.name: o.location.x for o in chairs if o.name==o.get('c3d_prop_group')}
     for obj in chairs:
-        obj.location.y -= .6
+        obj.location.y -= .72
         # Shift each chair as one rigid group; never squash its parts.
         obj.location.x += anchors.get(obj.get('c3d_prop_group'),0.)*(inward-1)
     bpy.context.view_layer.update()
@@ -65,8 +65,10 @@ def stage(cast, beats=()):
                 chair = dispatch('add_prop',dict(kind='chair',location=list(position),scale=unit))
                 seat = bpy.data.objects[bpy.data.objects[chair['root']]['c3d_seat_anchor']]
             used.add(seat.name)
+            rig['c3d_desk_seat'] = True
             # Bake the settled pose before frame one, without adding a sit beat.
-            dispatch('sit_on',dict(character=name,seat=seat.name,start_frame=0,transition_frames=1))
+            dispatch('sit_on',dict(character=name,seat=seat.name,start_frame=0,transition_frames=1,hands='desk'))
+            dispatch('set_hand_pose',dict(character=name,shape='relaxed',frame=1,keyframe=True))
             from .talk import _fcurves
             if rig.animation_data and rig.animation_data.action:
                 for fc in _fcurves(rig.animation_data.action):
@@ -92,7 +94,8 @@ def stage(cast, beats=()):
         mouth = geometry['mouth'][len(geometry['mouth'])//2]
         base = clamp.matrix_world.translation.copy();base.z=floor+.78*unit
         outward = -1 if rig.location.x<root.matrix_world.translation.x else 1
-        head = mouth+Vector((outward*.12*unit,-.32*unit,-.20*unit))
+        # Beside the chin line, clear of the face and of gestures in front of the chest.
+        head = mouth+Vector((outward*.19*unit,-.28*unit,-.21*unit))
         axis = (mouth-head).normalized()
         joint = base+Vector((0,.10*unit,.09*unit))
         bottom = head-axis*(.21*unit)

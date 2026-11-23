@@ -149,6 +149,7 @@ class _Builder:
         self.materials = {}
         self.image = image
         self.rng = random.Random(seed)
+        self.default_theme = False
         self.root = self._link(bpy.data.objects.new(f"Env_{name}", None))
         self.root.location = location
         self.root.scale = (scale,) * 3
@@ -410,6 +411,60 @@ class _Builder:
                 "screen_image": self.image.filepath if self.image else None}
 
 
+def _bsdf(mat):
+    return next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+
+
+def _walnut(mat):
+    """Procedural walnut: stretched wave grain over noise, satin finish; no image files."""
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    bsdf = _bsdf(mat)
+    coords = nodes.new("ShaderNodeTexCoord")
+    stretch = nodes.new("ShaderNodeMapping")
+    stretch.inputs["Scale"].default_value = (0.22, 1.0, 1.0)
+    links.new(coords.outputs["Object"], stretch.inputs["Vector"])
+    grain = nodes.new("ShaderNodeTexWave")
+    grain.wave_type, grain.bands_direction = "BANDS", "Y"
+    grain.inputs["Scale"].default_value = 4.0
+    grain.inputs["Distortion"].default_value = 6.0
+    grain.inputs["Detail"].default_value = 3.0
+    grain.inputs["Detail Roughness"].default_value = 0.6
+    links.new(stretch.outputs["Vector"], grain.inputs["Vector"])
+    ramp = nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].color = (0.055, 0.020, 0.008, 1)
+    ramp.color_ramp.elements[1].color = (0.11, 0.048, 0.022, 1)
+    links.new(grain.outputs["Fac"], ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+    bump = nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.04
+    bump.inputs["Distance"].default_value = 0.0005
+    links.new(grain.outputs["Fac"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    bsdf.inputs["Roughness"].default_value = 0.55
+    bsdf.inputs["Specular IOR Level"].default_value = 0.35
+    mat.diffuse_color = (0.12, 0.05, 0.02, 1)
+
+
+def _podcast_materials(b):
+    """Dark walnut desk, matte black hardware, leather chairs and a deep navy wall."""
+    _walnut(b.materials["wood"])
+    for key, color, rough, metal in (("metal", (0.010, 0.010, 0.012), 0.42, 0.25),
+                                     ("wall", (0.030, 0.050, 0.085), 0.92, 0),
+                                     ("fabric", (0.022, 0.032, 0.050), 0.85, 0)):
+        bsdf = _bsdf(b.materials[key])
+        bsdf.inputs["Base Color"].default_value = (*color, 1)
+        bsdf.inputs["Roughness"].default_value = rough
+        bsdf.inputs["Metallic"].default_value = metal
+        b.materials[key].diffuse_color = (*color, 1)
+    leather = b.material("leather", (0.018, 0.020, 0.024))
+    bsdf = _bsdf(leather)
+    bsdf.inputs["Roughness"].default_value = 0.48
+    bsdf.inputs["Coat Weight"].default_value = 0.15
+    for obj in b.objects:
+        if obj.type == "MESH" and ("chair_seat" in obj.name or "chair_back" in obj.name):
+            obj.data.materials[0] = leather
+
+
 def _build_set(b, preset, variant):
     b.room(stage=preset == "stage")
     if preset == "stage":
@@ -424,6 +479,10 @@ def _build_set(b, preset, variant):
             b.box("acoustic_panel", (x, 2.43, 1.75), (0.66, 0.18, 1.55), "fabric", 0.04)
             for i in range(4):
                 b.box("panel_rib", (x-0.23+i*0.15, 2.32, 1.75), (0.035, 0.035, 1.4), "metal")
+            if b.default_theme:
+                # Thin LED edge on the side facing the cast, as in a lit podcast wall.
+                edge = x - math.copysign(0.345, x)
+                b.box("panel_led", (edge, 2.40, 1.75), (0.012, 0.02, 1.50), "glow", 0)
         b.box("neon_sign_back", (0, 2.44, 2.15), (1.65, 0.12, 0.65), "metal")
         for z in (1.95, 2.35):
             b.box("neon_sign_strip", (0, 2.36, z), (1.40, 0.035, 0.025), "glow")
@@ -431,6 +490,8 @@ def _build_set(b, preset, variant):
         b.light("neon_practical", (0, 2.1, 2.15), (0, 0, 1.3), 65,
                 color=tuple(b.materials["accent"].diffuse_color[:3]))
         b.prop("plant", (side*2.5, 1.2, 0), scale=1.25)
+        if b.default_theme:
+            _podcast_materials(b)
     elif preset == "classroom":
         b.prop("whiteboard", (0, 1.7, 0), scale=1.25)
         for sx in (-1, 1):
@@ -520,6 +581,7 @@ def set_environment(preset, subject=None, scale=1.0, variant=0, color_theme=None
     try:
         cleared = clear_environment()
         b = _Builder(preset, origin, unit, colors=colors, image=image, seed=variant)
+        b.default_theme = color_theme is None
         b.root["c3d_environment_preset"] = preset
         from .outdoor import PRESETS as OUTDOORS, build_outdoor
         if preset in OUTDOORS:

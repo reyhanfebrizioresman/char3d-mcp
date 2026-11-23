@@ -165,6 +165,7 @@ def _words_from_text(text, feat, fps):
                 remaining = 0
             else:
                 remaining -= room
+                cursor = segs[seg_i][1]
                 seg_i += 1
                 if seg_i < len(segs):
                     cursor = segs[seg_i][0]

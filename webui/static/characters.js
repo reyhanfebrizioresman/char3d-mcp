@@ -34,7 +34,7 @@ export function mount(root) {
       "Bentuk penampilan, pilih pakaian, lalu periksa dari setiap sisi.",
       `<span class="chip green">MPFB · Aset CC0</span>`,
     ) +
-    `<div class="character-layout"><section class="panel"><div class="panel-head"><h2>${icon("user")} Pembuat karakter</h2><span class="mono muted">CASTING</span></div><div class="panel-body"><div class="quality-tabs"><button type="button" data-mode="realistic" class="active">Manusia realistis</button><button type="button" data-mode="mannequin">Manekin</button></div><div id="asset-notice" class="help" style="margin-bottom:18px">Membaca katalog aset lokal…</div><form id="character-form"><div class="form-grid">${field("Nama karakter", input("char-name", "Maya", "text", 'required maxlength="60"'), "span-2")}<div id="realistic-fields" class="span-2"><div class="form-grid">${slider("char-gender", "Feminin → maskulin", 0)}${slider("char-age", "Usia (tahun)", 28, 1, 90, 1)}${slider("char-height", "Tinggi relatif", 0.5)}${slider("char-weight", "Berat relatif", 0.5)}${slider("char-muscle", "Otot", 0.4)}${slider("char-proportions", "Proporsi", 0.5)}${field("Rambut", select("char-hair", [["", "Tanpa rambut"]]))}${field("Kulit", select("char-skin", [["auto", "Otomatis sesuai karakter"]]))}${field(
+    `<div class="character-layout"><section class="panel"><div class="panel-head"><h2>${icon("user")} Pembuat karakter</h2><span class="mono muted">CASTING</span></div><div class="panel-body"><div class="quality-tabs"><button type="button" data-mode="realistic" class="active">Manusia realistis</button><button type="button" data-mode="mannequin">Manekin</button></div><div id="asset-notice" class="help" style="margin-bottom:18px">Membaca katalog aset lokal…</div><form id="character-form"><div class="form-grid">${field("Nama karakter", input("char-name", "Maya", "text", 'required maxlength="60"'), "span-2")}<div id="realistic-fields" class="span-2"><div class="form-grid">${slider("char-gender", "Feminin → maskulin", 0)}${slider("char-age", "Usia (tahun)", 28, 1, 90, 1)}${slider("char-height", "Tinggi relatif", 0.5)}${slider("char-weight", "Berat relatif", 0.5)}${slider("char-muscle", "Otot", 0.4)}${slider("char-proportions", "Proporsi", 0.5)}${field("Rambut", select("char-hair", [["", "Tanpa rambut"]]))}${field("Kulit", select("char-skin", [["auto", "Otomatis sesuai karakter"]]))}${field("Warna kulit", select("char-skin_tone", [["", "Dari tekstur"], ["light", "Cerah"], ["medium", "Sawo matang"], ["dark", "Gelap"]]))}${field("Warna rambut", select("char-hair_color", [["", "Asli aset"], ["black", "Hitam"], ["dark_brown", "Cokelat tua"], ["brown", "Cokelat"], ["auburn", "Merah kecokelatan"], ["red", "Merah"], ["blonde", "Pirang"], ["grey", "Uban"]]))}${field(
       "Preset pakaian",
       select("char-outfit", [
         ["casual", "Kasual"],
@@ -126,7 +126,7 @@ export function mount(root) {
             "seed",
           ])
             args[key] = Number($(`#char-${key}`, root).value);
-          for (const key of ["hair", "skin", "outfit", "rig", "beard", "style"])
+          for (const key of ["hair", "skin", "outfit", "rig", "beard", "style", "skin_tone", "hair_color"])
             args[key] = $(`#char-${key}`, root).value || null;
           args.race = Object.fromEntries(
             ["asian", "african", "caucasian"].map((k) => [
