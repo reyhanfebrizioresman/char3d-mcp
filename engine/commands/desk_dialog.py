@@ -68,7 +68,7 @@ def stage(cast, beats=()):
             rig['c3d_desk_seat'] = True
             # Bake the settled pose before frame one, without adding a sit beat.
             dispatch('sit_on',dict(character=name,seat=seat.name,start_frame=0,transition_frames=1,hands='desk'))
-            dispatch('set_hand_pose',dict(character=name,shape='relaxed',frame=1,keyframe=True))
+            dispatch('set_hand_pose',dict(character=name,shape='open',frame=1,keyframe=True))  # relaxed curls fingertips into the desk
             from .talk import _fcurves
             if rig.animation_data and rig.animation_data.action:
                 for fc in _fcurves(rig.animation_data.action):

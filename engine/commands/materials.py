@@ -21,6 +21,7 @@ BACKUP = 'c3d_material_slots'
 REGIONS = 'c3d_material_regions'
 REST = 'c3d_material_rest'
 CORNEA = 'c3d_material_cornea'
+PARTING = 'c3d_parting'  # crown parting mask written by mpfb._vary_parting
 OWNED = 'c3d_material_version'
 CATCHLIGHT = 'c3d_material_catchlight_owner'
 
@@ -424,12 +425,23 @@ def _hair(tree, bsdf, detail, brows=False, hair_color=None, coily=False):
     noise.inputs['Detail'].default_value = 0.
     tree.links.new(scale.outputs['Vector'], noise.inputs['Vector'])
     color = _mix(tree, color, noise.outputs['Fac'], .12*detail, 'individual strands')
+    parting = None
+    if not brows:
+        # Root shadow along the crown parting (mask written by the realistic builder;
+        # absent attributes read 0, leaving other grooms unchanged).
+        parting = _attribute(tree, PARTING).outputs['Fac']
+        color = _mix(tree, color, (.32, .29, .27, 1.), _math(tree, 'MINIMUM', _math(
+            tree, 'MULTIPLY', parting, 1.3, 'parting depth'), 1., 'parting depth cap'), 'parting root shadow')
     _set(tree, bsdf, 'Base Color', color)
     roughness = .52 if brows else .64 if coily else _math(
         tree, 'ADD', .47, _math(tree, 'MULTIPLY', noise.outputs['Fac'], .14, 'strand roughness variation'),
         'soft strand highlights')
     _set(tree, bsdf, 'Roughness', roughness)
-    _set(tree, bsdf, 'Specular IOR Level', .20 if brows else .12 if coily else .18)
+    specular = .20 if brows else .12 if coily else .18
+    if parting is not None:
+        specular = _math(tree, 'MULTIPLY', specular, _math(tree, 'SUBTRACT', 1., _math(
+            tree, 'MULTIPLY', parting, .9, 'parting gloss loss'), 'parting gloss'), 'hair specular')
+    _set(tree, bsdf, 'Specular IOR Level', specular)
     if hair_color and not brows:
         maximum = max(max(hair_color), .001)
         highlight = tuple(.65+.35*v/maximum for v in hair_color)+(1.,)
@@ -440,7 +452,13 @@ def _hair(tree, bsdf, detail, brows=False, hair_color=None, coily=False):
     tangent = _node(tree, 'ShaderNodeTangent', 'strand tangent')
     tangent.direction_type = 'UV_MAP'
     _set(tree, bsdf, 'Tangent', tangent.outputs['Tangent'])
-    _set(tree, bsdf, 'Sheen Weight', .03 if brows else .06)
+    sheen = .03 if brows else .06
+    if parting is not None:
+        # Grazing-angle sheen dominates the crown; without dimming it the parting
+        # root shadow stays invisible from a frontal camera.
+        sheen = _math(tree, 'MULTIPLY', sheen, _math(tree, 'SUBTRACT', 1., _math(
+            tree, 'MULTIPLY', parting, .9, 'parting sheen loss'), 'parting sheen'), 'hair sheen')
+    _set(tree, bsdf, 'Sheen Weight', sheen)
     _set(tree, bsdf, 'Sheen Roughness', .45)
     _set(tree, bsdf, 'Subsurface Weight', .015 if brows else .04)
     _set(tree, bsdf, 'Subsurface Radius', (1., .5, .25))
@@ -901,11 +919,29 @@ def tint_hair(body, meshes, srgb):
                         value = scale.outputs[0]
                         for node in (bw, ratio, cap, scale):
                             node.label = 'c3d hair tint'
+                        shade = next((n for n in nodes if n.label.endswith('parting root shadow')), None)
+                        if shade is not None and shade.inputs[0].links:
+                            # The luminance cap saturates bright crown strands, so the
+                            # parting shadow is reapplied after tinting.
+                            root = nodes.new('ShaderNodeMixRGB')
+                            root.blend_type, root.label = 'MULTIPLY', 'c3d hair tint parting'
+                            links.new(shade.inputs[0].links[0].from_socket, root.inputs[0])
+                            links.new(value, root.inputs[1])
+                            root.inputs[2].default_value = tuple(shade.inputs[2].default_value)
+                            value = root.outputs[0]
                     _put(tree, socket, value)
                     # Coloured strands read through a softer, less grey highlight.
                     for name, scale in (('Specular IOR Level', .6), ('Sheen Weight', .5)):
                         inp = bsdf.inputs.get(name)
-                        if inp is not None and not inp.links:
+                        if inp is None:
+                            continue
+                        if inp.links:
+                            soft = nodes.new('ShaderNodeMath')
+                            soft.operation, soft.label = 'MULTIPLY', 'c3d hair tint'
+                            soft.inputs[1].default_value = scale
+                            links.new(inp.links[0].from_socket, soft.inputs[0])
+                            links.new(soft.outputs[0], inp)
+                        else:
                             inp.default_value *= scale
             mat['c3d_hair_tint'] = list(srgb)
             mat.diffuse_color = (*target, 1)

@@ -248,6 +248,8 @@ def _vary_parting(body, meshes, seed=0):
         (blocks[0] if blocks else obj.data.vertices).foreach_get('co', rest)
         q = rest.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
         top = float(q[:, 2].max())
+        if top - float(q[:, 2].min()) < .17:
+            continue  # short crops/buzz cuts have no parting to vary
         crown = q[q[:, 2] > top - .05]
         y0, y1 = float(crown[:, 1].min()), float(crown[:, 1].max())
         height = np.clip((q[:, 2] - (top - .075)) / .075, 0, 1) ** 1.5
@@ -257,6 +259,12 @@ def _vary_parting(body, meshes, seed=0):
         delta = np.zeros_like(q)
         delta[:, 0] = (wave + .004 * side) * height * near
         delta[:, 2] = -.0015 * height * near * np.abs(np.sin(t * np.pi * 5.2))
+        # Narrow mask along the moved parting line for the shader's root shadow.
+        line = (wave + .004 * side) * height * near
+        reach = np.clip((q[:, 2] - (top - .10)) / .07, 0, 1)  # down to the front hairline
+        mask = reach * np.exp(-((q[:, 0] + delta[:, 0] - line) / .009) ** 2)
+        attr = obj.data.attributes.get('c3d_parting') or obj.data.attributes.new('c3d_parting', 'FLOAT', 'POINT')
+        attr.data.foreach_set('value', np.clip(mask, 0, 1).astype(np.float32))
         delta = (delta @ np.linalg.inv(m)[:3, :3].T).astype(np.float32)
         for data in [obj.data.vertices] + blocks:
             co = np.empty(n * 3, np.float32)

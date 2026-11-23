@@ -116,9 +116,13 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   becomes target x texel luminance / median, so strand/root-tip variation stays; the
   highlight is softened. Realistic builds with `face=True` also lift fringe strands that
   hang over the eye window (bob01 covered one eye); `fringe_lift_m` reports the lift.
-  Other grooms are untouched. Realistic grooms also get a slightly off-centre, wandering
-  crown parting (about 4 mm side shift, 3 mm wave, side chosen by `seed`; the same rest
-  offset on every shape key, `c3d_parting_offset_m` on the hair object). Rebuild
+  Other grooms are untouched. Realistic grooms longer than 17 cm (bob, long) also get a
+  slightly off-centre, wandering crown parting (about 4 mm side shift, 3 mm wave, side
+  chosen by `seed`; the same rest offset on every shape key, `c3d_parting_offset_m` on
+  the hair object) and a `c3d_parting` point mask (crown down to the front hairline) that
+  the enhanced hair shader uses to darken colour, specular and grazing sheen along the
+  parting roots; `hair_color` reapplies that shadow after its luminance cap, which
+  otherwise saturated bright crown strands. Short crops keep their crown. Rebuild
   existing characters to receive these changes.
 - `skin_tone="light"|"medium"|"dark"` (or linear RGB) rebalances the enhanced skin
   texture toward that tone, keeping its local features. With `race` unset and
@@ -1281,16 +1285,22 @@ mannequins, with timing/audio/captions and gestures but no face, hair or clothes
 Initial dialog in podcast_studio/news_desk/office seats the cast together when no
 sit/stand/walk/enter/interact direction is authored. It adapts the standing-height desk
 to the chairs (podcast chairs move to 72% of their spacing, about 1.25 m apart) and folds microphones below the mouth, aimed toward each guest.
-Guests lean ~9° onto the desk with palms flat on it (`sit_on(hands="desk")`) and
-microphones sit beside the chin line, clear of chest gestures. Desk-seated talkers
+Guests lean ~9° onto the desk with palms resting on it (`sit_on(hands="desk")`): the
+hand lifts its thumb side ~15° and fingertips ~10° with open fingers, as a real resting
+hand does, then the wrist target is re-solved so the lowest evaluated hand/finger skin
+sits 3 mm above the desk for that character's hand thickness. Flat palms with relaxed
+fingers sank the thumb ~4-5 cm and the fingertips ~3 cm into the desk; a fixed wrist
+height left thick hands floating ~1.5 cm. Talk gestures still lift the arms. Desk-seated
+guests' microphones sit beside the chin line, clear of chest gestures. Desk-seated talkers
 turn their heads at most 35° from the body toward a partner (about three-quarter to a
 frontal camera); the eyes cover the rest, so faces stay readable in two-shots.
 Default `studio` lighting in podcast_studio becomes `podcast` (result `lighting`).
 The default podcast set uses procedural walnut, matte black hardware, dark leather
 chairs, a deep navy wall and thin LED edges on the acoustic panels (any explicit
 `color_theme` keeps the previous palette). The walnut is lengthwise noise grain with
-fibre roughness/bump; microphones are rebuilt as 48-segment bevelled capsules with an
-anodized body and a shader woven grille (no wire geometry); panels and wall get fine
+fibre roughness/bump; microphones and their desk bases are rebuilt as 48-segment
+bevelled cylinders (anodized body, shader woven grille, no wire geometry; bases keep
+their size and stay on the desk top); panels and wall get fine
 roughness/bump noise. The grille only reads at 1080p or in close-ups.
 Podcast scenes raise realistic characters' face_life intensity 1.65x (max 2) so
 listener reactions read in held desk shots; VRM actors keep the normal intensity.

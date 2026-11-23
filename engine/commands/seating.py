@@ -5,7 +5,7 @@ import time
 
 import bpy
 import numpy as np
-from mathutils import Quaternion, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 from . import command, anim
 from .footlock import _ik_knee, _rotate_bone, _sole_points, _legs, _smoothstep
@@ -300,6 +300,67 @@ def _flat_hand(palm, fingers):
     return (world @ local.transposed()).to_quaternion()
 
 
+def _rest_tilt(q, fingers, medial):
+    """A resting hand is not perfectly flat: the thumb side lifts ~20 degrees and the
+    fingertips ~15 degrees. Flat, the thumb sank ~3 cm and the fingertips ~1 cm into
+    the desk; tilted, the palm, fingers and thumb all clear it by a few millimetres."""
+    z = Vector((0, 0, 1))
+    f = Vector((fingers.x, fingers.y, 0)).normalized()
+    m = Vector((medial.x, medial.y, 0)).normalized()
+    roll = math.radians(15) * (1 if f.cross(m).z > 0 else -1)
+    return Quaternion(f.cross(z).normalized(), math.radians(10)) @ Quaternion(f, roll) @ q
+
+
+def _desk_gap(rig, side, chain):
+    """Lowest evaluated hand/finger skin above the desk top (m), or None.
+
+    Hand thickness differs per character, so a fixed wrist height left male hands
+    floating ~1.5 cm while others touched. Mask modifiers are disabled briefly so
+    evaluated vertex indices match the rest mesh's vertex groups."""
+    from .fingers import HandRig
+    from .materials import _family
+    try:
+        _, body, _ = _family(rig.name)
+    except ValueError:
+        return None
+    bones = {chain[-1]} | {b for ch in HandRig(rig).fingers.get(side, {}).values() for b in ch}
+    deform = {b.name for b in rig.data.bones if b.use_deform}
+    names = {g.index: g.name for g in body.vertex_groups if g.name in deform}
+    picked = []
+    for v in body.data.vertices:
+        groups = [g for g in v.groups if g.group in names]
+        if groups and names[max(groups, key=lambda g: g.weight).group] in bones:
+            picked.append(v.index)
+    if not picked:
+        return None
+    masks = [m for m in body.modifiers if m.type == "MASK" and m.show_viewport]
+    for m in masks:
+        m.show_viewport = False
+    try:
+        bpy.context.view_layer.update()
+        ev = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = ev.to_mesh()
+        try:
+            if len(mesh.vertices) != len(body.data.vertices):
+                return None
+            co = np.empty(len(mesh.vertices) * 3)
+            mesh.vertices.foreach_get("co", co)
+        finally:
+            ev.to_mesh_clear()
+    finally:
+        for m in masks:
+            m.show_viewport = True
+        bpy.context.view_layer.update()
+    mw = np.array(body.matrix_world)
+    pts = co.reshape(-1, 3)[picked] @ mw[:3, :3].T + mw[:3, 3]
+    gaps = []
+    for x, y, z in pts:
+        top = _desk_top(Vector((x, y, z)))
+        if top is not None:
+            gaps.append(z - top)
+    return min(gaps) if gaps else None
+
+
 def _desk_rest(rig, smap, side, sign, front, left):
     """Palm target resting on the desk in front of a seated shoulder, or None."""
     mw = rig.matrix_world
@@ -311,7 +372,7 @@ def _desk_rest(rig, smap, side, sign, front, left):
         top = _desk_top(Vector((p.x, p.y, shoulder.z - 0.35)))
         if top is None:
             continue
-        p.z = top + 0.03
+        p.z = top + 0.026
         if (p - shoulder).length < 0.96 * length:
             return p
     return None
@@ -394,11 +455,24 @@ def sit_on(character, seat, start_frame=None, transition_frames=20, seat_index=0
             palm = HandRig(rig).palm_local(s, hand.name)
             if palm is not None and rest is not None:
                 # Flat on the desk: palm down, fingers forward and slightly inward.
-                q = _flat_hand(palm, (front - left*sign*0.3).normalized())
+                fingers = (front - left*sign*0.3).normalized()
+                q = _rest_tilt(_flat_hand(palm, fingers), fingers, -left*sign)
             elif palm is not None:
                 q = (q @ palm).rotation_difference(Vector((0, 0, -1))) @ q
-            _chain(rig, [smap[f"{b}.{s}"] for b in ("upper_arm", "forearm", "hand")],
-                   p, pole, q)
+            chain = [smap[f"{b}.{s}"] for b in ("upper_arm", "forearm", "hand")]
+            if rest is not None:
+                from .fingers import HandRig
+                fingers_rig = HandRig(rig)
+                if s in fingers_rig.fingers:   # the shape desk staging keys afterwards
+                    fingers_rig.apply(s, "open", 1.0, {b: Matrix.Translation(rig.pose.bones[b].location)
+                                                       for ch in fingers_rig.fingers[s].values() for b in ch})
+            _chain(rig, chain, p, pole, q)
+            if rest is not None:
+                # Settle the lowest skin point 3 mm above the desk for this hand's thickness.
+                gap = _desk_gap(rig, s, chain)
+                if gap is not None and abs(gap - 0.003) > 0.001:
+                    p = p - Vector((0, 0, gap - 0.003))
+                    _chain(rig, chain, p, pole, q)
     if hands == "none":
         for n, basis in arm_basis.items():
             rig.pose.bones[n].matrix_basis = basis
