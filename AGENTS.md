@@ -1954,6 +1954,14 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   the imported source skeleton is deleted afterwards. If `mapped` is missing bones,
   pass `bone_map={"thigh.L": "their_bone", ...}` (keys = basic bone names).
 - `retarget_animation(source, target)` — copy motion between two rigs in the scene.
+- **Captured approach and standing press** — `walk_approach` places a forward BVH
+  walk-and-stop take at a world XY destination. Supply the inclusive source range
+  and both feet's planted intervals at scene FPS. An optional shoe mesh lets the
+  tool correct residual slip using the evaluated sole. Follow with `press_button`
+  on a movable cap. It leads with gaze and shoulder, transfers weight over planted
+  feet, fits the finger to the descending cap, and returns contact timing. Pass
+  the walk's `footfalls` to `auto_sfx` for exact sound timing.
+  See [the Budi reference](examples/standing-button.md).
 - **Foot lock (foot IK)** — planted feet stay still on the floor: contacts are detected
   (near the floor and not travelling ahead of the hips), the foot rolls heel → toe
   without slipping, never sinks into the floor, swinging feet keep ~2 cm clearance, and

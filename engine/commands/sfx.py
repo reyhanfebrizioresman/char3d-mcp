@@ -195,9 +195,47 @@ def _remove_owned(sc, first, last, characters, kinds):
     return removed
 
 
+def _footfall_plan(footfalls, rigs):
+    if not isinstance(footfalls, (list, tuple)):
+        raise ValueError("footfalls must list character, side and frame")
+    plan = {rig.name: set() for rig in rigs}
+    for event in footfalls:
+        if not isinstance(event, dict) or not {"character", "side", "frame"} <= event.keys():
+            raise ValueError("each footfall needs character, side and frame")
+        name, side, frame = event["character"], event["side"], event["frame"]
+        if not isinstance(name, str) or name not in plan or side not in ("L", "R") or type(frame) is not int:
+            raise ValueError("footfall must name a selected rig, side L or R, and an integer frame")
+        plan[name].add((frame, side))
+    return plan
+
+
+def _authored_touchdowns(sc, rig, plan, first, last, fps):
+    legs, smap = _legs(rig)
+    if not legs or "hips" not in smap:
+        raise ValueError(f"{rig.name}: no recognisable humanoid hips/feet")
+    mw = rig.matrix_world
+    events = []
+    for frame, side in sorted(plan):
+        if not first <= frame <= last:
+            continue
+        if side not in legs:
+            raise ValueError(f"{rig.name} has no {side} foot")
+        a, b = max(first, frame - 1), min(last, frame + 1)
+        sc.frame_set(a)
+        before = mw @ rig.pose.bones[smap["hips"]].head
+        sc.frame_set(b)
+        after = mw @ rig.pose.bones[smap["hips"]].head
+        speed = (after - before).xy.length * fps / max(1, b - a)
+        sc.frame_set(frame)
+        foot = mw @ rig.pose.bones[legs[side]["foot"]].head
+        events.append({"frame": frame, "side": side, "point": [foot.x, foot.y, foot.z],
+                       "speed_m_s": round(speed, 4)})
+    return events
+
+
 @command("auto_sfx")
 def auto_sfx(characters=None, kinds=None, surface="auto", volume=1.0, seed=0,
-             frame_start=None, frame_end=None, clear=False):
+             frame_start=None, frame_end=None, clear=False, footfalls=None):
     """Replace owned Foley in range; sit includes stand, cloth is optional, clear only removes."""
     default = sorted(KINDS) if clear else ["footsteps", "sit", "ambience"]
     kinds = list(dict.fromkeys(default if kinds is None else kinds))
@@ -221,6 +259,7 @@ def auto_sfx(characters=None, kinds=None, surface="auto", volume=1.0, seed=0,
             [o for o in sc.objects if o.type == "ARMATURE" and not o.hide_render and not o.name.startswith("__")])
     rigs = list({r.name: r for r in rigs}.values())
     selected = {r.name for r in rigs}
+    planned = _footfall_plan(footfalls, rigs) if footfalls is not None else None
     if characters is None and clear:
         selected |= {s.get("char3d_sfx_character", "") for s in _sound_strips(sc)}
     removed = _remove_owned(sc, first, last, selected, set(kinds))
@@ -265,7 +304,12 @@ def auto_sfx(characters=None, kinds=None, surface="auto", volume=1.0, seed=0,
             if not set(kinds) & {"footsteps", "cloth", "sit", "stand"}:
                 continue
             # A short preroll prevents a cropped range's first planted foot becoming a new step.
-            steps, seats = detect_motion(rig, max(sc.frame_start, first - round(fps)), last)
+            if planned is None or set(kinds) & {"sit", "stand"}:
+                steps, seats = detect_motion(rig, max(sc.frame_start, first - round(fps)), last)
+            else:
+                steps, seats = [], []
+            if planned is not None:
+                steps = _authored_touchdowns(sc, rig, planned[rig.name], first, last, fps)
             for event in steps:
                 f = event["frame"]
                 if not first <= f <= last:

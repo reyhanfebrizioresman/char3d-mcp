@@ -367,6 +367,28 @@ async def walk_path(armature: str, points: list[list[float]],
 
 
 @mcp.tool()
+async def walk_approach(armature: str, path: str, destination: list[float],
+                        source_frames: list[int], contacts: dict[str, list[list[int]]],
+                        start_frame: int | None = None, sole_mesh: str | None = None,
+                        floor: float | None = None, arm_swing: float = 5.0,
+                        stance_width: float | None = None) -> dict:
+    """Bake a continuous BVH walk and stop onto a humanoid on level ground.
+
+    The take is placed along the character's heading with its standing pelvis
+    at destination (world XY metres). source_frames and contacts use inclusive
+    BVH frame numbers after resampling to the scene FPS, with the first sample
+    at frame 1. Give L and R planted intervals, both ending at the last frame.
+    Optional sole_mesh is a skinned mesh containing both shoes. The evaluated
+    outsole is then used to correct residual sliding. arm_swing adds up to 20
+    degrees of counter-swing. Returns planted intervals and explicit footfalls
+    for auto_sfx, with next_start_frame for the standing action.
+    """
+    return await run("walk_approach", armature=armature, path=path, destination=destination,
+                     source_frames=source_frames, contacts=contacts, start_frame=start_frame,
+                     sole_mesh=sole_mesh, floor=floor, arm_swing=arm_swing, stance_width=stance_width)
+
+
+@mcp.tool()
 async def turn_to(armature: str, target: list[float] | str,
                   start_frame: int | None = None, avoid: Literal["auto"] | bool = "auto",
                   ignore: list[str] | None = None) -> dict:
@@ -743,6 +765,24 @@ async def release_prop(character: str, prop: str, frame: int,
     """Release at frame: keep the prop's world transform, or put its grip at place_at.
     The prop remains static afterwards; no falling simulation. place_at is world XYZ."""
     return await run("release_prop", character=character, prop=prop, frame=frame, place_at=place_at)
+
+
+@mcp.tool()
+async def press_button(character: str, button: str, start_frame: int | None = None,
+                       hand: Literal["left", "right"] = "left", target: list[float] | None = None,
+                       travel: float = .010, hold_seconds: float = .33,
+                       tip_mesh: str | None = None, floor: float | None = None) -> dict:
+    """Animate a standing character pressing a movable button cap downward.
+
+    Starts at the cap's world-space top centre unless target supplies world
+    XYZ metres. Both feet stay planted while gaze, shoulder and elbow lead
+    the reach. The cap travels vertically and returns after the hold. Supply
+    a skinned tip_mesh to fit the index fingertip to the surface. Returns
+    contact timing, the fingertip error, and next_start_frame.
+    """
+    return await run("press_button", character=character, button=button, start_frame=start_frame,
+                     hand=hand, target=target, travel=travel, hold_seconds=hold_seconds,
+                     tip_mesh=tip_mesh, floor=floor)
 
 
 @mcp.tool()
@@ -1379,7 +1419,8 @@ async def add_audio(path: str, start_frame: int = 1, volume: float = 1.0,
 async def auto_sfx(characters: list[str] | None = None, kinds: list[str] | None = None,
                     surface: str = "auto", volume: float = 1.0, seed: int = 0,
                     frame_start: int | None = None, frame_end: int | None = None,
-                    clear: bool = False) -> dict:
+                    clear: bool = False,
+                    footfalls: list[dict] | None = None) -> dict:
     """Add original procedural footsteps, sit/stand, optional cloth, and quiet ambience.
     Run after body animation. Defaults: kinds=['footsteps','sit','ambience']; sit includes
     standing up. characters=None selects visible humanoid rigs. Footsteps use evaluated
@@ -1391,10 +1432,11 @@ async def auto_sfx(characters: list[str] | None = None, kinds: list[str] | None 
     Voice/music/manual sfx are preserved. Ambience loops with global fades at -30 dBFS RMS.
     Returns counts, strip paths/hashes/frames, and detected touchdowns. No samples/network.
     Detection is heuristic for imported motion; generic deep hip drops can resemble sitting.
+    Pass the footfalls from walk_approach to use those exact step frames instead of detection.
     """
     return await run("auto_sfx", characters=characters, kinds=kinds, surface=surface,
                      volume=volume, seed=seed, frame_start=frame_start,
-                     frame_end=frame_end, clear=clear)
+                     frame_end=frame_end, clear=clear, footfalls=footfalls)
 
 
 @mcp.tool()
