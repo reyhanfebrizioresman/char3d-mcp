@@ -47,7 +47,7 @@ Keep previews ≤ 512 px unless the user asks for more.
   `validate_rig`, `list_bones`, `set_pose`
 - Hands: `set_hand_pose` (relaxed, open, palm, beat, point, fist, thumbs_up, peace, three,
   four, ok, grip)
-- Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `import_mocap`,
+- Animation: `list_animations`, `apply_pose`, `animate`, `walk_path`/`turn_to` (static obstacle avoidance), `walk_approach` (BVH walk-and-stop), `press_button`, `import_mocap`,
   `retarget_animation`, `lock_feet`, `resolve_collisions`, `secondary_motion` (hair/loose clothes), `clear_animation`, `render_frames`
 - Film: `list_camera_moves`, `camera_shot` (visibility + composition), `list_shots`, `delete_shot`, `set_timeline`,
   `list_lighting_presets`, `set_lighting`, `cinematic_look`, `set_material`, `add_subtitles`,
