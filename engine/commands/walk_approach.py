@@ -28,7 +28,7 @@ LEGS = tuple(f"{part}.{side}" for side in "LR" for part in ("thigh", "shin", "fo
 
 @command("walk_approach")
 def walk_approach(armature, path, destination, source_frames, contacts, start_frame=None,
-                  sole_mesh=None, floor=None, arm_swing=5.0, stance_width=None):
+                  sole_mesh=None, floor=None, arm_swing=5.0, stance_width=None, _origin=None):
     """Fit a level-ground BVH walk-and-stop take to a humanoid and a world XY destination."""
     scene = bpy.context.scene
     rig = _rig_of(armature)
@@ -55,6 +55,9 @@ def walk_approach(armature, path, destination, source_frames, contacts, start_fr
         scene.frame_set(start)
         forward, lateral = heading(rig)
         target = Vector((xy.x, xy.y, floor))
+        if _origin is not None:
+            forward = Vector((xy.x - _origin.x, xy.y - _origin.y, 0)).normalized()
+            lateral = UP.cross(forward)
         legs, _ = _legs(rig)
         leg = leg_length(rig, names)
         rest_floor = floor_of(rig, None)
@@ -89,6 +92,13 @@ def walk_approach(armature, path, destination, source_frames, contacts, start_fr
                 raise ValueError("BVH range must contain forward travel")
             # The centre continues forward briefly over the already planted feet.
             motion_end = target + forward * (.032 * leg)
+            stretch = 1.0
+            if _origin is not None:
+                desired = Vector((motion_end.x - _origin.x, motion_end.y - _origin.y, 0))
+                yaw = math.atan2(delta.cross(desired).z, delta.dot(desired))
+                facing = Quaternion(UP, yaw) @ facing
+                delta = Quaternion(UP, yaw) @ delta
+                stretch = desired.length / delta.xy.length
             hip_rest = mw @ rig.data.bones[names["hips"]].head_local
             carry = motion_end - hip_rest - delta
             carry.z = floor - rest_floor - .017 * leg - delta.z
@@ -108,13 +118,19 @@ def walk_approach(armature, path, destination, source_frames, contacts, start_fr
                         for f in range(start, end + 1)] for s in "LR"}
         standing = target.copy()
         standing.z = upright_z
-        polish_body(scene, rig, names, neutral, standing, start, end, footfalls, swing, lateral, fps)
+
+        def fit_travel(position):
+            offset = (position - motion_end).dot(forward) * (stretch - 1)
+            return position + forward * offset
+
+        polish_body(scene, rig, names, neutral, standing, start, end, footfalls, swing, lateral, fps, fit_travel)
 
         targets = {}
         width = width if width is not None else .253 * leg
         for side, sign in (("L", 1), ("R", -1)):
             q = quiet_foot(settings[side], ankles[side].to_quaternion(), footfalls[-1][0] - start, fps)
-            positions = [motion_end + facing @ (sample[side] - samples[-1]["hips"]) * scale for sample in samples]
+            positions = [fit_travel(motion_end + facing @ (sample[side] - samples[-1]["hips"]) * scale)
+                         for sample in samples]
             landing = target + forward * ((-.029 + .022 * sign) * leg) + lateral * (width / 2 * sign)
             shift_final_footfall(positions, intervals[side], landing)
             corrections = planted_shifts(positions, q, soles[side], intervals[side])
@@ -134,7 +150,7 @@ def walk_approach(armature, path, destination, source_frames, contacts, start_fr
     return {**info, "armature": rig.name, "next_start_frame": end + 1, "source_file": file.name,
             "destination": vec(actual.xy), "foot_lock": lock,
             "footfalls": [{"frame": frame, "side": side, "character": rig.name} for frame, side in footfalls],
-            "distance_m": round(delta.xy.length, 4), "fps": fps}
+            "distance_m": round(delta.xy.length * stretch, 4), "fps": fps}
 
 
 def contact_ranges(source_frames, contacts):
@@ -211,7 +227,7 @@ def average_rotation(rotations):
     return Quaternion(tuple(total)).normalized()
 
 
-def polish_body(scene, rig, names, neutral, standing, start, end, footfalls, arm_swing, lateral, fps):
+def polish_body(scene, rig, names, neutral, standing, start, end, footfalls, arm_swing, lateral, fps, fit_travel):
     mw = rig.matrix_world
     bones = {role: rig.pose.bones[names[role]] for role in neutral}
     hip = bones["hips"]
@@ -219,7 +235,7 @@ def polish_body(scene, rig, names, neutral, standing, start, end, footfalls, arm
     for frame in range(start, end + 1):
         scene.frame_set(frame)
         rotations.append({role: bone.matrix_basis.to_quaternion() for role, bone in bones.items()})
-        roots.append(mw @ hip.head)
+        roots.append(fit_travel(mw @ hip.head))
     brake = footfalls[-1][0]
     previous_footfall = footfalls[-2][0] if len(footfalls) > 1 else start
     gait = rotations[:max(1, brake - start - round(.10 * fps))]

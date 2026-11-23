@@ -218,6 +218,21 @@ def _half_step(clip, fps, speed):
     return max(2, int(round(anim.CLIPS[clip][1]*fps/(48*speed))))
 
 
+def _arrival_samples(keys, fps, half_step):
+    """Place the final footfall at the end of travel, then hold the stance."""
+    samples, arrival = _samples(keys, fps, half_step)
+    hold = max(4, round(fps / 6))
+    count = min(arrival, max(1, round(arrival / half_step)))
+    phases = [0.0] * (arrival + hold + 1)
+    if count:
+        boundaries = [round(step * arrival / count) for step in range(count + 1)]
+        for step, (first, last) in enumerate(zip(boundaries, boundaries[1:])):
+            for frame in range(first, last):
+                phases[frame] = step + (frame - first) / (last - first)
+        phases[arrival:] = [float(count)] * (hold + 1)
+    return samples[:len(phases)], max(0, arrival - half_step), phases
+
+
 def _terrain_samples(keys, fps, clip, speed, ground):
     """Continuous half-step phase lets cadence change without restarting a foot swing."""
     active = int(math.ceil(keys[-1][0] * fps))
@@ -586,7 +601,7 @@ def _speed(value):
 
 @command("walk_path")
 def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_end=None,
-              avoid="auto", ignore=None, _world_route=False):
+              avoid="auto", ignore=None, _world_route=False, _plant_at_arrival=False):
     """Walk/run through XY targets; static obstacle detours by default.
 
     avoid=False preserves the old route. auto/True plan only on intersection;
@@ -640,6 +655,8 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
         phases = runs = None
         if ground is not None:
             samples, active, phases, runs = _terrain_samples(keys, fps, clip, speed, ground)
+        elif _plant_at_arrival:
+            samples, active, phases = _arrival_samples(keys, fps, half)
         else:
             samples, active = _samples(keys, fps, half)
         navigation = (planner.report(route, samples, avoided) if planner else

@@ -768,6 +768,18 @@ async def release_prop(character: str, prop: str, frame: int,
 
 
 @mcp.tool()
+async def preview_walk_press(character: str, button: str,
+                             hand: Literal["auto", "left", "right"] = "auto") -> dict:
+    """Render a draft of the chosen character walking to the current button location.
+
+    Uses a disposable scene copy. The working scene's positions, keyframes, camera and
+    audio are preserved. Choose a movable mesh cap. Returns a render job ID and the
+    computed target, standing position and timing.
+    """
+    return await run("preview_walk_press", character=character, button=button, hand=hand)
+
+
+@mcp.tool()
 async def press_button(character: str, button: str, start_frame: int | None = None,
                        hand: Literal["left", "right"] = "left", target: list[float] | None = None,
                        travel: float = .010, hold_seconds: float = .33,

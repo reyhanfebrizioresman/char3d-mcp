@@ -34,3 +34,4 @@ from . import credits, review  # noqa: E402,F401
 from . import photo  # noqa: E402,F401
 from . import collision  # noqa: E402,F401
 from . import walk_approach, button_press  # noqa: E402,F401
+from . import walk_press_preset  # noqa: E402,F401

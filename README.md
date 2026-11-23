@@ -622,6 +622,14 @@ tema gelap/terang, dan tata letak mobile tersedia. Hasil pekerjaan muncul otomat
 Anda dapat berpindah layar selama engine bekerja. Teks naskah menghasilkan gerak
 mulut; suara ucapan membutuhkan rekaman atau generasi suara yang dikonfirmasi.
 
+Di layar **Adegan**, buka **Jalan lalu tekan tombol**, pilih karakter dan mesh tutup
+tombol yang terpisah, lalu pilih **Pratinjau aksi**. Studio membaca posisi saat ini,
+menentukan posisi berhenti, dan memutar video draft dari salinan adegan. Geser tutup
+tombol dengan `transform_object` atau pilih karakter lain untuk mencoba posisi baru.
+Untuk lintasan lurus yang sesuai, Studio dapat memakai rekaman lokal
+`imports/mocap/16_34.bvh` dari [contoh Budi](examples/standing-button.md).
+Lintasan lain memakai langkah bawaan Char3D.
+
 UI hanya mendengarkan `127.0.0.1`. Host/origin asing ditolak, file dibatasi ke
 workspace setelah resolusi symlink, dan unggahan maksimal 100 MB masuk ke
 `imports/`. Tool `run_blender_python` tidak tersedia. Generasi AI meminta konfirmasi

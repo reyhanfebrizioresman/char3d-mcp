@@ -121,13 +121,18 @@ def press_button(character, button, start_frame=None, hand="left", target=None, 
             anim._set_world_rot(rig, head, current.slerp(delta @ current, .60 * look))
             origin = mw @ wrist.head
             rotation = (mw @ wrist.matrix).to_quaternion()
+            aim = anchor - (mw @ shoulder.head)
+            aim.z = 0
+            aim = aim.normalized() if aim.length > 1e-6 else forward
             if palm is not None:
-                aim = anchor - (mw @ shoulder.head)
-                aim.z = 0
-                aim = aim.normalized() if aim.length > 1e-6 else forward
                 flat = _flat_hand(palm, aim)
-                desired = Quaternion(aim.cross(UP), math.radians(-13 + 4 * load)) @ flat
-                rotation = rotation.slerp(desired, weight)
+            else:
+                # Basic rigs still have a hand bone. Point its tip at the cap,
+                # while preserving the starting wrist twist without finger axes.
+                hand_axis = rotation @ Vector((0, 1, 0))
+                flat = hand_axis.rotation_difference(aim) @ rotation
+            desired = Quaternion(aim.cross(UP), math.radians(-13 + 4 * load)) @ flat
+            rotation = rotation.slerp(desired, weight)
             for name, pose in posed_fingers.items():
                 b = rig.pose.bones[name]
                 loc, rest, scale = bases[name].decompose()

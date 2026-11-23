@@ -718,6 +718,30 @@ textarea.screenplay:focus-visible {
   padding: 9px;
   font-size: 10px;
 }
+.preview-controls.walk-press-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+}
+.walk-press-controls select {
+  width: 100%;
+  min-width: 0;
+}
+.walk-press-feedback > :not(:empty) {
+  margin: 0 17px 12px;
+}
+.walk-press-player video {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  background: var(--input);
+}
+@media (max-width: 900px) {
+  .preview-controls.walk-press-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .walk-press-controls .button {
+    grid-column: 1 / -1;
+  }
+}
 .filmstrip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

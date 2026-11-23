@@ -11,6 +11,7 @@ TERMINAL = {"completed", "failed", "cancelled"}
 AI_GENERATORS = {"ai_text_to_3d", "ai_image_to_3d", "ai_image_to_video",
                  "ai_text_to_video", "ai_text_to_speech"}
 INDEPENDENT = {"direct_scene", "direct_world", "director_status", "world_schema"}
+RENDERS = {"render_video", "render_film", "preview_walk_press"}
 
 
 @dataclass
@@ -145,8 +146,8 @@ class JobQueue:
                 job.result = await self.invoke(job.tool, job.arguments)
                 data = job.result["data"]
                 background = data.get("job_id") if isinstance(data, dict) else None
-                if background and (job.tool in {"render_video", "render_film"} or job.tool in AI_GENERATORS):
-                    job.status = "rendering" if job.tool in {"render_video", "render_film"} else "processing"
+                if background and (job.tool in RENDERS or job.tool in AI_GENERATORS):
+                    job.status = "rendering" if job.tool in RENDERS else "processing"
                     task = asyncio.create_task(self.monitor(job, background))
                     self.monitors.add(task)
                     task.add_done_callback(self.monitors.discard)
@@ -154,7 +155,7 @@ class JobQueue:
                     job.status, job.finished = "completed", time.time()
                 if job.tool == "cancel_render" and not job.arguments["job_id"].startswith("remote_"):
                     for other in self.jobs.values():
-                        if (other.tool in {"render_video", "render_film"} and other.status == "rendering"
+                        if (other.tool in RENDERS and other.status == "rendering"
                                 and other.result["data"].get("job_id") == job.arguments.get("job_id")):
                             other.status, other.finished = "cancelled", time.time()
             except Exception as exc:
@@ -164,7 +165,7 @@ class JobQueue:
                 self.queue.task_done()
 
     async def monitor(self, job, background_id):
-        status_tool = "render_status" if job.tool in {"render_video", "render_film"} else "ai_job_status"
+        status_tool = "render_status" if job.tool in RENDERS else "ai_job_status"
         while True:
             await asyncio.sleep(1.5)
             if job.status in TERMINAL:
@@ -176,6 +177,8 @@ class JobQueue:
                 state = progress.get("status", "")
                 if (state in {"done", "complete", "completed", "finished", "failed", "error", "cancelled", "canceled"}
                         and not progress.get("cleanup_pending")):
+                    if job.tool == "preview_walk_press":
+                        progress["performance"] = job.result["data"]["performance"]
                     job.status = {"failed": "failed", "error": "failed", "cancelled": "cancelled", "canceled": "cancelled"}.get(state, "completed")
                     job.finished, job.result = time.time(), status
                     if job.status == "failed":

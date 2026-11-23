@@ -1,6 +1,7 @@
 import { switcher } from "./film.js";
 import { otsForm, collisionPanel, mountSceneTools } from "./scene-tools.js";
 import { lookPicker, mountLookPicker } from "./looks.js";
+import { walkPressPanel, mountWalkPress } from "./walk-press.js";
 import { screenRoot } from "./ui.js";
 import { run, state, scene, request } from "./api.js";
 import {
@@ -59,7 +60,7 @@ export function mount(root) {
         ],
         "512",
       ),
-    )}<button class="button primary" type="submit">${icon("eye")} Pratinjau</button></form><div id="scene-filmstrip">${state.previews.length ? filmstrip(state.previews) : ""}</div><div id="scene-error"></div></section><section class="panel" aria-label="Suasana adegan"><div class="panel-head"><h2>${icon("light")} Suasana</h2><span class="chip">SINEMATIK</span></div><div class="scene-look-body">${lookPicker("scene-look", false, state.scene?.cinematic_look?.preset || "none")}<div class="row look-actions"><span class="help">Periksa warna, cahaya, dan fokus.</span>${button("apply-look", "Terapkan & pratinjau", "eye", "primary small")}</div></div></section><section class="panel"><div class="panel-head"><h2>${icon("render")} Linimasa shot</h2></div>${otsForm()}<div id="shot-list"><div class="skeleton"></div></div></section>${collisionPanel()}</div></div>`;
+    )}<button class="button primary" type="submit">${icon("eye")} Pratinjau</button></form><div id="scene-filmstrip">${state.previews.length ? filmstrip(state.previews) : ""}</div><div id="scene-error"></div></section>${walkPressPanel()}<section class="panel" aria-label="Suasana adegan"><div class="panel-head"><h2>${icon("light")} Suasana</h2><span class="chip">SINEMATIK</span></div><div class="scene-look-body">${lookPicker("scene-look", false, state.scene?.cinematic_look?.preset || "none")}<div class="row look-actions"><span class="help">Periksa warna, cahaya, dan fokus.</span>${button("apply-look", "Terapkan & pratinjau", "eye", "primary small")}</div></div></section><section class="panel"><div class="panel-head"><h2>${icon("render")} Linimasa shot</h2></div>${otsForm()}<div id="shot-list"><div class="skeleton"></div></div></section>${collisionPanel()}</div></div>`;
   const target = $("#scene-error", root);
   let lookRevision = 0;
   const looks = mountLookPicker(root, "scene-look", () => lookRevision++);
@@ -81,6 +82,7 @@ export function mount(root) {
     const info = await scene(true);
     showObjects(root, info);
     refreshTools(info);
+    refreshWalkPress(info);
     await switcher(root, refresh);
     const currentLook = info.cinematic_look?.preset || "none";
     if (revision === lookRevision) {
@@ -93,9 +95,11 @@ export function mount(root) {
     showShots(root, shots.data);
   };
   const refreshTools = mountSceneTools(root, refresh);
+  const refreshWalkPress = mountWalkPress(root);
   if (state.scene) {
     showObjects(root, state.scene);
     refreshTools(state.scene);
+    refreshWalkPress(state.scene);
   }
   if (state.shots) showShots(root, state.shots);
   action(null, refresh, target);

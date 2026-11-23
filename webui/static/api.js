@@ -15,6 +15,7 @@ export const state = {
   renderOptions: null,
   reviewFrame: null,
   reviewVideo: null,
+  walkPressPreview: null,
   gallery: [],
 };
 const waiters = new Map();
@@ -112,6 +113,7 @@ function remember(job) {
     state.scene = null;
     state.shots = null;
     state.character = null;
+    state.walkPressPreview = null;
   }
   if (job.tool === "scene_info") state.scene = value;
   if (job.tool === "list_shots") state.shots = value;
