@@ -29,6 +29,9 @@ def _handle(req):
 
 def serve(host, port, workspace):
     context.init(workspace)
+    # Start from the same empty scene as new_scene: Blender's factory startup
+    # cube/camera/light would otherwise end up inside the first built set.
+    dispatch("new_scene", {})
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))

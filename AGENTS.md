@@ -8,6 +8,8 @@ tools — do not try to launch Blender yourself.
 - Units: meters. Z is up. Characters stand on Z=0 and **face -Y** (the "front" view).
 - A human character is ~1.6–1.9 m tall. Check `dimensions` in `scene_info`.
 - Object names are case-sensitive and unique; always take them from `scene_info`.
+- A freshly started engine already holds an empty scene, the same as `new_scene()`
+  (no factory cube, camera or light).
 - Relative paths resolve inside the workspace (`output/` by default):
   `import_model` → `imports/`, `export_asset` → `exports/`,
   `save_project`/`open_project` → `projects/`, renders → `renders/`.
