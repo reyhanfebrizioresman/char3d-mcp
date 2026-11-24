@@ -681,7 +681,7 @@ def _articulate_toes(rig, start, targets, toe_roll):
     bpy.context.view_layer.update()
 
 
-def _stance_height(rig, start, targets, events):
+def _stance_height(rig, start, targets, events, toe_roll=None):
     """Vault over support, allowing loading flexion without a future swing drop.
 
     Fit the pelvis from a bent supporting leg and both legs' reach. Smooth its
@@ -692,6 +692,27 @@ def _stance_height(rig, start, targets, events):
         return
     smap = anim.semantic_map(rig)
     mw = rig.matrix_world
+    # Minimum airborne ankle height from the actual articulated sole, rather
+    # than the inherited swing arc (which itself may cause the braking pop).
+    legs, _ = _legs(rig)
+    clearance_z = {}
+    for side in 'LR':
+        sole = _sole_points(rig, legs[side], 0)
+        rest = mw @ rig.data.bones[smap['foot.'+side]].matrix_local
+        toe = smap.get('toe.'+side)
+        if toe:
+            toe_rest = mw @ rig.data.bones[toe].matrix_local
+            origin = rest.inverted() @ toe_rest.translation
+            relative = rest.to_quaternion().inverted() @ toe_rest.to_quaternion()
+            distal = [toe_rest.inverted() @ (rest @ p) for p in sole[1:]]
+        values = []
+        for i, (_p, q) in enumerate(targets[side]):
+            offsets = [(q @ p).z for p in sole]
+            if toe:
+                tq = (toe_roll or {}).get(side,{}).get(i,Quaternion()) @ q @ relative
+                offsets[1:] = [(q @ origin).z+(tq @ p).z for p in distal]
+            values.append(-min(offsets)+.00005)
+        clearance_z[side] = values
     lengths = {}
     for side in "LR":
         pts = [mw @ rig.data.bones[smap[b+"."+side]].head_local
@@ -752,6 +773,48 @@ def _stance_height(rig, start, targets, events):
         for i in indices:
             j = i-1 if indices.step > 0 else i+1
             heights[i] = min(heights[i], heights[j]+dz)
+    # A fixed vertical speed still permits a large angular jump near full
+    # extension. Anticipate contact flexion in joint space: lower the pelvis
+    # only where a neighbouring supported sample requires more knee bend.
+    # Both feet's world targets, route XY and every landing time stay fixed.
+    knee_rate = math.radians(14.0) * 24 / fps
+
+    def contact_knee(i, side, floor_only=False):
+        world, hips, _ = records[i]
+        H = hips[side].copy()
+        H.z += heights[i]-world.translation.z
+        l1, l2 = lengths[side]
+        A = targets[side][i][0].copy()
+        if floor_only:
+            A.z = clearance_z[side][i]
+        d2 = (H-A).length_squared
+        return math.acos(max(-1., min(1., (d2-l1*l1-l2*l2)/(2*l1*l2))))
+
+    for _ in range(8):
+        changed = False
+        for indices in (range(1,len(heights)), range(len(heights)-2,-1,-1)):
+            for i in indices:
+                j = i-1 if indices.step > 0 else i+1
+                for side in 'LR':
+                    if records[i][2][side]:
+                        continue
+                    # A low incoming swing can still require slightly more
+                    # flexion than the nominal heel-strike pose. Anticipate
+                    # that floor-limited reach at the fixed landing too.
+                    angle = contact_knee(j, side, floor_only=bool(records[j][2][side]))-knee_rate
+                    if angle <= contact_knee(i, side)+1e-7:
+                        continue
+                    world, hips, _ = records[i]
+                    H, A = hips[side], targets[side][i][0]
+                    l1, l2 = lengths[side]
+                    reach2 = l1*l1+l2*l2+2*l1*l2*math.cos(angle)
+                    xy = (A.x-H.x)**2+(A.y-H.y)**2
+                    z = A.z+math.sqrt(max(0.,reach2-xy))-(H.z-world.translation.z)
+                    if z < heights[i]-1e-8:
+                        heights[i] = z
+                        changed = True
+        if not changed:
+            break
     # Retain the inherited airborne clearance, but join it continuously to
     # the actual release ankle. Per-frame projection at the first swing frame
     # otherwise snaps a nearly extended turning support into a bent leg.
@@ -796,11 +859,43 @@ def _stance_height(rig, start, targets, events):
                 xy = (A.x-H.x)**2+(A.y-H.y)**2
                 z = max(A.z,H.z-math.sqrt(max(0,reach*reach-xy)))
             targets[side][i][0].z = z
+        world = world.copy()
         world.translation.z = min(heights[i], ceilings[i])
         bpy.context.scene.frame_set(f)
         hp = rig.pose.bones[smap["hips"]]
         hp.matrix = mw.inverted() @ world
         hp.keyframe_insert("location", frame=f, group=hp.name)
+    # Short braking swings otherwise compress the 60-degree airborne peak
+    # into too few samples to return to the fixed landing. Project their knee
+    # arc into the reachable angular envelope between the actual release and
+    # landing. Only airborne ankle Z can change; contact/roll poses are exact.
+    for side in 'LR':
+        l1, l2 = lengths[side]
+        def hip_at(i):
+            H = records[i][1][side].copy()
+            H.z += heights[i]-records[i][0].translation.z
+            return H
+        def angle_at(i):
+            d2 = (hip_at(i)-targets[side][i][0]).length_squared
+            return math.acos(max(-1., min(1., (d2-l1*l1-l2*l2)/(2*l1*l2))))
+        for ev in by_side[side]:
+            a, b = max(0, ev['lift']-start), ev['land']-start
+            values = [angle_at(i) for i in range(a,b+1)]
+            # Upper cones from fixed endpoints preserve a full peak whenever
+            # swing duration permits it, but reduce unreachable quick shuffles.
+            for k in range(1,len(values)-1):
+                values[k] = min(values[k], values[0]+k*knee_rate,
+                                values[-1]+(len(values)-1-k)*knee_rate)
+            for indices in (range(1,len(values)-1), range(len(values)-2,0,-1)):
+                for k in indices:
+                    j = k-1 if indices.step > 0 else k+1
+                    values[k] = max(values[j]-knee_rate, min(values[j]+knee_rate, values[k]))
+            for k, angle in enumerate(values[1:-1],1):
+                i = a+k
+                H, A = hip_at(i), targets[side][i][0]
+                reach2 = l1*l1+l2*l2+2*l1*l2*math.cos(angle)
+                xy = (A.x-H.x)**2+(A.y-H.y)**2
+                A.z = max(clearance_z[side][i], H.z-math.sqrt(max(0.,reach2-xy)))
     bpy.context.view_layer.update()
 
 
@@ -1001,7 +1096,7 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                                    track_width=gait.get("track"), toe_targets=toe_roll,
                                    support_events=support_events, toe_out=math.radians(7) if pelvis_gait else 0.0)
     if pelvis_gait:
-        _stance_height(rig, start, targets, support_events)
+        _stance_height(rig, start, targets, support_events, toe_roll)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
                      ground=ground, adjust_hips=not pelvis_gait)
     _articulate_toes(rig, start, targets, toe_roll)

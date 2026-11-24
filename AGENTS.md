@@ -1914,7 +1914,7 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   and full counter arm swing at double support. On flat ground a walk uses steps of about
   0.37 x stature on a narrow track (ankle centres ~0.055 x stature apart while cruising,
   opening toward the ~0.115 x stature stance in bends and while slowing). Flat walking
-  adds 7° outward foot progression; heel centres measure ~10.8 cm on the adult
+  adds a 7° rest-relative foot yaw; heel centres measure ~10.8 cm on the adult
   MPFB fixture. Landing lookahead removes the rest ankle's sagittal offset and checks
   each foot's own side at heel strike and the upcoming support heading. Walking
   uses explicit loading response (0–10% of a same-foot cycle), mid-stance (10–30%),
@@ -2004,7 +2004,7 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   double support. `tests/test_walk_gait.py` checks phase/spring signals without
   Blender; `tests/walk_gait_checks.py` measures the baked MPFB toe sole, support
   overlap, drift, penetration, actual mid-stance/swing knee angles, heel width,
-  outward progression and final hold (all bones, including fingers) on an isolated engine.
+  legacy foot yaw and final hold (all bones, including fingers) on an isolated engine.
   Heel widths omit the initial 30-frame standing transition, where a lifted rear heel
   is not a steady cruising footprint. Round 7 evidence is under
   `output/walk_round7/`; use only port 9977 and the installed Python from the main
@@ -2018,6 +2018,52 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   `render_frames(..., view="top")` with waypoint markers for the route and
   `view="right"`/`"three_quarter"` for steps. Z follows walkable terrain (see below);
   static obstacle avoidance is described below.
+  Round 8 adds `tests/walk_benchmark.py`: 36 cached cases (three MPFB
+  proportions x straight speeds .6/1/1.6, short start/stop, cruise-stop,
+  left/right 45/90 degree bends, left/right 180 degree pivots, S curve).
+  Use port 9977, software GL, `CHAR3D_ALLOW_PYTHON=1` and
+  `CHAR3D_WORKSPACE=$PWD/output/walk_round8` with the main checkout's venv;
+  keep `BLENDER_USER_RESOURCES` and `XDG_CACHE_HOME` inside that workspace.
+  Run `--baseline --label v9` for pinned `42487f5`, then `--label v10`.
+  `--body`/`--case` select cheap iterations; `--resume` validates source and
+  fixture fingerprints before reuse. `--baseline --label v9 --remeasure`
+  refreshes baseline telemetry from saved animations without rebaking.
+  JSON contains every frame and same-foot step, incomplete start/closing
+  transitions, phase angles/timing, contact drift/penetration, progression,
+  width/length, left/right asymmetry, root rotation by support and final hold.
+  Root heading is sampled from the actual heading plan, separately from
+  the pelvis gait accent. Double support integrates frame intervals rather
+  than counting both touchdown/liftoff endpoints as full frames.
+  Anatomical FPA uses the actual heel-to-toe axis; positive means outward
+  on each side (+X is anatomical left when facing -Y). This audit found the
+  inherited 7-degree yaw actually reads as approximately 7-degree toe-in.
+  `legacy_progression_deg` retains the old reversed sign for compatibility;
+  it is not an outward anatomical measurement. `--refresh-summary` recalculates
+  FPA/envelope summaries from saved rows offline, preserving the bake fingerprint
+  and recording a separate analysis fingerprint. No animation needs rebaking.
+  Foot roll is heel-up pitch against the floor; ankle plantarflexion is
+  signed shin-relative rotation from rest; MTP extension is toe relative to
+  foot. Known independent rotations and yaw invariance calibrate these
+  channels. Round 6/7 knee envelopes and approximate clinical ankle/MTP
+  ranges flag individual steps; they are diagnostics, distinct from the
+  hard contact/heading/destination/hold contracts. See JSON references.
+  `tests/walk_round8_review.py --prepare` saves the original v9 camera/route;
+  `--render` renders one draft movie/keyframe sheet and a 12-case side/top
+  benchmark sheet after numeric checks. `tests/walk_round8_asset_checks.py`
+  compares native mesh/morph/weights/rest bones/material slots and runs asset QA.
+  Its motion-regression gate compares generic QA categories with the matched
+  v9 animation and preserves absolute findings verbatim. Native MPFB helper/
+  alpha-card overlaps and the shared eyebrow albedo/bump sRGB finding were
+  already retained in Round 7; a regression pass does not mean absolute asset
+  QA is clean. Review `asset_qa.json` for both versions and remaining warnings.
+  The Round 8 flat-walk pelvis fit additionally anticipates supported knee
+  changes in angular space (336 degrees/s, 14 degrees/frame at 24 fps).
+  Short airborne arcs are bounded by actual release/landing angles, reducing
+  the peak only when the available time cannot accommodate it. An articulated
+  sole bound permits lowering excess swing height without crossing the floor;
+  floor-limited incoming reach also informs the landing pelvis height.
+  Foot anchors/rotations, root XY, timing and the final four-frame hold remain
+  fixed. Heel-rise, MTP push and nominal knee phase targets are unchanged.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - **Static obstacle avoidance** — `walk_path(..., avoid="auto", ignore=None)` snapshots
   evaluated visible mesh footprints at the start frame, including furniture and other

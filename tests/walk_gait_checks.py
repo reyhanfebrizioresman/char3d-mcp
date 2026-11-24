@@ -192,8 +192,13 @@ def main():
             half = ev['land']-ev['opposite_land']
             # Each overlap is 10% of a full cycle, within half a video frame.
             assert abs((ev['lift']-ev['opposite_land'])/(2*half)-.10) <= .5/(2*half)+1e-9, ev
-        assert measured['knee_step_deg'] < 25, measured
+        # Round 8 anticipates contact flexion and limits short swing arcs in
+        # joint space. Enforce the stricter braking/start target on baked IK.
+        assert measured['knee_step_deg'] < 15, measured
         assert all(.08 <= width <= .12 for width in measured['cruise_heel_width_m']), measured
+        # Historical rest-relative yaw convention, retained for compatibility.
+        # The Round 8 benchmark measures anatomical heel-to-toe progression:
+        # this authored +/-7 degree yaw currently reads as toe-in, not toe-out.
         assert all(5 <= angle <= 10 for angle in measured['progression_deg']), measured
         assert 5 <= measured['knee_curve_deg']['0.2'] <= 12, measured
         assert 5 <= measured['knee_curve_deg']['0.3'] <= 12, measured
