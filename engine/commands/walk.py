@@ -137,12 +137,15 @@ def _curves(points, safe=None):
     return out
 
 
-def _turn(keys, yaw, terrain=False):
+def _turn(keys, yaw, terrain=False, quick=False):
     t, pos, old = keys[-1]
     delta = _angle(old, yaw)
     if abs(delta) < 1e-6:
         return
+    # quick: a deliberate in-place turn_to (180 deg in ~1.4 s, film/mocap reference);
+    # route corners keep the 100 deg/s heading limit.
     duration = (max(0.3, abs(delta) / TURN_RATE + 0.15) if terrain else
+                max(.45, QUICK_TURN_S * abs(delta) / math.pi) if quick else
                 max(0.25, 1.5 * abs(delta) / TURN_RATE))
     count = max(2, int(math.ceil(duration * 48)))
     for i in range(1, count + 1):
@@ -157,7 +160,7 @@ def _turn(keys, yaw, terrain=False):
         keys.append((t + duration*u, pos.copy(), old + delta*progress))
 
 
-def _route(pos, yaw, points, velocity, ground=None, fps=24, speed=1.0, safe=None):
+def _route(pos, yaw, points, velocity, ground=None, fps=24, speed=1.0, safe=None, brake=None):
     keys = [(0.0, pos.copy(), yaw)]
     distance = 0.0
     for curve in _curves(points, safe) if len(points) > 1 else []:
@@ -185,8 +188,9 @@ def _route(pos, yaw, points, velocity, ground=None, fps=24, speed=1.0, safe=None
             # Accelerate/decelerate over roughly one step; shorter foot placements
             # supply the lower speed at tight corners.
             accel = velocity * 0.7
+            decel = brake or accel     # brake: m/s^2 for a short, deliberate stop
             v = min(limits[i], limits[i-1], math.sqrt(2*accel*max(mid, 0.001)),
-                    math.sqrt(2*accel*max(lengths[-1] - mid, 0.001)))
+                    math.sqrt(2*decel*max(lengths[-1] - mid, 0.001)))
             t, _p, old = keys[-1]
             delta = _angle(old, heading)
             dt = max(ds / v, abs(delta) / TURN_RATE, 1e-5)
@@ -218,27 +222,44 @@ def _half_step(clip, fps, speed):
     return max(2, int(round(anim.CLIPS[clip][1]*fps/(48*speed))))
 
 
-def _arrival_samples(keys, fps, half_step):
+def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=None):
     """Finish stepping with the body instead of after it.
 
     The lead foot lands at the final stance and the trailing foot closes beside it
     about .3 s before the decelerating hips stop; the body then glides over both
-    planted feet. Steps are spread evenly over the travel (shorter as it slows).
+    planted feet. Steps are spread evenly over the travel (shorter as it slows);
+    count fixes the number of steps and last_weight lengthens the closing step. brake
+    (frames) makes the last two steps quick braking steps with a shorter glide.
+    Returns samples, active frame, half-step phases and the mean step length in frames.
     """
     samples, arrival = _samples(keys, fps, half_step)
-    glide = max(2, round(.3 * fps))
+    glide = max(2, round((.15 if brake else .3) * fps))
     hold = max(4, round(fps / 4))
     shortest = max(2, round(.6 * half_step))
     final = max(arrival - glide, 2 * shortest)
-    count = max(2, min(round(final / half_step), final // shortest))
+    if count is None:
+        count = max(2, min(round(final / half_step), final // shortest))
+    count = max(2, min(count, final // 2))
     length = max(arrival, final + glide) + hold + 1
     samples = (samples + [samples[-1]] * length)[:length]
+    if brake and final > 2 * brake + shortest:
+        # Cruise steps fill the travel up to the two quick braking steps.
+        cruise = final - 2 * brake
+        lead = max(1, round(cruise / half_step))
+        boundaries = ([round(cruise * k / lead) for k in range(lead + 1)] +
+                      [cruise + brake, final])
+        count = len(boundaries) - 1
+    else:
+        weights = [1.0] * (count - 1) + [last_weight]
+        edges = [0.0]
+        for weight in weights:
+            edges.append(edges[-1] + weight)
+        boundaries = [round(final * e / edges[-1]) for e in edges]
     phases = [float(count)] * length
-    boundaries = [round(step * final / count) for step in range(count + 1)]
     for step, (first, last) in enumerate(zip(boundaries, boundaries[1:])):
         for frame in range(first, last):
             phases[frame] = step + (frame - first) / (last - first)
-    return samples, max(0, final - half_step), phases
+    return samples, max(0, final - half_step), phases, max(2, round(final / count))
 
 
 def _walk_half_step(d, velocity, fps, speed):
@@ -393,6 +414,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                       for s in "LR"}
     support = min(initial_height, key=initial_height.get)
     targets, contacts, footfalls = {}, {}, []
+    cruise = max(((b[0] - a[0]).length for a, b in zip(samples, samples[1:])), default=0.0)
     for side in "LR":
         rest = mw @ rig.data.bones[smap[f"foot.{side}"]].matrix_local
         sole = _sole_points(rig, legs[side], mw.translation.z)
@@ -408,12 +430,24 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                 return offset.copy()
             return offset - lateral * (width - math.copysign(limit / 2, width))
 
-        settled, stepping = narrowed(stance), narrowed(track_width)
+        settled = narrowed(stance)
+
+        def stepping(index):
+            """Narrow track on straight cruising; open toward the stance in bends/slowing."""
+            if not track_width or not stance:
+                return narrowed(track_width)
+            a, b = max(0, index - half), min(n - 1, index + half)
+            turning = abs(_angle(samples[a][1], samples[b][1])) / math.radians(35)
+            pace = (samples[b][0] - samples[a][0]).length / max(1, b - a) / cruise if cruise else 1.0
+            slowing = (.65 - pace) / .4
+            mix = max(0.0, min(1.0, max(turning, slowing)))
+            return narrowed(track_width + (stance - track_width) * mix)
 
         def landing(frame, duration, final=False):
-            p, yaw = samples[min(frame + (duration-flight)//2, n - 1)]
+            index = min(frame + (duration-flight)//2, n - 1)
+            p, yaw = samples[index]
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
-            ankle = p + q @ (settled if final else stepping)
+            ankle = p + q @ (settled if final else stepping(index))
             ankle.z = rest.translation.z - mw.translation.z
             rotation = q @ rest.to_quaternion()
             if ground is None:
@@ -507,7 +541,11 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
     half = gait.get("half") or _half_step(clip, fps, speed)
     amp = gait.get("amp", 1.0)
     weight = gait.get("weight", 0.0)
+    pelvis_gait = gait.get("pelvis", False) and phases is not None and ground is None
     support_sign = 1.0 if _support_side(rig, initial_feet) == "L" else -1.0
+    # Per-frame pelvis yaw (radians) and lateral sway (world vector) for the route root.
+    pelvis_yaw = [0.0] * len(samples)
+    sway = [Vector() for _ in samples]
     end = start + len(samples) - 1
     prev = anim._sample_pose(rig, start)
     hips_name = anim.semantic_map(rig)["hips"]
@@ -552,6 +590,22 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
             rots = {b: [relaxed.get(b, (0, 0, 0))[k]*(1-w) + v[k]*w for k in range(3)]
                     for b, v in rots.items()}
             rots["hips"] = (0, 0, 0)
+            if pelvis_gait:
+                # Weight transfer (film/mocap reference): the pelvis shifts ~3 cm over the
+                # supporting foot at mid-stance, yaws ~5 degrees with the forward leg at heel
+                # strike, and the shoulders counter-rotate ~6 degrees against it.
+                stride = math.sin(math.pi * phase / half)       # +1: left thigh forward
+                lean = math.sin(math.pi * phases[i]) * support_sign
+                # Fade the yaw while the route itself turns fast, so pelvis sway never
+                # pushes body yaw past the 100 deg/s heading limit.
+                rate = abs(_angle(samples[max(0, i - 1)][1], samples[min(len(samples) - 1, i + 1)][1])) * fps / 2
+                calm = max(0.0, 1.0 - rate / (TURN_RATE * .7))
+                pelvis_yaw[i] = -math.radians(PELVIS_YAW) * stride * w * amp * calm
+                left = Vector((math.cos(yaw), math.sin(yaw), 0.0))
+                sway[i] = left * (PELVIS_SWAY * lean * w)
+                spine = list(rots.get("spine", (0, 0, 0)))
+                spine[1] += (PELVIS_YAW + SHOULDER_COUNTER - 4.0) * stride * w * amp
+                rots["spine"] = spine
             if weight and phases is not None and ground is None:
                 # In-place steps: lean the trunk over the supporting foot mid-step and
                 # let the pelvis settle ~1.2 cm as each foot lands (weight transfer).
@@ -559,7 +613,7 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                 spine = list(rots.get("spine", (0, 0, 0)))
                 spine[2] -= 3.5 * weight * lean      # Z+ leans to the character's right
                 rots["spine"] = spine
-                up -= .012 * weight * (.5 + .5 * math.cos(2 * math.pi * phases[i]))
+                up -= .012 * weight * w * (.5 + .5 * math.cos(2 * math.pi * phases[i]))
             if ground is not None:
                 a, b = max(0, i-half), min(len(samples)-1, i+half)
                 delta = samples[b][0] - samples[a][0]
@@ -570,13 +624,14 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                 root_heights.append(root_rest.z + up)
             # _drive retargets offsets from the proxy rest onto the target rest.
             # Rigify's torso control need not share the proxy pelvis' rest head.
-            offset = undo @ Vector((pos.x - root_rest.x, pos.y - root_rest.y, 0.0))
+            moved = pos + sway[i]
+            offset = undo @ Vector((moved.x - root_rest.x, moved.y - root_rest.y, 0.0))
             anim._key_basic(basic, f, rots,
                             (offset.x, up if ground else up*w, -offset.y))
             bpy.context.view_layer.update()
             hp = basic.pose.bones["hips"]
             world = mw @ hp.matrix
-            q = Quaternion((0, 0, 1), yaw - turn - rest_yaw) @ world.to_quaternion()
+            q = Quaternion((0, 0, 1), yaw - turn - rest_yaw + pelvis_yaw[i]) @ world.to_quaternion()
             anim._set_world_rot(basic, hp, q)
             anim._key_rot(hp, f, previous)
 
@@ -602,7 +657,7 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
             q = (mw @ hp.matrix).to_quaternion()
             heading = (_anatomical_yaw(rig) if _world_route else
                        _yaw(q @ rest.inverted() @ forward))
-            correction = Quaternion((0, 0, 1), _angle(heading, samples[f - start][1]))
+            correction = Quaternion((0, 0, 1), _angle(heading, samples[f - start][1] + pelvis_yaw[f - start]))
             loc = None
             if ground is not None:
                 # Cached mannequin landmarks can precede an object transform. Retarget
@@ -613,7 +668,7 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
             elif _world_route:
                 # Paired approaches need absolute world routes even when a proxy's
                 # rest orientation predates an object transform. Keep walk bob Z.
-                pos = samples[f-start][0]
+                pos = samples[f-start][0] + sway[f-start]
                 loc = Vector((pos.x, pos.y, (mw @ hp.matrix).translation.z))
             anim._set_world_rot(rig, hp, correction @ q, loc)
             anim._key_rot(hp, f, previous)
@@ -637,6 +692,7 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                            "gait": "run/walk" if clip == "run" and any(
                                ground.gait(p, yaw)[0] for p, yaw in samples) else clip,
                            "bake_seconds": round(time.perf_counter()-began, 3)}
+    info["_sway"] = sway
     anim._extend_range(end)
     sc.frame_set(end)
     return {"armature": rig.name, "frames": [start, end], "next_start_frame": end + 1,
@@ -747,6 +803,12 @@ def _phase_offset(rig, feet):
     return .5 if _support_side(rig, feet) == "L" else -.5
 
 
+QUICK_TURN_S = 1.4                    # seconds for an in-place 180-degree turn_to
+STOP_SECONDS = .45                    # cruise speed to standstill on flat walks
+BRAKE_STEP_S = .32                    # each of the two braking steps
+PELVIS_YAW = 5.0                      # degrees, peaks at heel strike with the forward leg
+PELVIS_SWAY = .03                     # metres toward the supporting foot at mid-stance
+SHOULDER_COUNTER = 6.0                # degrees the shoulders turn against the pelvis
 STANCE = .115                         # relaxed stop: ankle centres ~0.2 m apart at 1.75 m
 TRACK = .09                           # walking step width: ankle centres ~0.16 m apart
 TURN_STEP_S = .33                     # in-place turns take short, quick steps
@@ -873,8 +935,11 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
             avoided = planner.detours > 0
             route = planned
             planning_seconds = time.perf_counter()-began
+        # Flat walks brake within ~0.45 s (film/mocap reference) on two quick steps.
+        braking = ground is None and clip == "walk"
         keys, distance = _route(pos, yaw, route, velocity, ground, fps, speed,
-                                planner.curve_free if avoided else None)
+                                planner.curve_free if avoided else None,
+                                brake=velocity / STOP_SECONDS if braking else None)
         if face_end is not None:
             target = _target_yaw(face_end, route[-1], start + math.ceil(keys[-1][0]*fps), keys[-1][2])
             _turn(keys, target, terrain=ground is not None)
@@ -888,16 +953,20 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
         if not flat:
             samples, active, phases, runs = _terrain_samples(keys, fps, clip, speed, ground)
         else:
-            samples, active, phases = _arrival_samples(keys, fps, half)
+            samples, active, phases, _step = _arrival_samples(
+                keys, fps, half, brake=max(2, round(BRAKE_STEP_S * fps / speed)) if braking else None)
         gait = {"half": half, "arrive": flat, "roll": flat and clip == "walk",
                 "phase_offset": _phase_offset(rig, feet), "stance": STANCE * d["H"],
-                "track": TRACK * d["H"] if flat else None}
-        navigation = (planner.report(route, samples, avoided) if planner else
+                "track": TRACK * d["H"] if flat else None, "pelvis": flat and clip == "walk"}
+        result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
+                       phases=phases, runs=runs, _world_route=_world_route, gait=gait)
+        # Clearance is reported for the actual root, including the pelvis weight shift.
+        sway = result.pop("_sway", None) or [Vector()] * len(samples)
+        rooted = [(p + d, yaw) for (p, yaw), d in zip(samples, sway)]
+        navigation = (planner.report(route, rooted, avoided) if planner else
                       {"avoided": False, "detours": 0, "path_points": [list(p)[:2] for p in route],
                        "clearance_m": None, "warnings": []})
         navigation["planning_seconds"] = round(planning_seconds, 6)
-        result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
-                       phases=phases, runs=runs, _world_route=_world_route, gait=gait)
         result["gaze_lead"] = _lead_gaze(rig, start, samples, fps)
         footfalls = result["footfalls"]
         if flat and footfalls and footfalls[-1]["frame"] < result["frames"][1]:
@@ -931,7 +1000,7 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
             planning_seconds = time.perf_counter()-began
         heading = _target_yaw(target, pos, start, yaw)
         keys = [(0.0, pos, yaw)]
-        _turn(keys, heading)
+        _turn(keys, heading, quick=ground is None)
         fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
         flat = ground is None
         gait = {"phase_offset": _phase_offset(rig, feet)}
@@ -939,8 +1008,10 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
             # Short quick steps with little leg/arm swing, a light heel roll, and no idle
             # tail: the last two steps gather as the rotation finishes.
             d = anim._dims(anim._rig_landmarks(rig, anim.semantic_map(rig)))
-            half = max(2, round(TURN_STEP_S * fps))
-            samples, active, phases = _arrival_samples(keys, fps, half)
+            # About one step per 60 degrees plus the closing step: 180 deg -> 4 steps.
+            steps = max(2, round(abs(math.degrees(_angle(yaw, heading))) / 60) + 1)
+            samples, active, phases, half = _arrival_samples(
+                keys, fps, max(2, round(TURN_STEP_S * fps)), count=steps, last_weight=1.35)
             gait.update(half=half, arrive=True, roll=True, roll_scale=.5, amp=.35, weight=1.0,
                         stance=STANCE * d["H"], track=STANCE * d["H"])
         else:
@@ -953,6 +1024,7 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
         navigation["planning_seconds"] = round(planning_seconds, 6)
         result = _bake(rig, start, samples, active, feet, "walk", 1.0, ground=ground,
                        phases=phases, _world_route=_world_route, gait=gait)
+        result.pop("_sway", None)
         result["gaze_lead"] = _lead_gaze(rig, start, samples, fps)
         return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3),
                 **navigation}

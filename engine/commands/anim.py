@@ -278,6 +278,7 @@ STRIDE_SCALE = {"walk": 1.25, "run": 1.3}
 def _walk_like(i, T, d, rest, amp, run=False):
     p = 2 * math.pi * i / T
     s = math.sin(p)
+    lag = math.sin(p - .7)          # forearm follow-through for walks
     A = (38 if run else 24) * amp
     knee_amp = (85 if run else 48) * amp
     # knee flexes in swing only: straight from heel strike (thigh fully forward, p = pi/2)
@@ -288,11 +289,12 @@ def _walk_like(i, T, d, rest, amp, run=False):
         "shin.L": [-(6 + knee_amp * lift(p)), 0, 0],
         "shin.R": [-(6 + knee_amp * lift(p + math.pi)), 0, 0],
         "foot.L": [10 * s * amp, 0, 0], "foot.R": [-10 * s * amp, 0, 0],
-        # Arms counter-swing the legs; the elbow flexes more on the forward swing.
+        # Arms counter-swing the legs; the elbow flexes more on the forward swing and,
+        # for walks, the forearm follows the upper arm ~11% of a cycle late (drag).
         "upper_arm.L": [-(30 if run else 22) * s * amp, 0, -72 if run else -78],
         "upper_arm.R": [(30 if run else 22) * s * amp, 0, -72 if run else -78],
-        "forearm.L": [(75 if run else 14) + (10 if run else 14) * max(0, -s), 0, 0],
-        "forearm.R": [(75 if run else 14) + (10 if run else 14) * max(0, s), 0, 0],
+        "forearm.L": [(75 if run else 14) + (10 if run else 16) * max(0, -(s if run else lag)), 0, 0],
+        "forearm.R": [(75 if run else 14) + (10 if run else 16) * max(0, s if run else lag), 0, 0],
         "spine": [(12 if run else 3), 4 * s * amp, 0],
         "hips": [0, -6 * s * amp, 0],
         "head": [-(6 if run else 2), -3 * s * amp, 0],

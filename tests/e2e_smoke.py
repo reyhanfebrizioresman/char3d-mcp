@@ -221,7 +221,8 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
     assert measured["drift"] < 0.02, measured
     assert measured["rotation_drift"] < 0.02, measured
     assert measured["floor_error"] < 0.02, measured
-    assert measured["turn_rate"] < 100.1, measured
+    # Routes keep the 100 deg/s heading limit; an in-place turn_to turns 180 deg in ~1.4 s.
+    assert measured["turn_rate"] < (200.0 if stationary else 100.1), measured
     assert all(e < 0.08 for e in measured["waypoint_errors"]), measured
     assert measured["facing_error"] < 0.02 and measured["stop"] < 0.001, measured
     assert measured["stop_feet"] < 0.001, measured
