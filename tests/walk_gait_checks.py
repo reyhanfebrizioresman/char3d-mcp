@@ -106,6 +106,30 @@ for ev in nav.get('support_events', []):
         toe_support_drift = max(toe_support_drift, max((toe_points[ev['side']][i-nav['frames'][0]]-anchor).length for i in range(a,b+1)))
     assert all(gaps[ev['side']][i-nav['frames'][0]] < .002 for i in range(a, b+1)), (ev, gaps[ev['side']][a-1:b])
     assert gaps[other][a-nav['frames'][0]] < .002, ev
+# Round 6: measure actual baked straight-walk joint angles and heel centres.
+# Exclude the standing start and the two gathering/braking steps.
+cycles = []
+heel_widths, progression = [], []
+route = nav.get('path_points', [])
+straight = (len(route) >= 2 and route[-1][1] < route[0][1]
+            and all(abs(p[0]-route[0][0]) < 1e-5 for p in route))
+for side in ('LR' if straight else ''):
+    lands = [e['frame'] for e in nav.get('footfalls', []) if e['side'] == side]
+    for a,b in zip(lands, lands[1:]):
+        if a < nav['frames'][0]+20 or b > nav['frames'][1]-30:
+            continue
+        cycles.append({{str(u): knees[side][round(a+(b-a)*u)-nav['frames'][0]]
+                       for u in (0,.05,.2,.3,.4,.55,.8)}})
+    for frame in lands:
+        if nav['frames'][0]+20 < frame < nav['frames'][1]-30:
+            i = frame-nav['frames'][0]
+            heels = {{s: feet[s][i] @ sole[s][0] for s in 'LR'}}
+            heel_widths.append(abs(heels['L'].x-heels['R'].x))
+            rest = mw @ rig.data.bones[smap['foot.'+side]].matrix_local
+            from mathutils import Vector
+            forward = feet[side][i].to_quaternion() @ rest.to_quaternion().inverted() @ Vector((0,-1,0))
+            progression.append(math.degrees(math.atan2(forward.x,-forward.y)) * (-1 if side=='L' else 1))
+curve = {{u: sum(c[u] for c in cycles)/len(cycles) for u in cycles[0]}} if cycles else {{}}
 end_motion = max((p-roots[-1]).length for p in roots[-4:])
 # Ankle and all upper/lower body joints must settle in the final four frames.
 settled = settled_rotation = 0.0
@@ -124,7 +148,8 @@ result = dict(flat_drift_m=flat_drift, flat_floor_m=flat_floor, penetration_m=pe
               root_hold_m=end_motion, joint_hold_m=settled, joint_hold_rotation_rad=settled_rotation,
               mesh_penetration_m=mesh_penetration, mesh_flat_gap_m=mesh_flat_gap,
               destination_error_m=math.dist(roots[-1][:2], nav.get('destination', roots[-1][:2])),
-              momentum=nav.get('momentum'), gaze=nav.get('gaze_lead'))
+              momentum=nav.get('momentum'), gaze=nav.get('gaze_lead'),
+              knee_curve_deg=curve, cruise_heel_width_m=heel_widths, progression_deg=progression)
 ''')['result']
 
 
@@ -147,7 +172,7 @@ def main():
         measured = check(call, rig, nav)
         (evidence/'gait_metrics.json').write_text(json.dumps({'route':nav,'measured':measured}, indent=2))
         print('GAIT', json.dumps(measured), flush=True)
-        call('save_project', path='walk_gait_round5.blend')
+        call('save_project', path='walk_gait_round6.blend')
         if '--baseline' in sys.argv:
             print('WALK GAIT BASELINE MEASURED', flush=True)
             return
@@ -166,12 +191,17 @@ def main():
             # Each overlap is 10% of a full cycle, within half a video frame.
             assert abs((ev['lift']-ev['opposite_land'])/(2*half)-.10) <= .5/(2*half)+1e-9, ev
         assert measured['knee_step_deg'] < 25, measured
+        assert all(.08 <= width <= .12 for width in measured['cruise_heel_width_m']), measured
+        assert all(5 <= angle <= 10 for angle in measured['progression_deg']), measured
+        assert 5 <= measured['knee_curve_deg']['0.2'] <= 12, measured
+        assert 5 <= measured['knee_curve_deg']['0.3'] <= 12, measured
+        assert 55 <= measured['knee_curve_deg']['0.8'] <= 65, measured
         assert measured['momentum']['lean_deg'][0] < -1 and measured['momentum']['lean_deg'][1] > 1, measured
         frames = [nav['support_events'][2]['opposite_land']+k for k in (0,1,2,3,5,8)]
         call('render_frames', frames=frames, view='right', size=512, engine='workbench', objects=[rig])
         for view in ('front','right','back','three_quarter'):
             call('render_preview', objects=[rig], view=view, frame=nav['support_events'][2]['lift'], width=384, height=384, engine='workbench')
-        call('save_project', path='walk_gait_round5.blend')
+        call('save_project', path='walk_gait_round6.blend')
         # A preceding gait can finish with one foot in flight. The initial
         # overlap must never turn that airborne pose into a reported contact.
         call('new_scene')

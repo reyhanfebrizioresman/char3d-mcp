@@ -1912,8 +1912,11 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   each support foot's world position **and rotation** throughout its contact, including
   turns. Walks, runs, terrain routes and turns put the clip's widest stride, lowest bob
   and full counter arm swing at double support. On flat ground a walk uses steps of about
-  0.37 x stature on a narrow track (ankle centres ~0.09 x stature apart while cruising,
-  opening toward the ~0.115 x stature stance in bends and while slowing). Walking
+  0.37 x stature on a narrow track (ankle centres ~0.055 x stature apart while cruising,
+  opening toward the ~0.115 x stature stance in bends and while slowing). Flat walking
+  adds 7° outward foot progression; heel centres measure ~10.8 cm on the adult
+  MPFB fixture. Landing lookahead removes the rest ankle's sagittal offset and checks
+  each foot's own side at heel strike and the upcoming support heading. Walking
   uses explicit loading response (0–10% of a same-foot cycle), mid-stance (10–30%),
   terminal stance (30–50%), pre-swing (50–60%) and swing (60–100%). Each double
   support lasts ~10% of a cycle (stance ~60%, frame-rounded): the rear toe lifts
@@ -1921,7 +1924,8 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   rise starting at 30% of the cycle. The heel rotates around the anatomical ball
   joint; the toe bone counter-rotates to keep the distal sole planted through
   push-off. A standing start eases the first push over a 0.20 s preparation
-  window; walk swing clearance is 4.5 cm, reduced for quick shuffles. Cruise
+  window; nominal walk swing clearance starts at 4.5 cm, reduced for quick shuffles,
+  then the flat-walk knee arc can raise the airborne ankle further. Cruise
   footprints are centred on the longer stance so rear-leg reach stays balanced.
   MPFB footwear calibrates the neutral evaluated outsole with a scaled 3 mm
   skin-flex margin, lifting the body and foot targets together. The saved
@@ -1938,9 +1942,21 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   Planned root acceleration drives a
   critically damped pitch spring (omega 14 rad/s, exact timestep integration,
   target limited to ±7°): the pelvis takes 28% and the spine 72%. Acceleration
-  leans forward, braking leans back and lowers the pelvis by up to 1.2 cm for
-  knee loading; the residual releases before the final four-frame still hold.
-  Deterministic, smoothly interpolated per-step accents vary arm swing by at most
+  leans forward; braking leans back and requests up to 1.2 cm pelvis loading
+  before the support-height fit below. The residual releases before the final
+  four-frame still hold.
+  Flat walking fits pelvis height from the supporting leg (9° contact, 18° loading,
+  7–8° mid-stance targets), with a 0.45 m/s vertical velocity envelope and both-leg
+  reach bounds retaining at least ~5.6° flexion. This replaces the clip bob and the
+  generic foot-lock's broad future reach drop during active support. An airborne
+  ankle follows a ~60° peak knee arc; no contact anchor moves. The sole calibration
+  lifts pelvis and ankle together and remains unchanged. The adult fixture measures
+  ~7–8° at 20–30% of a same-foot cycle; late terminal/pre-swing remains more bent
+  than the reference (~34° at 40%, ~45° at 55%) to anticipate the next contact.
+  Deterministic, normalized ±4.5% cruise timing weights vary both duration and
+  resulting stride length, with frame rounding. Route duration, braking boundaries
+  and destinations stay fixed. Deterministic, smoothly interpolated per-step
+  accents vary arm swing by at most
   3.5% and spine roll by 0.45°, preserving every foot target and landing time.
   Head, neck and chest anticipate heading changes by 1.0/.76/.50 local half-steps
   (about .50/.38/.25 s at normal cadence), including quicker braking/turn cadence;
@@ -1954,7 +1970,8 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   4 steps; 35% leg/arm swing, a light heel roll, the trunk leaning ~3.5° over the support
   foot and a ~1.2 cm dip per landing that releases as it stands). On flat ground it turns
   180° in ~1.4 s (eased, peaking near 190°/s; terrain turns keep the 100°/s limit),
-  ending as the rotation finishes, then stands. Targets at the root's XY
+  the rotation finishes before a 0.65 s closing hold. A single subtle 0.65° chest
+  expansion/release settles before the final four still frames. Targets at the root's XY
   position leave its heading unchanged; `"camera"` requires a scene camera/shot.
   Both tools support basic, Rigify and MPFB rigs through the same proxy as `animate`;
   `start_frame=None` appends after the rig's existing action (otherwise scene start).
@@ -1967,7 +1984,12 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   deliberately distinct from heel/toe support; do not count their overlap as
   double support. `tests/test_walk_gait.py` checks phase/spring signals without
   Blender; `tests/walk_gait_checks.py` measures the baked MPFB toe sole, support
-  overlap, drift, penetration and final hold on an isolated engine. Check
+  overlap, drift, penetration, actual mid-stance/swing knee angles, heel width,
+  outward progression and final hold on an isolated engine. Round 6 evidence is under
+  `output/walk_round6/`; use only port 9977 and the installed Python from the main
+  checkout. `BLENDER_USER_RESOURCES=output/walk_round6/blender_user` keeps MPFB
+  log/cache writes local; use software GL. The copied final navigation harness is
+  `output/walk_round6/tools/nav_e2e.py nav avoid terrain`. Check
   `render_frames(..., view="top")` with waypoint markers for the route and
   `view="right"`/`"three_quarter"` for steps. Z follows walkable terrain (see below);
   static obstacle avoidance is described below.

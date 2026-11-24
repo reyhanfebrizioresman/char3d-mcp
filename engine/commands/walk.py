@@ -224,7 +224,7 @@ def _half_step(clip, fps, speed):
     return max(2, int(round(anim.CLIPS[clip][1]*fps/(48*speed))))
 
 
-def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=None):
+def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=None, vary=False, hold_s=.25):
     """Finish stepping with the body instead of after it.
 
     The lead foot lands at the final stance and the trailing foot closes beside it
@@ -238,7 +238,7 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
     # Delayed toe-off must not force the lead braking foot far ahead of the
     # decelerating root. Close nearer standstill, retaining time to load both feet.
     glide = max(2, round((.10 if brake else .3) * fps))
-    hold = max(4, round(fps / 4))
+    hold = max(4, round(fps * hold_s))
     shortest = max(2, round(.6 * half_step))
     final = max(arrival - glide, 2 * shortest)
     if count is None:
@@ -251,7 +251,11 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
         cruise = final - 2 * brake
         # Never lengthen cruise strides to pay for double support in braking.
         lead = max(1, math.ceil(cruise / half_step))
-        boundaries = ([round(cruise * k / lead) for k in range(lead + 1)] +
+        weights = [1 + .045*step_variation(k, 3) if vary else 1.0 for k in range(lead)]
+        edges = [0.0]
+        for weight in weights:
+            edges.append(edges[-1]+weight)
+        boundaries = ([round(cruise * e / edges[-1]) for e in edges] +
                       [cruise + brake, final])
         count = len(boundaries) - 1
     else:
@@ -406,7 +410,7 @@ def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0, ball_
 
 def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None,
                arrive=False, roll=False, roll_scale=1.0, stance=None, track_width=None,
-               toe_targets=None, support_events=None):
+               toe_targets=None, support_events=None, toe_out=0.0):
     """Alternate planted supports and lifted swings; contacts freeze position AND yaw.
 
     arrive lands the last two steps side by side at the final stance (ankle centres at
@@ -444,7 +448,12 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
         sweep_sole = sole_footprint(sole, rest.to_quaternion()) if ground is not None else sole
         offset = rest.translation - root
         offset.z = 0.0
-        lateral = Vector((0, 0, 1)).cross(Vector((math.sin(rest_yaw), -math.cos(rest_yaw), 0)))
+        forward = Vector((math.sin(rest_yaw), -math.cos(rest_yaw), 0))
+        lateral = Vector((0, 0, 1)).cross(forward)
+        if toe_out:
+            # Rest ankles can sit forward of the pelvis. Footprint lookahead
+            # already centres the stance; adding that offset overreaches at landing.
+            offset -= forward * offset.dot(forward)
 
         def narrowed(limit):
             # A rest A-pose stands wider than people walk or stop; narrow toward `limit`.
@@ -474,8 +483,20 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             p, yaw = samples[index]
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
             ankle = p + q @ (settled if final else stepping(index))
+            if toe_out and not final:
+                # Check both heel strike and the upcoming support heading. A
+                # curved lookahead can otherwise put an outside foot across the
+                # current lane even though its offset at the future root is correct.
+                sign = 1 if side == "L" else -1
+                for check in (frame, index):
+                    centre, heading = samples[min(check, n-1)]
+                    left = Vector((math.cos(heading), math.sin(heading), 0))
+                    gap = sign*(ankle-centre).dot(left)
+                    minimum = (track_width or 0)*.45
+                    if gap < minimum:
+                        ankle += left*(sign*(minimum-gap))
             ankle.z = rest.translation.z - mw.translation.z + sole_lift
-            rotation = q @ rest.to_quaternion()
+            rotation = Quaternion((0, 0, 1), -toe_out if side == "L" else toe_out) @ q @ rest.to_quaternion()
             if ground is None:
                 return ankle, rotation
             # Search along the heading for a whole-sole landing, never across a nosing.
@@ -608,6 +629,98 @@ def _articulate_toes(rig, start, targets, toe_roll):
             q = (mw @ rig.pose.bones[foot].matrix).to_quaternion()
             anim._set_world_rot(rig, rig.pose.bones[toe], rolls.get(i, Quaternion()) @ q @ relative)
             anim._key_rot(rig.pose.bones[toe], start+i, previous)
+    bpy.context.view_layer.update()
+
+
+def _stance_height(rig, start, targets, events):
+    """Vault over support, allowing loading flexion without a future swing drop.
+
+    Fit the pelvis from a bent supporting leg and both legs' reach. Smooth its
+    height before fitting the airborne knee arc; a late swing must not drag the
+    support knee down. Ankle positions/rolls stay fixed throughout every contact.
+    """
+    if not events:
+        return
+    smap = anim.semantic_map(rig)
+    mw = rig.matrix_world
+    lengths = {}
+    for side in "LR":
+        pts = [mw @ rig.data.bones[smap[b+"."+side]].head_local
+               for b in ("thigh", "shin", "foot")]
+        lengths[side] = ((pts[1]-pts[0]).length, (pts[2]-pts[1]).length)
+    lands = sorted(events, key=lambda e: e["land"])
+    by_side = {s: [e for e in lands if e["side"] == s] for s in "LR"}
+    curve = ((0, 9), (.05, 18), (.10, 11), (.20, 7), (.30, 8), (.50, 12), (.60, 35))
+
+    def flex(knots, u):
+        for (a, x), (b, y) in zip(knots, knots[1:]):
+            if u <= b:
+                return math.radians(x + (y-x)*_smoothstep((u-a)/(b-a)))
+        return math.radians(knots[-1][1])
+
+    desired, ceilings, records = [], [], []
+    for i in range(len(targets["L"])):
+        f = start+i
+        bpy.context.scene.frame_set(f)
+        hp = rig.pose.bones[smap["hips"]]
+        world = mw @ hp.matrix
+        hips = {s: (mw @ rig.pose.bones[smap["thigh."+s]].matrix).translation for s in "LR"}
+        incoming = [e for e in lands if e["land"] <= f]
+        z = world.translation.z
+        if incoming:
+            e = incoming[-1]
+            side = e["side"]
+            following = next((v for v in by_side[side] if v["land"] > e["land"]), None)
+            cycle = following["land"]-e["land"] if following else 2*(e["land"]-e["opposite_land"])
+            angle = flex(curve, (f-e["land"])/max(1, cycle))
+            H, A = hips[side], targets[side][i][0]
+            l1, l2 = lengths[side]
+            xy = (A.x-H.x)**2 + (A.y-H.y)**2
+            reach2 = l1*l1+l2*l2+2*l1*l2*math.cos(angle)
+            z = A.z+math.sqrt(max(0,reach2-xy))-(H.z-world.translation.z)
+        # Release to standing during the two gathering steps.
+        release = (1-_smoothstep((f-lands[-2]["land"])/max(1,lands[-1]["land"]-lands[-2]["land"]))
+                   if len(lands)>1 else 0)
+        desired.append(world.translation.z+(z-world.translation.z)*release)
+        caps, swings = [], {}
+        for side in "LR":
+            H, A = hips[side], targets[side][i][0]
+            l1, l2 = lengths[side]
+            xy = (A.x-H.x)**2 + (A.y-H.y)**2
+            swing = next((e for e in by_side[side] if e["lift"] < f < e["land"]), None)
+            swings[side] = swing
+            if not swing:
+                caps.append(A.z+math.sqrt(max(0,((l1+l2)*.9988)**2-xy))-(H.z-world.translation.z))
+        ceilings.append(min(caps) if caps else desired[-1])
+        records.append((world, hips, swings))
+    # A downward-only velocity envelope anticipates low contact heights. It
+    # cannot overshoot a reach ceiling, unlike averaging around a heel strike,
+    # and leaves the mid-stance vault intact when no bound is active.
+    fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
+    dz = .45/fps
+    heights = [min(z, cap) for z, cap in zip(desired, ceilings)]
+    for indices in (range(1,len(heights)), range(len(heights)-2,-1,-1)):
+        for i in indices:
+            j = i-1 if indices.step > 0 else i+1
+            heights[i] = min(heights[i], heights[j]+dz)
+    for i, (world, hips, swings) in enumerate(records):
+        f = start+i
+        z = min(heights[i], ceilings[i])
+        for side, swing in swings.items():
+            if not swing:
+                continue
+            u = (f-swing["lift"])/(swing["land"]-swing["lift"])
+            angle = flex(((0,35),(.35,60),(.55,60),(.8,25),(1,9)), u)
+            H, A = hips[side], targets[side][i][0]
+            l1, l2 = lengths[side]
+            xy = (A.x-H.x)**2+(A.y-H.y)**2
+            reach2 = l1*l1+l2*l2+2*l1*l2*math.cos(angle)
+            A.z = max(A.z,z+H.z-world.translation.z-math.sqrt(max(0,reach2-xy)))
+        world.translation.z = z
+        bpy.context.scene.frame_set(f)
+        hp = rig.pose.bones[smap["hips"]]
+        hp.matrix = mw.inverted() @ world
+        hp.keyframe_insert("location", frame=f, group=hp.name)
     bpy.context.view_layer.update()
 
 
@@ -774,9 +887,11 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                                    arrive=gait.get("arrive", False), roll=gait.get("roll", False),
                                    roll_scale=gait.get("roll_scale", 1.0), stance=gait.get("stance"),
                                    track_width=gait.get("track"), toe_targets=toe_roll,
-                                   support_events=support_events)
+                                   support_events=support_events, toe_out=math.radians(7) if pelvis_gait else 0.0)
+    if pelvis_gait:
+        _stance_height(rig, start, targets, support_events)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
-                     ground=ground)
+                     ground=ground, adjust_hips=not pelvis_gait)
     _articulate_toes(rig, start, targets, toe_roll)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],
                          "hips_lowered_max_m": lock["hips_lowered_max_m"],
@@ -958,7 +1073,7 @@ PELVIS_YAW = 5.0                      # degrees, peaks at heel strike with the f
 PELVIS_SWAY = .03                     # metres toward the supporting foot at mid-stance
 SHOULDER_COUNTER = 6.0                # degrees the shoulders turn against the pelvis
 STANCE = .115                         # relaxed stop: ankle centres ~0.2 m apart at 1.75 m
-TRACK = .09                           # walking step width: ankle centres ~0.16 m apart
+TRACK = .055                          # ~10 cm heel track at adult stature
 TURN_STEP_S = .33                     # in-place turns take short, quick steps
 GAZE_LIMIT = math.radians(60)         # anticipation never exceeds a comfortable head yaw
 # (role, lead in half-steps, share of the heading change still to come).
@@ -1039,6 +1154,24 @@ def _settle_chest(rig, brake, end, yaw, fps):
     bpy.context.view_layer.update()
 
 
+def _breath_settle(rig, begin, end, yaw):
+    """One subtle chest expansion/release; all channels stop before the final four frames."""
+    name = anim.semantic_map(rig).get("chest") or anim.semantic_map(rig).get("spine")
+    if not name or end-3 <= begin:
+        return
+    bone = rig.pose.bones[name]
+    axis = Vector((math.cos(yaw), math.sin(yaw), 0))
+    previous = {}
+    for frame in range(begin, end+1):
+        bpy.context.scene.frame_set(frame)
+        u = min(1.0, (frame-begin)/max(1,end-3-begin))
+        angle = math.radians(.65)*math.sin(math.pi*u)**2
+        q = (rig.matrix_world@bone.matrix).to_quaternion()
+        anim._set_world_rot(rig,bone,Quaternion(axis,angle)@q)
+        anim._key_rot(bone,frame,previous)
+    bpy.context.view_layer.update()
+
+
 @command("walk_path")
 def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_end=None,
               avoid="auto", ignore=None, _world_route=False, _plant_at_arrival=False):
@@ -1105,7 +1238,7 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
             samples, active, phases, runs = _terrain_samples(keys, fps, clip, speed, ground)
         else:
             samples, active, phases, _step = _arrival_samples(
-                keys, fps, half, brake=max(2, round(BRAKE_STEP_S * fps / speed)) if braking else None)
+                keys, fps, half, brake=max(2, round(BRAKE_STEP_S * fps / speed)) if braking else None, vary=braking)
         gait = {"half": half, "arrive": flat, "roll": flat and clip == "walk",
                 "phase_offset": _phase_offset(rig, feet), "stance": STANCE * d["H"],
                 "track": TRACK * d["H"] if flat else None, "pelvis": flat and clip == "walk"}
@@ -1162,7 +1295,7 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
             # About one step per 60 degrees plus the closing step: 180 deg -> 4 steps.
             steps = max(2, round(abs(math.degrees(_angle(yaw, heading))) / 60) + 1)
             samples, active, phases, half = _arrival_samples(
-                keys, fps, max(2, round(TURN_STEP_S * fps)), count=steps, last_weight=1.35)
+                keys, fps, max(2, round(TURN_STEP_S * fps)), count=steps, last_weight=1.35, hold_s=.65)
             gait.update(half=half, arrive=True, roll=True, roll_scale=.5, amp=.35, weight=1.0,
                         stance=STANCE * d["H"], track=STANCE * d["H"])
         else:
@@ -1177,6 +1310,8 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
                        phases=phases, _world_route=_world_route, gait=gait)
         result.pop("_sway", None)
         result["gaze_lead"] = _lead_gaze(rig, start, samples, fps, phases, half)
+        if flat and result["footfalls"]:
+            _breath_settle(rig, result["footfalls"][-1]["frame"], result["frames"][1], heading)
         return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3),
                 **navigation}
     finally:
