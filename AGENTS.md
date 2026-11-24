@@ -1910,15 +1910,20 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   and slow down, and corners sharper than 100° stop for an in-place stepping turn.
   Cadence and natural travel speed scale together with `speed` (0.1..4). Foot IK holds
   each support foot's world position **and rotation** throughout its contact, including
-  turns. On flat ground a walk uses steps of about 0.37 x stature, a heel strike (toes up
-  12°) and a heel rise onto the toe edge (15°) pivoting on the sole, and the body bob,
-  widest stride and counter arm swing coincide with double support. Its last two steps
-  land side by side at the destination about .3 s before the decelerating hips stop; the
-  body glides over the planted feet while the chest carries ~3.5° forward and rights
-  itself. Runs and terrain routes keep whole-sole contacts and two gathering steps.
+  turns. Walks, runs, terrain routes and turns put the clip's widest stride, lowest bob
+  and full counter arm swing at double support. On flat ground a walk uses steps of about
+  0.37 x stature on a narrow track (ankle centres ~0.09 x stature apart), a heel strike
+  (toes up 12°) and a heel rise onto the toe edge (15°) pivoting on the sole. Its last two
+  steps land side by side (~0.115 x stature apart) at the destination about .3 s before
+  the decelerating hips stop; the body glides over the planted feet while the chest
+  carries ~3.5° forward and rights itself. Head, neck and chest anticipate heading
+  changes by .50/.38/.25 s (about 45° of head yaw on a 90° corner); the pelvis follows
+  the route. Runs and terrain routes keep whole-sole contacts and two gathering steps.
   `face_end` optionally faces an XY/XYZ point, object name or `"camera"`, sampled when the
   final turn begins. `turn_to("Maya_rig", "camera", start_frame=None)` turns in place
-  by the shortest angle with alternating steps, then stands. Targets at the root's XY
+  by the shortest angle with short quick steps (~.33 s; 35% leg/arm swing, a light heel
+  roll, the trunk leaning ~3.5° over the support foot and a ~1.2 cm dip per landing),
+  ending as the rotation finishes (180° takes ~3 s), then stands. Targets at the root's XY
   position leave its heading unchanged; `"camera"` requires a scene camera/shot.
   Both tools support basic, Rigify and MPFB rigs through the same proxy as `animate`;
   `start_frame=None` appends after the rig's existing action (otherwise scene start).
