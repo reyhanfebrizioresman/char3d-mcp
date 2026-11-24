@@ -1,4 +1,5 @@
 """Check cached walk assets retain native geometry, weights, rests and materials."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -38,6 +39,9 @@ result=qa_check.run(objects=objects,profile='render')
 
 
 def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--label',default='v10'); p.add_argument('--baseline-label',default='v9')
+    args=p.parse_args()
     assert os.environ.get('CHAR3D_PORT') == '9977'
     engine=BlenderClient(); call=engine.call; work=Path(engine.workspace); report={}
     try:
@@ -47,8 +51,8 @@ def main():
         for body in ('male','female_short','male_tall_heavy'):
             parts={}
             for label,project in [('rest',f'{body}_rest.blend'),
-                                  ('baseline',f'v9_{body}_straight_1.0.blend'),
-                                  ('walk',f'v10_{body}_straight_1.0.blend')]:
+                                  ('baseline',f'{args.baseline_label}_{body}_straight_1.0.blend'),
+                                  ('walk',f'{args.label}_{body}_straight_1.0.blend')]:
                 call('open_project',path=project); call('scene_info')
                 parts[label]=call('run_python',code=AUDIT)['result']
                 if label != 'rest':
@@ -68,7 +72,7 @@ def main():
             print('QA',body,json.dumps({k:parts['qa'][k] for k in ('pass','errors','warnings')}),flush=True)
         (work/'asset_qa.json').write_text(json.dumps(dict(environment=environment,assets=report),indent=2))
         assert all(v['regression_pass'] for v in report.values())
-        print('ROUND8 ASSET REGRESSION OK (absolute native QA findings retained)',flush=True)
+        print('WALK ASSET REGRESSION OK (absolute native QA findings retained)',flush=True)
     finally:
         engine.stop()
 

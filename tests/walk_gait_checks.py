@@ -37,7 +37,7 @@ for s in 'LR':
         inv = (mw @ rig.data.bones[toe].matrix_local).inverted()
         foot = mw @ rig.data.bones[smap['foot.'+s]].matrix_local
         toe_sole[s] = [inv @ (foot @ p) for p in sole[s][1:]]
-flat_drift = flat_floor = penetration = toe_bend = knee_jump = 0.0
+flat_drift = flat_rotation = flat_floor = penetration = toe_bend = knee_jump = 0.0
 worst_knee = None
 prev_knees = {{}}
 roots, feet, gaps, knees = [], {{'L': [], 'R': []}}, {{'L': [], 'R': []}}, {{'L': [], 'R': []}}
@@ -91,8 +91,11 @@ for f in range(nav['frames'][0], nav['frames'][1]+1):
 for s, ivs in nav['foot_lock']['contacts'].items():
     for first, last in ivs:
         anchor = feet[s][first-nav['frames'][0]].translation
+        rotation = feet[s][first-nav['frames'][0]].to_quaternion()
         for f in range(first, last+1):
             flat_drift = max(flat_drift, (feet[s][f-nav['frames'][0]].translation-anchor).length)
+            angle = rotation.rotation_difference(feet[s][f-nav['frames'][0]].to_quaternion()).angle
+            flat_rotation = max(flat_rotation, min(angle, 2*math.pi-angle))
             flat_floor = max(flat_floor, abs(gaps[s][f-nav['frames'][0]]))
 # Overlap is physical support, including heel/toe rolls, not flat-only contact metadata.
 overlaps = []
@@ -110,9 +113,13 @@ for ev in nav.get('support_events', []):
 # Exclude the standing start and the two gathering/braking steps.
 cycles, toe_off_knees = [], []
 heel_widths, progression = [], []
+progression_by_side = {{s: [] for s in 'LR'}}
 route = nav.get('path_points', [])
-straight = (len(route) >= 2 and route[-1][1] < route[0][1]
-            and all(abs(p[0]-route[0][0]) < 1e-5 for p in route))
+direction = [route[-1][i]-route[0][i] for i in (0,1)] if len(route) >= 2 else [0,0]
+distance = math.hypot(*direction)
+straight = (distance > .01 and all(abs((p[0]-route[0][0])*direction[1]
+            -(p[1]-route[0][1])*direction[0])/distance < 1e-4 for p in route))
+route_yaw = math.degrees(math.atan2(direction[0],-direction[1]))
 for side in ('LR' if straight else ''):
     lands = [e['frame'] for e in nav.get('footfalls', []) if e['side'] == side]
     for a,b in zip(lands, lands[1:]):
@@ -126,16 +133,25 @@ for side in ('LR' if straight else ''):
         if nav['frames'][0]+30 < frame < nav['frames'][1]-30:
             i = frame-nav['frames'][0]
             heels = {{s: feet[s][i] @ sole[s][0] for s in 'LR'}}
-            heel_widths.append(abs(heels['L'].x-heels['R'].x))
-            rest = mw @ rig.data.bones[smap['foot.'+side]].matrix_local
-            from mathutils import Vector
-            forward = feet[side][i].to_quaternion() @ rest.to_quaternion().inverted() @ Vector((0,-1,0))
-            progression.append(math.degrees(math.atan2(forward.x,-forward.y)) * (-1 if side=='L' else 1))
+            heel_delta = heels['L']-heels['R']
+            heading = math.radians(route_yaw)
+            heel_widths.append(abs(heel_delta.x*math.cos(heading)+heel_delta.y*math.sin(heading)))
+            # Actual articulated heel-to-toe landmarks, against the straight
+            # route direction. At -Y facing, L is +X and outward L is positive yaw.
+            axis = toe_points[side][i] - heels[side]
+            yaw_delta = (math.degrees(math.atan2(axis.x, -axis.y))-route_yaw+180)%360-180
+            angle = yaw_delta * (1 if side=='L' else -1)
+            progression.append(angle)
+            progression_by_side[side].append(angle)
 curve = {{u: sum(c[u] for c in cycles)/len(cycles) for u in cycles[0]}} if cycles else {{}}
 end_motion = max((p-roots[-1]).length for p in roots[-4:])
 # Ankle and all upper/lower body joints must settle in the final four frames.
 settled = settled_rotation = 0.0
 for name in rig.pose.bones.keys():
+    # Rigify's unused FK-mode IK mechanisms can swivel around a held limb;
+    # they neither deform the mesh nor represent an animated control joint.
+    if name.startswith('MCH-') and not rig.data.bones[name].use_deform:
+        continue
     sc.frame_set(nav['frames'][1])
     anchor = (mw @ rig.pose.bones[name].matrix).copy()
     for f in range(nav['frames'][1]-3, nav['frames'][1]+1):
@@ -144,14 +160,14 @@ for name in rig.pose.bones.keys():
         settled = max(settled, (mat.translation-anchor.translation).length)
         angle = anchor.to_quaternion().rotation_difference(mat.to_quaternion()).angle
         settled_rotation = max(settled_rotation, min(angle, 2*math.pi-angle))
-result = dict(flat_drift_m=flat_drift, flat_floor_m=flat_floor, penetration_m=penetration,
+result = dict(flat_drift_m=flat_drift, flat_rotation_rad=flat_rotation, flat_floor_m=flat_floor, penetration_m=penetration,
               toe_bend_deg=toe_bend, toe_support_drift_m=toe_support_drift, overlap_frames=overlaps, knee_step_deg=knee_jump,
               worst_knee=worst_knee, knee_range_deg={{s: [min(v),max(v)] for s,v in knees.items()}},
               root_hold_m=end_motion, joint_hold_m=settled, joint_hold_rotation_rad=settled_rotation,
               mesh_penetration_m=mesh_penetration, mesh_flat_gap_m=mesh_flat_gap,
               destination_error_m=math.dist(roots[-1][:2], nav.get('destination', roots[-1][:2])),
               momentum=nav.get('momentum'), gaze=nav.get('gaze_lead'),
-              knee_curve_deg=curve, toe_off_knee_deg=sum(toe_off_knees)/len(toe_off_knees) if toe_off_knees else None, cruise_heel_width_m=heel_widths, progression_deg=progression)
+              knee_curve_deg=curve, toe_off_knee_deg=sum(toe_off_knees)/len(toe_off_knees) if toe_off_knees else None, cruise_heel_width_m=heel_widths, progression_deg=progression, progression_by_side_deg=progression_by_side)
 ''')['result']
 
 
@@ -179,6 +195,7 @@ def main():
             print('WALK GAIT BASELINE MEASURED', flush=True)
             return
         assert measured['flat_drift_m'] <= .005 and measured['toe_support_drift_m'] <= .005, measured
+        assert measured['flat_rotation_rad'] < .002, measured
         assert measured['flat_floor_m'] <= .002 and measured['penetration_m'] <= .002, measured
         # Authored soft shoe weights flex even with a fixed ankle. Keep that
         # visible sole near the floor while enforcing the 2 mm penetration cap.
@@ -196,9 +213,8 @@ def main():
         # joint space. Enforce the stricter braking/start target on baked IK.
         assert measured['knee_step_deg'] < 15, measured
         assert all(.08 <= width <= .12 for width in measured['cruise_heel_width_m']), measured
-        # Historical rest-relative yaw convention, retained for compatibility.
-        # The Round 8 benchmark measures anatomical heel-to-toe progression:
-        # this authored +/-7 degree yaw currently reads as toe-in, not toe-out.
+        # Anatomical sign gate: a return to toe-in must fail on each side.
+        assert all(measured['progression_by_side_deg'][s] for s in 'LR'), measured
         assert all(5 <= angle <= 10 for angle in measured['progression_deg']), measured
         assert 5 <= measured['knee_curve_deg']['0.2'] <= 12, measured
         assert 5 <= measured['knee_curve_deg']['0.3'] <= 12, measured
@@ -241,6 +257,32 @@ result = floor_error
 ''')['result']
         assert floor < .002, floor
         print('INCOMING GAIT CONTACT OK', floor, flush=True)
+        # Exercise native rest conventions, including proxy-retargeted rigs.
+        # The MPFB game_engine case above is the fourth supported family.
+        rig_metrics = {'mpfb_game_engine': measured}
+        for kind in ('basic', 'rigify', 'mpfb_mixamo'):
+            call('new_scene', fps=24)
+            if kind.startswith('mpfb_'):
+                human = call('create_realistic_human', name='Sign', gender=1,
+                             age=32, rig='mixamo', hair=None, clothes=[], face=False)
+                sign_rig = human['armature']
+            else:
+                call('create_human', name='Sign')
+                call('auto_rig_humanoid', mesh='Sign', rig_type=kind)
+                sign_rig = 'Sign_rig'
+            route = call('walk_path', armature=sign_rig, points=[[0,-5]], start_frame=1, avoid=False)
+            values = check(call, sign_rig, route)
+            for side in 'LR':
+                angles = values['progression_by_side_deg'][side]
+                assert angles and all(5 <= angle <= 10 for angle in angles), (kind, side, values)
+            assert values['flat_drift_m'] <= .005 and values['penetration_m'] <= .002, (kind, values)
+            assert values['flat_rotation_rad'] < .002, (kind, values)
+            assert values['knee_step_deg'] < 15, (kind, values)
+            assert values['destination_error_m'] < .01 and values['joint_hold_m'] < .001, (kind, values)
+            rig_metrics[kind] = values
+            call('save_project', path='walk_sign_'+kind+'.blend')
+            print('ANATOMICAL FPA', kind, values['progression_by_side_deg'], flush=True)
+        (evidence/'rig_fpa_metrics.json').write_text(json.dumps(rig_metrics, indent=2))
         print('WALK GAIT BAKED OK (MPFB support overlap, toe hinge, <=5 mm drift, <=2 mm penetration, settled hold)', flush=True)
     finally:
         engine.stop()

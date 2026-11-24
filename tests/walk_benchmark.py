@@ -1,7 +1,7 @@
 """Deterministic cached locomotion matrix, baseline 42487f5 and candidate.
 
 CHAR3D_PORT=9977 CHAR3D_ALLOW_PYTHON=1 LIBGL_ALWAYS_SOFTWARE=1 \
-GALLIUM_DRIVER=llvmpipe CHAR3D_WORKSPACE=$PWD/output/walk_round8 \
+GALLIUM_DRIVER=llvmpipe CHAR3D_WORKSPACE=$PWD/output/walk_round9 \
 /home/reyhan/projects/char3d-engine/.venv/bin/python tests/walk_benchmark.py --label v9 --baseline
 Repeat with --label v10. --body/--case select cheap iterations; --resume reuses
 completed cases only when their source/fixture fingerprints match. No renders.
@@ -101,7 +101,12 @@ def summarize(nav, measured, turning=False, speed=1.):
             # The standing/braking exclusion follows cadence; a fixed 30-frame
             # window would erase every interior cycle in the fast tall fixture.
             transition_frames = max(1, round(30/speed))
-            cruise = complete and a > first+transition_frames and b < rows[-1]['frame']-transition_frames
+            opposite_land = max([first]+[e['frame'] for e in nav['footfalls']
+                                         if e['side']==other and e['frame'] <= a])
+            # Width uses TWO heels. A new cruise strike opposite a still-wide
+            # acceleration footprint is a transition until both were replaced.
+            cruise = (complete and min(a, opposite_land) > first+transition_frames
+                      and b < rows[-1]['frame']-transition_frames)
             width = abs(sum(x*y for x,y in zip(delta,lat)))
             if cruise and not .045*measured['dimensions_m'][2] <= width <= .075*measured['dimensions_m'][2]:
                 warnings.append('width_outside_stature_envelope')
@@ -141,7 +146,7 @@ def summarize(nav, measured, turning=False, speed=1.):
     for s in 'LR':
         subset = [x for x in steps if x['side'] == s and x['complete_cycle']]
         sides[s] = {k: sum(x[k] for x in subset)/len(subset) if subset else None for k in
-                    ('step_length_m','step_width_m','double_support_fraction','max_knee_delta_deg')}
+                    ('step_length_m','step_width_m','progression_outward_deg','double_support_fraction','max_knee_delta_deg')}
     asymmetry = {k: abs(sides['L'][k]-sides['R'][k]) if all(sides[s][k] is not None for s in 'LR') else None for k in sides['L']}
     phase_means = {}
     for s in 'LR':
@@ -168,6 +173,27 @@ def summarize(nav, measured, turning=False, speed=1.):
     limits = dict(flat_drift_m=.005, flat_rotation_rad=.002, flat_floor_m=.002, toe_drift_m=.005, penetration_m=.002,
                   max_yaw_deg_s=200 if turning else 100.001, destination_error_m=.01, hold_m=.001, hold_rad=.002)
     summary['failures'] = [k for k,v in limits.items() if summary[k] >= v]
+    # Hard anatomical sign gate on every actual touchdown, including closing
+    # steps. Initial inherited supports are not newly planned footfalls.
+    landed = [x for x in steps if x['land'] != first]
+    cruise = [x for x in landed if x['kind'] == 'cruise']
+    summary['landing_fpa_by_side_deg'] = {
+        s: [min(values), max(values)] if values else None
+        for s in 'LR' for values in [[x['progression_outward_deg'] for x in landed if x['side']==s]]}
+    summary['cruise_width_by_side_m'] = {
+        s: [min(values), max(values)] if values else None
+        for s in 'LR' for values in [[x['step_width_m'] for x in cruise if x['side']==s]]}
+    if any(x['progression_outward_deg'] < -.1 for x in landed):
+        summary['failures'].append('anatomical_toe_in')
+    summary['final_fpa_by_side_deg'] = {s: foot(rows[-1]['frame'], s)['progression_outward_deg'] for s in 'LR'}
+    if any(v < -.1 for v in summary['final_fpa_by_side_deg'].values()):
+        summary['failures'].append('final_anatomical_toe_in')
+    if any(not 5 <= x['progression_outward_deg'] <= 10 for x in cruise):
+        summary['failures'].append('cruise_fpa_outside_5_10')
+    if not turning and len(nav.get('path_points', [])) == 2 and any(not .08 <= x['step_width_m'] <= .12 for x in cruise):
+        summary['failures'].append('cruise_heel_width_outside_8_12_cm')
+    if summary['max_knee_delta_deg'] >= 15:
+        summary['failures'].append('max_knee_delta_deg')
     summary['envelope_flags'] = (['phase_or_progression_steps'] if summary['flagged_steps'] else [])
     for k,limit in (('max_knee_delta_deg',15),('mesh_penetration_m',.002),('mesh_flat_gap_m',.01)):
         if summary[k] >= limit:
@@ -177,14 +203,14 @@ def summarize(nav, measured, turning=False, speed=1.):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--baseline', action='store_true'); p.add_argument('--label', default='v10')
+    p.add_argument('--baseline', action='store_true'); p.add_argument('--label', default='v11')
     p.add_argument('--body', choices=BODIES); p.add_argument('--case', choices=CASES)
     p.add_argument('--resume', action='store_true')
     p.add_argument('--remeasure', action='store_true', help='Refresh telemetry on cached pinned-baseline animations, without rebaking')
     p.add_argument('--refresh-summary', action='store_true', help='Recalculate anatomical FPA and report summaries from saved rows, offline')
     args = p.parse_args()
     os.environ.setdefault('CHAR3D_PORT', '9977')
-    os.environ.setdefault('CHAR3D_WORKSPACE', str(ROOT/'output/walk_round8'))
+    os.environ.setdefault('CHAR3D_WORKSPACE', str(ROOT/'output/walk_round9'))
     if os.environ['CHAR3D_PORT'] != '9977': raise RuntimeError('Benchmark owns port 9977 only')
     if args.refresh_summary:
         path = Path(os.environ['CHAR3D_WORKSPACE'])/f'walk_benchmark_{args.label}.json'

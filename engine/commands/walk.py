@@ -224,7 +224,8 @@ def _half_step(clip, fps, speed):
     return max(2, int(round(anim.CLIPS[clip][1]*fps/(48*speed))))
 
 
-def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=None, vary=False, hold_s=.25):
+def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=None, vary=False, hold_s=.25,
+                     close_after=False):
     """Finish stepping with the body instead of after it.
 
     The lead foot lands at the final stance and the trailing foot closes beside it
@@ -244,9 +245,19 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
     if count is None:
         count = max(2, min(round(final / half_step), final // shortest))
     count = max(2, min(count, final // 2))
-    length = max(arrival, final + glide) + hold + 1
+    if close_after:
+        # A pivot must finish its heading before BOTH closing footfalls.
+        # Otherwise the inside foot must land toe-in to face the final yaw,
+        # or remain sideways after the body finishes rotating around it.
+        boundaries = [round(arrival*i/count) for i in range(count+1)]
+        boundaries += [arrival+shortest, arrival+2*shortest]
+        final = boundaries[-1]
+        count += 2
+    length = max(arrival, final + (0 if close_after else glide)) + hold + 1
     samples = (samples + [samples[-1]] * length)[:length]
-    if brake and final > 2 * brake + shortest:
+    if close_after:
+        pass
+    elif brake and final > 2 * brake + shortest:
         # Cruise steps fill the travel up to the two quick braking steps.
         cruise = final - 2 * brake
         # Never lengthen cruise strides to pay for double support in braking.
@@ -421,7 +432,7 @@ def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0, ball_
 
 def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None,
                arrive=False, roll=False, roll_scale=1.0, stance=None, track_width=None,
-               toe_targets=None, support_events=None, toe_out=0.0):
+               toe_targets=None, support_events=None, toe_out=0.0, cruise=False):
     """Alternate planted supports and lifted swings; contacts freeze position AND yaw.
 
     arrive lands the last two steps side by side at the final stance (ankle centres at
@@ -456,12 +467,16 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
     for side in "LR":
         rest = mw @ rig.data.bones[smap[f"foot.{side}"]].matrix_local
         sole = _sole_points(rig, legs[side], mw.translation.z)
+        # Calibrate from the anatomical heel-to-toe landmark axis, not bone
+        # yaw: basic, Rigify and MPFB can have different rest foot directions.
+        sole_axis = rest.to_quaternion() @ (sole[-1] - sole[0])
+        sole_yaw = _yaw(sole_axis)
         sweep_sole = sole_footprint(sole, rest.to_quaternion()) if ground is not None else sole
         offset = rest.translation - root
         offset.z = 0.0
         forward = Vector((math.sin(rest_yaw), -math.cos(rest_yaw), 0))
         lateral = Vector((0, 0, 1)).cross(forward)
-        if toe_out:
+        if cruise:
             # Rest ankles can sit forward of the pelvis. Footprint lookahead
             # already centres the stance; adding that offset overreaches at landing.
             offset -= forward * offset.dot(forward)
@@ -486,17 +501,17 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             mix = max(0.0, min(1.0, max(turning, slowing)))
             return narrowed(track_width + (stance - track_width) * mix)
 
-        def landing(frame, duration, final=False):
+        def landing(frame, duration, final=False, touchdown=None):
             # Place cruise feet slightly behind the stance midpoint so the pelvis
             # progresses over the rear leg before opposite loading. This combines
             # with a late ball-joint push, rather than changing any knee target.
             # Runs and whole-sole terrain retain their previous placement.
-            ahead = ((duration-flight)//2 if flight else round((.48 if toe_out else TOE_OFF)*duration))
+            ahead = ((duration-flight)//2 if flight else round((.48 if cruise else TOE_OFF)*duration))
             index = min(frame + ahead, n - 1)
             p, yaw = samples[index]
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
             ankle = p + q @ (settled if final else stepping(index))
-            if toe_out and not final:
+            if cruise and not final:
                 # Check both heel strike and the upcoming support heading. A
                 # curved lookahead can otherwise put an outside foot across the
                 # current lane even though its offset at the future root is correct.
@@ -509,7 +524,20 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                     if gap < minimum:
                         ankle += left*(sign*(minimum-gap))
             ankle.z = rest.translation.z - mw.translation.z + sole_lift
-            rotation = Quaternion((0, 0, 1), -toe_out if side == "L" else toe_out) @ q @ rest.to_quaternion()
+            # At -Y facing, L is +X: positive world yaw is left toe-out.
+            # Apply one absolute anatomical correction at landing; the anchor
+            # stays fixed until the next swing, including through route turns.
+            # Position looks ahead, orientation uses touchdown's route heading.
+            # Looking ahead in yaw can turn the inside foot anatomically inward.
+            heading = samples[min(frame if touchdown is None else touchdown, n-1)][1]
+            foot_yaw = heading + (toe_out if side == "L" else -toe_out)
+            if final:
+                # Braking feet may land parallel. Choose the outward edge of
+                # touchdown/final headings so neither endpoint becomes toe-in.
+                delta = _angle(heading, samples[-1][1])
+                foot_yaw = heading + (max(0., delta) if side == "L" else min(0., delta))
+            rotation = (Quaternion((0, 0, 1), _angle(sole_yaw, foot_yaw)) @ rest.to_quaternion()
+                        if toe_out else q @ rest.to_quaternion())
             if ground is None:
                 return ankle, rotation
             # Search along the heading for a whole-sole landing, never across a nosing.
@@ -555,7 +583,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                 track[i] = anchor
             # The last two steps gather at the final stance while the hips still glide.
             gather = arrive and step >= len(boundaries) - 2
-            goal = landing(n - 1 if gather else land, duration, final=gather)
+            goal = landing(n - 1 if gather else land, duration, final=gather, touchdown=land)
             swings.append((lift, land))
             if support_events is not None:
                 support_events.append({"side": side, "lift": start+lift, "land": start+land,
@@ -1094,7 +1122,8 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                                    arrive=gait.get("arrive", False), roll=gait.get("roll", False),
                                    roll_scale=gait.get("roll_scale", 1.0), stance=gait.get("stance"),
                                    track_width=gait.get("track"), toe_targets=toe_roll,
-                                   support_events=support_events, toe_out=math.radians(7) if pelvis_gait else 0.0)
+                                   support_events=support_events, cruise=pelvis_gait,
+                                   toe_out=math.radians(7) if phases is not None and ground is None and clip == "walk" else 0.0)
     if pelvis_gait:
         _stance_height(rig, start, targets, support_events, toe_roll)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
@@ -1282,7 +1311,7 @@ PELVIS_YAW = 5.0                      # degrees, peaks at heel strike with the f
 PELVIS_SWAY = .03                     # metres toward the supporting foot at mid-stance
 SHOULDER_COUNTER = 6.0                # degrees the shoulders turn against the pelvis
 STANCE = .115                         # relaxed stop: ankle centres ~0.2 m apart at 1.75 m
-TRACK = .055                          # ~10 cm heel track at adult stature
+TRACK = .055                          # ankle track; heel track is narrower with toe-out
 TURN_STEP_S = .33                     # in-place turns take short, quick steps
 GAZE_LIMIT = math.radians(60)         # anticipation never exceeds a comfortable head yaw
 # (role, lead in half-steps, share of the heading change still to come).
@@ -1450,7 +1479,7 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
                 keys, fps, half, brake=max(2, round(BRAKE_STEP_S * fps / speed)) if braking else None, vary=braking)
         gait = {"half": half, "arrive": flat, "roll": flat and clip == "walk",
                 "phase_offset": _phase_offset(rig, feet), "stance": STANCE * d["H"],
-                "track": TRACK * d["H"] if flat else None, "pelvis": flat and clip == "walk"}
+                "track": max(.10, TRACK * d["H"]) if flat else None, "pelvis": flat and clip == "walk"}
         result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
                        phases=phases, runs=runs, _world_route=_world_route, gait=gait)
         # Clearance is reported for the actual root, including the pelvis weight shift.
@@ -1504,7 +1533,8 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
             # About one step per 60 degrees plus the closing step: 180 deg -> 4 steps.
             steps = max(2, round(abs(math.degrees(_angle(yaw, heading))) / 60) + 1)
             samples, active, phases, half = _arrival_samples(
-                keys, fps, max(2, round(TURN_STEP_S * fps)), count=steps, last_weight=1.35, hold_s=.65)
+                keys, fps, max(2, round(TURN_STEP_S * fps)), count=steps, last_weight=1.35, hold_s=.65,
+                close_after=True)
             gait.update(half=half, arrive=True, roll=True, roll_scale=.5, amp=.35, weight=1.0,
                         stance=STANCE * d["H"], track=STANCE * d["H"])
         else:

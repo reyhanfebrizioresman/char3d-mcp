@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,9 +29,13 @@ def montage(paths, labels, output, tile, geometry):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--prepare', action='store_true'); p.add_argument('--render', action='store_true')
+    p.add_argument('--label', default='v10', choices=('v10','v11'))
+    p.add_argument('--resume', action='store_true', help='Reuse movie PNGs newer than the prepared project, with matching dimensions')
     args = p.parse_args()
+    label = args.label
     assert os.environ.get('CHAR3D_PORT') == '9977'
     engine = BlenderClient(); call = engine.call; work = Path(engine.workspace)
+    timeline = work/('review_timeline.json' if label == 'v10' else f'review_timeline_{label}.json')
     try:
         call('scene_info')
         if args.prepare:
@@ -52,23 +57,34 @@ cam.rotation_euler=(target-cam.location).to_track_quat('-Z','Y').to_euler(); sc.
 sc.render.resolution_x=640; sc.render.resolution_y=360; sc.render.resolution_percentage=100
 result=True
 ''')
-            call('save_project',path='walk_review_v10.blend')
-            (work/'review_timeline.json').write_text(json.dumps(dict(walk=nav,turn=turn),indent=2))
+            call('save_project',path=f'walk_review_{label}.blend')
+            timeline.write_text(json.dumps(dict(walk=nav,turn=turn),indent=2))
             print('REVIEW PREPARED',flush=True)
         if args.render:
             import av
-            info = json.loads((work/'review_timeline.json').read_text())
+            info = json.loads(timeline.read_text())
             nav, turn = info['walk'], info['turn']; end = turn['frames'][1]
-            call('open_project',path='walk_review_v10.blend')
-            sound = work/'renders/walk_review_v10_audio.wav'
+            call('open_project',path=f'walk_review_{label}.blend')
+            sound = work/f'renders/walk_review_{label}_audio.wav'
             call('run_python',code=f"bpy.ops.sound.mixdown(filepath={str(sound)!r},container='WAV',codec='PCM',format='S16')\nresult=True")
             paths = []
+            project_time = (work/f'projects/walk_review_{label}.blend').stat().st_mtime
             for first in range(1,end+5,8):
                 frames = list(range(first,min(end+5,first+8)))
-                result = call('render_frames',frames=frames,camera='scene',size=640,engine='workbench',prefix='v10_movie')
-                paths += [x['path'] for x in result['frames']]
+                cached = {f: work/f'renders/{label}_movie_f{f:04d}.png' for f in frames}
+                missing = []
+                for f,path in cached.items():
+                    if args.resume and path.exists():
+                        header = path.read_bytes()[:24]
+                        assert (path.stat().st_mtime >= project_time and header[:8] == b'\x89PNG\r\n\x1a\n'
+                                and struct.unpack('>II',header[16:24]) == (640,360)), ('Stale render cache',path)
+                    else:
+                        missing.append(f)
+                if missing:
+                    call('render_frames',frames=missing,camera='scene',size=640,engine='workbench',prefix=label+'_movie')
+                paths += [str(cached[f]) for f in frames]
                 print('REVIEW PNG',frames[-1],end+4,flush=True)
-            with av.open(str(work/'walk_review_v10.mp4'),'w') as movie:
+            with av.open(str(work/f'walk_review_{label}.mp4'),'w') as movie:
                 video = movie.add_stream('libx264',rate=24)
                 video.width=640; video.height=360; video.pix_fmt='yuv420p'
                 video.options={'crf':'20','preset':'fast'}
@@ -91,8 +107,8 @@ result=True
             frames=[20,nav['frames'][1]-30,nav['frames'][1],turn['frames'][0]+8,(turn['frames'][0]+end)//2,end]
             labels=['Jalan','Belok dan rem','Berhenti','Awal berbalik','Tengah berbalik','Akhir berbalik']
             montage([paths[f-1] for f in frames], [f'F{f} | {v}' for f,v in zip(frames,labels)],
-                    work/'walk_review_v10_keyframes.png','3x2','480x270+6+10')
-            benchmark=json.loads((work/'walk_benchmark_v10.json').read_text())
+                    work/f'walk_review_{label}_keyframes.png','3x2','480x270+6+10')
+            benchmark=json.loads((work/f'walk_benchmark_{label}.json').read_text())
             selected=[f'{body}/straight_{speed}' for body in ('male','female_short','male_tall_heavy') for speed in (.6,1.,1.6)]
             selected += ['male/turn_90_left','male/turn_90_right','male/s_curve']
             sheet_paths=[]; sheet_labels=[]
@@ -139,8 +155,8 @@ result=True
                 for shot,f in zip(shots['frames'],frames):
                     sheet_paths.append(shot['path']); sheet_labels.append(f'{key} | H {case["dimensions_m"][2]:.2f}m\nF{f} | +{(f-base)/24:.2f} s')
                 print('BENCHMARK PANEL',key,flush=True)
-            montage(sheet_paths,sheet_labels,work/'walk_benchmark_v10.png','3x12','320x320+4+8')
-            print('ROUND8 REVIEW RENDERED',len(paths),'movie frames',flush=True)
+            montage(sheet_paths,sheet_labels,work/f'walk_benchmark_{label}.png','3x12','320x320+4+8')
+            print('WALK REVIEW RENDERED',label,len(paths),'movie frames',flush=True)
     finally:
         engine.stop()
 

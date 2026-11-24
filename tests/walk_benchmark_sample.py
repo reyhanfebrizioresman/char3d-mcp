@@ -21,6 +21,13 @@ def calibrate():
     """Known independent movements and yaw invariance, before measuring rigs."""
     results = []
     for yaw in (0, .7, -1.4):
+        # Signed anatomical FPA must distinguish toe-in from toe-out after
+        # arbitrary route rotation, independently of rest-relative bone yaw.
+        for side, sign in (('L', 1), ('R', -1)):
+            for expected in (-7, 0, 7):
+                axis = Quaternion((0,0,1), yaw+sign*math.radians(expected)) @ Vector((0,-1,0))
+                actual = math.degrees(walk._angle(yaw, math.atan2(axis.x, -axis.y))) * sign
+                assert abs(actual-expected) < .001, (side, actual, expected)
         q = Quaternion((0,0,1),yaw)
         neutral, down = q @ Vector((0,-1,0)), Vector((0,0,-1))
         axis = neutral.cross(Vector((0,0,1)))

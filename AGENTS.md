@@ -1914,8 +1914,10 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   and full counter arm swing at double support. On flat ground a walk uses steps of about
   0.37 x stature on a narrow track (ankle centres ~0.055 x stature apart while cruising,
   opening toward the ~0.115 x stature stance in bends and while slowing). Flat walking
-  adds a 7° rest-relative foot yaw; heel centres measure ~10.8 cm on the adult
-  MPFB fixture. Landing lookahead removes the rest ankle's sagittal offset and checks
+  targets 7° anatomical heel-to-toe yaw outward: positive world yaw on left
+  (+X at -Y facing), negative on right. The rest sole axis is calibrated per rig.
+  Ankle track is at least 10 cm, keeping cruising heel centres about 8–12 cm
+  apart. Landing lookahead removes the rest ankle's sagittal offset and checks
   each foot's own side at heel strike and the upcoming support heading. Walking
   uses explicit loading response (0–10% of a same-foot cycle), mid-stance (10–30%),
   terminal stance (30–50%), pre-swing (50–60%) and swing (60–100%). Each double
@@ -1985,11 +1987,14 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   its initial airborne frames are excluded from flat-contact metadata.
   `face_end` optionally faces an XY/XYZ point, object name or `"camera"`, sampled when the
   final turn begins. `turn_to("Maya_rig", "camera", start_frame=None)` turns in place
-  by the shortest angle with about one step per 60° plus a slower closing step (180° ->
-  4 steps; 35% leg/arm swing, a light heel roll, the trunk leaning ~3.5° over the support
+  by the shortest angle with about one step per 60° plus a slower turning step (180° ->
+  4 turning steps followed by 2 closing steps; 35% leg/arm swing, a light heel roll, the trunk leaning ~3.5° over the support
   foot, a bounded 3 mm pelvis transfer and a ~1.2 cm dip per landing that releases as it stands). On flat ground it turns
   180° in ~1.4 s (support-paced, capped at 195°/s; terrain turns keep the 100°/s limit),
-  the rotation finishes before a 0.65 s closing hold. A single subtle 0.65° chest
+  then takes two short closing steps at the completed heading before the 0.65 s
+  hold. These avoid either a toe-in closing landing or a foot left sideways
+  after the root completes its turn. Closing feet can land parallel; their
+  yaw uses the outward edge of touchdown/final headings. A single subtle 0.65° chest
   expansion/release settles before the final four still frames. Targets at the root's XY
   position leave its heading unchanged; `"camera"` requires a scene camera/shot.
   Both tools support basic, Rigify and MPFB rigs through the same proxy as `animate`;
@@ -2004,7 +2009,8 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   double support. `tests/test_walk_gait.py` checks phase/spring signals without
   Blender; `tests/walk_gait_checks.py` measures the baked MPFB toe sole, support
   overlap, drift, penetration, actual mid-stance/swing knee angles, heel width,
-  legacy foot yaw and final hold (all bones, including fingers) on an isolated engine.
+  anatomical heel-to-toe FPA (positive outward on each side) and final hold
+  (deform/control bones, including fingers) on an isolated engine.
   Heel widths omit the initial 30-frame standing transition, where a lifted rear heel
   is not a steady cruising footprint. Round 7 evidence is under
   `output/walk_round7/`; use only port 9977 and the installed Python from the main
@@ -2036,11 +2042,33 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   than counting both touchdown/liftoff endpoints as full frames.
   Anatomical FPA uses the actual heel-to-toe axis; positive means outward
   on each side (+X is anatomical left when facing -Y). This audit found the
-  inherited 7-degree yaw actually reads as approximately 7-degree toe-in.
+  inherited pre-Round-9 yaw actually read as approximately 7-degree toe-in.
   `legacy_progression_deg` retains the old reversed sign for compatibility;
   it is not an outward anatomical measurement. `--refresh-summary` recalculates
   FPA/envelope summaries from saved rows offline, preserving the bake fingerprint
   and recording a separate analysis fingerprint. No animation needs rebaking.
+  Round 9 fixes that sign in `_footsteps` and calibrates the rest sole axis.
+  Landing position retains lookahead; foot yaw follows the route heading at
+  the actual touchdown, including the closing steps. Otherwise heading
+  lookahead can make the inside foot toe-in on a bend. The resulting target
+  rotation is interpolated during swing and frozen throughout support.
+  FPA on bends is compared with touchdown heading: the body's later heading
+  can change around a planted foot without rotating the sole on the floor.
+  `tests/walk_gait_checks.py` gates actual heel-to-toe FPA on basic, Rigify,
+  MPFB game_engine and MPFB Mixamo. The benchmark hard-gates toe-in at every
+  new landing/final pose, 5–10° cruise FPA, straight cruise heel width 8–12 cm and knee
+  jumps below 15°/frame, alongside the existing contact/heading/hold limits.
+  Cruise width excludes an acceleration footprint on either side of the pair.
+  Rigify hold checks include deform/control bones; unused non-deforming MCH
+  IK mechanisms can swivel in FK mode and are excluded from the joint hold gate.
+  Run `--label v11` in `output/walk_round9`; cached v10 telemetry and identical
+  rest-fixture SHA-256 hashes permit comparison without rebaking v10.
+  `tests/walk_round8_review.py --label v11 --prepare` then `--render` retains
+  the v10 route, camera, 640x360 clay movie and benchmark-sheet layout.
+  If interrupted, `--render --resume` reuses movie PNGs from the same prepared
+  project after checking project time, PNG header and dimensions.
+  `tests/walk_round9_evidence.py` plots measured touchdown heel-to-toe axes
+  in matched top projections and writes the comparison tables.
   Foot roll is heel-up pitch against the floor; ankle plantarflexion is
   signed shin-relative rotation from rest; MTP extension is toe relative to
   foot. Known independent rotations and yaw invariance calibrate these
