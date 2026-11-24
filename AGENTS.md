@@ -1913,17 +1913,41 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   turns. Walks, runs, terrain routes and turns put the clip's widest stride, lowest bob
   and full counter arm swing at double support. On flat ground a walk uses steps of about
   0.37 x stature on a narrow track (ankle centres ~0.09 x stature apart while cruising,
-  opening toward the ~0.115 x stature stance in bends and while slowing), a heel strike
-  (toes up 12°) and a heel rise onto the toe edge (15°) pivoting on the sole. Weight
+  opening toward the ~0.115 x stature stance in bends and while slowing). Walking
+  uses explicit loading response (0–10% of a same-foot cycle), mid-stance (10–30%),
+  terminal stance (30–50%), pre-swing (50–60%) and swing (60–100%). Each double
+  support lasts ~10% of a cycle (stance ~60%, frame-rounded): the rear toe lifts
+  after the opposite heel lands. Flat walks have a 12° heel strike and a 22° heel
+  rise starting at 30% of the cycle. The heel rotates around the anatomical ball
+  joint; the toe bone counter-rotates to keep the distal sole planted through
+  push-off. A standing start eases the first push over a 0.20 s preparation
+  window; walk swing clearance is 4.5 cm, reduced for quick shuffles. Cruise
+  footprints are centred on the longer stance so rear-leg reach stays balanced.
+  MPFB footwear calibrates the neutral evaluated outsole with a scaled 3 mm
+  skin-flex margin, lifting the body and foot targets together. The saved
+  `c3d_sole_clearance_m` keeps subsequent foot locks on the same sole plane;
+  meshes, bone rests and authored weights stay intact. Inspect other footwear:
+  a softly weighted outsole can flex a few millimetres despite a fixed ankle.
+  Rigs without toe bones retain a rigid toe-edge pivot. Weight
   transfer follows a film/mocap reference: the pelvis shifts ~3 cm over the support foot
   at mid-stance and yaws ~5° with the forward leg at heel strike (faded while the route
   turns fast), the shoulders counter-rotate ~6°, and the forearm drags ~11% of a cycle
   behind the upper arm. Walks brake from cruise to standstill in ~0.45 s on two quick
-  (~.32 s) braking steps that land side by side (~0.115 x stature apart) at the
-  destination ~.15 s before the hips stop; the chest carries ~3.5° forward and rights
-  itself. Head, neck and chest anticipate heading
-  changes by .50/.38/.25 s (about 45° of head yaw on a 90° corner); the pelvis follows
-  the route. Runs and terrain routes keep whole-sole contacts and two gathering steps.
+  (~.40 s including double support) braking steps that land side by side
+  (~0.115 x stature apart) at the destination ~.10 s before the hips stop.
+  Planned root acceleration drives a
+  critically damped pitch spring (omega 14 rad/s, exact timestep integration,
+  target limited to ±7°): the pelvis takes 28% and the spine 72%. Acceleration
+  leans forward, braking leans back and lowers the pelvis by up to 1.2 cm for
+  knee loading; the residual releases before the final four-frame still hold.
+  Deterministic, smoothly interpolated per-step accents vary arm swing by at most
+  3.5% and spine roll by 0.45°, preserving every foot target and landing time.
+  Head, neck and chest anticipate heading changes by 1.0/.76/.50 local half-steps
+  (about .50/.38/.25 s at normal cadence), including quicker braking/turn cadence;
+  the pelvis follows the route. Runs retain flight; terrain walks use the support
+  overlap with whole-sole contacts and two gathering steps. A foot already airborne
+  at a chained start completes its incoming swing without an artificial support delay;
+  its initial airborne frames are excluded from flat-contact metadata.
   `face_end` optionally faces an XY/XYZ point, object name or `"camera"`, sampled when the
   final turn begins. `turn_to("Maya_rig", "camera", start_frame=None)` turns in place
   by the shortest angle with about one step per 60° plus a slower closing step (180° ->
@@ -1935,8 +1959,15 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   Both tools support basic, Rigify and MPFB rigs through the same proxy as `animate`;
   `start_frame=None` appends after the rig's existing action (otherwise scene start).
   Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`,
-  `foot_lock.contacts` (flat, fixed-foot frames; heel/toe roll frames are excluded) and
-  `footfalls` (heel-strike frames; pass them to `auto_sfx(footfalls=...)`). Check
+  `foot_lock.contacts` (flat, fixed-foot frames; heel/toe roll frames are excluded),
+  `foot_lock.sole_clearance_m` (footwear calibration), and
+  `footfalls` (heel-strike frames; pass them to `auto_sfx(footfalls=...)`),
+  `support_events` (per-swing `opposite_land`, `lift`, `land` frames, including
+  rolling support), and flat-walk `momentum` extrema. Flat-only `contacts` are
+  deliberately distinct from heel/toe support; do not count their overlap as
+  double support. `tests/test_walk_gait.py` checks phase/spring signals without
+  Blender; `tests/walk_gait_checks.py` measures the baked MPFB toe sole, support
+  overlap, drift, penetration and final hold on an isolated engine. Check
   `render_frames(..., view="top")` with waypoint markers for the route and
   `view="right"`/`"three_quarter"` for steps. Z follows walkable terrain (see below);
   static obstacle avoidance is described below.

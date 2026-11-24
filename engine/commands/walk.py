@@ -12,6 +12,8 @@ from .footlock import _intervals, _legs, _smoothstep, _sole_points, foot_lock
 from .util import obj_or_raise
 from .terrain import GroundQuery, smooth_heights, sole_footprint
 from .navigation import Planner, validate_options
+from ..walk_gait import (DOUBLE_SUPPORT, LOADING_END, MID_STANCE_END, TOE_OFF, SPRING_OMEGA,
+                         momentum, step_variation)
 
 TURN_RATE = math.radians(100)       # maximum body yaw per second, independent of speed
 SHARP_TURN = math.radians(100)      # stop and step around corners sharper than this
@@ -226,14 +228,16 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
     """Finish stepping with the body instead of after it.
 
     The lead foot lands at the final stance and the trailing foot closes beside it
-    about .3 s before the decelerating hips stop; the body then glides over both
+    shortly before the decelerating hips stop; the body then glides over both
     planted feet. Steps are spread evenly over the travel (shorter as it slows);
     count fixes the number of steps and last_weight lengthens the closing step. brake
     (frames) makes the last two steps quick braking steps with a shorter glide.
     Returns samples, active frame, half-step phases and the mean step length in frames.
     """
     samples, arrival = _samples(keys, fps, half_step)
-    glide = max(2, round((.15 if brake else .3) * fps))
+    # Delayed toe-off must not force the lead braking foot far ahead of the
+    # decelerating root. Close nearer standstill, retaining time to load both feet.
+    glide = max(2, round((.10 if brake else .3) * fps))
     hold = max(4, round(fps / 4))
     shortest = max(2, round(.6 * half_step))
     final = max(arrival - glide, 2 * shortest)
@@ -245,7 +249,8 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
     if brake and final > 2 * brake + shortest:
         # Cruise steps fill the travel up to the two quick braking steps.
         cruise = final - 2 * brake
-        lead = max(1, round(cruise / half_step))
+        # Never lengthen cruise strides to pay for double support in braking.
+        lead = max(1, math.ceil(cruise / half_step))
         boundaries = ([round(cruise * k / lead) for k in range(lead + 1)] +
                       [cruise + brake, final])
         count = len(boundaries) - 1
@@ -315,7 +320,7 @@ def _support_side(rig, initial):
 
 
 HEEL_STRIKE = math.radians(12)      # toes up as the heel lands
-HEEL_RISE = math.radians(15)        # heel up about the toe edge before push-off
+HEEL_RISE = math.radians(22)        # heel up at toe-off; the toe joint stays planted
 
 
 def _pitched(position, rotation, pivot, axis, angle):
@@ -325,8 +330,8 @@ def _pitched(position, rotation, pivot, axis, angle):
     return point + turn @ (position - point), turn @ rotation
 
 
-def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0):
-    """Heel strike -> flat foot -> heel rise, pivoting on the sole so planted edges never slip.
+def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0, ball_pivot=None):
+    """Heel strike -> flat foot -> ball-joint push, with a planted distal toe.
 
     track holds (ankle, rotation) per frame with flat contacts; swings lists (lift, land).
     """
@@ -349,29 +354,39 @@ def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0):
     for land, lift in zip(edges, lifts):
         stances.append((0 if land is None else land, n - 1 if lift is None else lift,
                         land is not None, lift is not None))
-    pose = {}
+    pose, toe_roll, pitches = {}, {}, {}
     for begin, end, strikes, rises in stances:
         length = end - begin
         if length <= 0:
             continue
-        strike_frames = max(1, min(round(.1 * fps), length // 3))
-        rise_frames = max(1, min(round(.45 * length), length - (strike_frames if strikes else 0)))
+        # Stance occupies 60% of a cycle. Loading is 0..10%, the heel starts
+        # rising at 30%, and the toe supplies support through 50..60% pre-swing.
+        strike_frames = max(1, round(length * LOADING_END / TOE_OFF))
+        rise_frames = max(1, round(length * (TOE_OFF - MID_STANCE_END) / TOE_OFF))
+        # A walk starting with both feet flat has only the initial overlap to
+        # prepare its first push. Do not squeeze a full heel rise into 1–2 frames.
+        stance_rise = rise * (min(1.0, length/(.20*fps)) if not strikes else 1.0)
         for i in range(begin, end + 1):
             p, q = flat[i]
+            angle = 0.0
             if strikes and i - begin < strike_frames:
                 angle = strike * (1 - _smoothstep((i - begin) / strike_frames))
                 pose[i] = _pitched(p, q, heel, axis(i), angle)
             elif rises and end - i < rise_frames:
-                angle = -rise * _smoothstep(1 - (end - i) / rise_frames)
-                pose[i] = _pitched(p, q, toe, axis(i), angle)
+                angle = -stance_rise * _smoothstep(1 - (end - i) / rise_frames)
+                pivot = ball_pivot if ball_pivot is not None else toe
+                pose[i] = _pitched(p, q, pivot, axis(i), angle)
+                if ball_pivot is not None:
+                    toe_roll[i] = Quaternion(axis(i), -angle)
             else:
                 pose[i] = (p.copy(), q.copy())
+            pitches[i] = angle
     for lift, land in swings:
         if land <= lift:
             continue
         started = lift > 0 or lift in pose and pose[lift][1] != flat[lift][1]
         start_offset = pose[lift][0] - flat[lift][0] if started and lift in pose else Vector()
-        start_angle = -rise if started else 0.0
+        start_angle = pitches.get(lift, 0.0) if started else 0.0
         end_offset = pose[land][0] - flat[land][0] if land in pose else Vector()
         for i in range(lift + 1, land):
             u = (i - lift) / (land - lift)
@@ -381,19 +396,22 @@ def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0):
             w = _smoothstep(u)
             turn = Quaternion(axis(i), angle)
             pose[i] = (p + start_offset.lerp(end_offset, w), turn @ q)
+            if ball_pivot is not None and angle < 0:
+                toe_roll[i] = Quaternion(axis(i), -angle)
     for i, value in pose.items():
         track[i] = value
     # Rolling frames touch the floor on an edge; "contacts" stay the flat, fixed foot.
-    return {i for i, (p, q) in pose.items() if q != flat[i][1]}
+    return {i for i, (p, q) in pose.items() if q != flat[i][1]}, toe_roll
 
 
 def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None,
-               arrive=False, roll=False, roll_scale=1.0, stance=None, track_width=None):
+               arrive=False, roll=False, roll_scale=1.0, stance=None, track_width=None,
+               toe_targets=None, support_events=None):
     """Alternate planted supports and lifted swings; contacts freeze position AND yaw.
 
     arrive lands the last two steps side by side at the final stance (ankle centres at
-    most `stance` m apart). roll adds a heel strike and a heel rise about the sole's
-    heel/toe edges (flat ground only), scaled by roll_scale. track narrows the ankle
+    most `stance` m apart). roll adds a heel strike and an articulated ball-joint
+    push (rigid toe-edge fallback), on flat ground only, scaled by roll_scale. track narrows the ankle
     centres of every other landing to at most `track_width` m apart (walking step width).
     """
     smap = anim.semantic_map(rig)
@@ -412,6 +430,11 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
     legs, _smap = _legs(rig)
     initial_height = {s: min((initial[s] @ p).z for p in _sole_points(rig, legs[s], 0.0))
                       for s in "LR"}
+    # A fresh native MPFB pose can have its outsole below the barefoot plane.
+    # Chained navigation already has calibrated feet and needs no second lift.
+    sole_lift = float(rig.get('c3d_sole_clearance_m', 0.0))
+    initial_lift = max(0.0, -min(initial_height.values())) if sole_lift else 0.0
+    initial_height = {s: z+initial_lift for s, z in initial_height.items()}
     support = min(initial_height, key=initial_height.get)
     targets, contacts, footfalls = {}, {}, []
     cruise = max(((b[0] - a[0]).length for a, b in zip(samples, samples[1:])), default=0.0)
@@ -444,11 +467,14 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             return narrowed(track_width + (stance - track_width) * mix)
 
         def landing(frame, duration, final=False):
-            index = min(frame + (duration-flight)//2, n - 1)
+            # Centre a walking footprint on its 60% stance, including the rear
+            # toe support. Flight runs retain their original midpoint placement.
+            ahead = ((duration-flight)//2 if flight else round(TOE_OFF*duration))
+            index = min(frame + ahead, n - 1)
             p, yaw = samples[index]
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
             ankle = p + q @ (settled if final else stepping(index))
-            ankle.z = rest.translation.z - mw.translation.z
+            ankle.z = rest.translation.z - mw.translation.z + sole_lift
             rotation = q @ rest.to_quaternion()
             if ground is None:
                 return ankle, rotation
@@ -464,6 +490,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             raise ValueError("no whole-sole landing within 0.35 m; widen treads or adjust route")
 
         anchor = (initial[side].translation.copy(), initial[side].to_quaternion())
+        anchor[0].z += initial_lift
         if ground is not None:
             up = Vector((0, 0, 1))
             normal = anchor[1] @ (rest.to_quaternion().inverted() @ up)
@@ -482,19 +509,33 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             duration = land - boundaries[step-1]
             local_run = runs[land] if runs is not None else float(run)
             flight = max(1, round(0.2*duration)) if local_run > 0.5 else 0
-            lift = max(0, boundaries[step-1] - flight)
+            # Walk: rear toe leaves 10% of a full cycle AFTER the other heel lands.
+            # Runs retain flight; whole-sole terrain walks retain the same support overlap.
+            delay = min(duration-2, max(0, round(2*DOUBLE_SUPPORT*duration))) if local_run <= .5 else 0
+            if cursor == 0 and ground is None and initial_height[side] > .02:
+                # A chained clip may already have this foot in flight. Finish
+                # that swing immediately; there is no rear support to prolong.
+                delay = 0
+            lift = max(0, boundaries[step-1] - flight + delay)
             for i in range(cursor, lift + 1):
                 track[i] = anchor
             # The last two steps gather at the final stance while the hips still glide.
             gather = arrive and step >= len(boundaries) - 2
             goal = landing(n - 1 if gather else land, duration, final=gather)
             swings.append((lift, land))
+            if support_events is not None:
+                support_events.append({"side": side, "lift": start+lift, "land": start+land,
+                                       "opposite_land": start+boundaries[step-1]})
             swing = []
+            # Quick braking/closing steps are low shuffles, not a full-height
+            # swing compressed into a few frames (which snaps the IK knee).
+            swing_height = ((0.045 + 0.075*local_run) *
+                            (1.0 if local_run > .5 else min(1.0, ((land-lift)/(.36*fps))**2)))
             for i in range(lift, land + 1):
                 u = (i - lift) / (land - lift)
                 w = _smoothstep(u)
                 p = anchor[0].lerp(goal[0], w)
-                p.z += (0.075 + 0.045*local_run) * math.sin(math.pi*u)**2
+                p.z += swing_height * math.sin(math.pi*u)**2
                 track[i] = (p, anchor[1].slerp(goal[1], w))
                 mask[i] = i in (lift, land)
                 swing.append(i)
@@ -506,7 +547,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                     u = k / ((land-lift)*4)
                     w = _smoothstep(u)
                     p = anchor[0].lerp(goal[0], w)
-                    p.z += (0.075 + 0.045*local_run) * math.sin(math.pi*u)**2
+                    p.z += swing_height * math.sin(math.pi*u)**2
                     q = anchor[1].slerp(goal[1], w)
                     pts = [p + q @ v for v in sweep_sole]
                     gap = max(ground.sample(v.x, v.y)[0] - v.z for v in pts)
@@ -521,15 +562,53 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
         for i in range(cursor, n):
             track[i] = anchor
         if roll and ground is None and swings:
-            for i in _roll_feet(track, swings, sole_points=sole, rest=rest.to_quaternion(),
-                                rest_yaw=rest_yaw, fps=fps, scale=roll_scale):
+            toe_name = legs[side].get("toe")
+            pivot = (rest.inverted() @ (mw @ rig.data.bones[toe_name].head_local)
+                     if toe_name and toe_targets is not None else None)
+            rolling, toes = _roll_feet(track, swings, sole_points=sole, rest=rest.to_quaternion(),
+                                     rest_yaw=rest_yaw, fps=fps, scale=roll_scale, ball_pivot=pivot)
+            if toe_targets is not None:
+                toe_targets[side] = toes
+            for i in rolling:
                 mask[i] = False
         footfalls.extend((start + land, side) for _lift, land in swings)
         # An incoming locomotion clip can leave the first swinging foot airborne.
         mask[0] = True if ground is not None else abs(initial_height[side]) < 0.02
+        if not mask[0]:
+            for i in range((swings[0][0]+1) if swings else n):
+                mask[i] = False
         targets[side] = track
         contacts[side] = [[start+a, start+b] for a, b in _intervals(mask, fill=0, min_len=1)]
     return targets, contacts, sorted(footfalls)
+
+
+def _articulate_toes(rig, start, targets, toe_roll):
+    """Counter the heel rise at the ball joint, keeping the distal toe flat.
+
+    Author after ankle IK so its foot rotation cannot drag the toe through the
+    floor. Missing toe bones retain the rigid toe-edge pivot. Explicit zero keys
+    outside the roll prevent interpolation leaking into subsequent flat contacts.
+    """
+    smap = anim.semantic_map(rig)
+    mw = rig.matrix_world
+    previous = {}
+    joints = []
+    for side, rolls in toe_roll.items():
+        toe, foot = smap.get(f"toe.{side}"), smap[f"foot.{side}"]
+        if not toe or not rolls:
+            continue
+        relative = ((mw @ rig.data.bones[foot].matrix_local).to_quaternion().inverted() @
+                    (mw @ rig.data.bones[toe].matrix_local).to_quaternion())
+        joints.append((side, toe, foot, relative, rolls))
+    if not joints:
+        return
+    for i in range(len(next(iter(targets.values())))):
+        bpy.context.scene.frame_set(start+i)
+        for side, toe, foot, relative, rolls in joints:
+            q = (mw @ rig.pose.bones[foot].matrix).to_quaternion()
+            anim._set_world_rot(rig, rig.pose.bones[toe], rolls.get(i, Quaternion()) @ q @ relative)
+            anim._key_rot(rig.pose.bones[toe], start+i, previous)
+    bpy.context.view_layer.update()
 
 
 def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=None,
@@ -538,10 +617,12 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
     sc = bpy.context.scene
     fps = sc.render.fps / sc.render.fps_base
     gait = gait or {}
+    sole_lift = gait.get("sole_lift", 0.0)
     half = gait.get("half") or _half_step(clip, fps, speed)
     amp = gait.get("amp", 1.0)
     weight = gait.get("weight", 0.0)
     pelvis_gait = gait.get("pelvis", False) and phases is not None and ground is None
+    inertia = momentum(samples, fps) if pelvis_gait else [(0.0, 0.0)] * len(samples)
     support_sign = 1.0 if _support_side(rig, initial_feet) == "L" else -1.0
     # Per-frame pelvis yaw (radians) and lateral sway (world vector) for the route root.
     pelvis_yaw = [0.0] * len(samples)
@@ -605,6 +686,18 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                 sway[i] = left * (PELVIS_SWAY * lean * w)
                 spine = list(rots.get("spine", (0, 0, 0)))
                 spine[1] += (PELVIS_YAW + SHOULDER_COUNTER - 4.0) * stride * w * amp
+                # Small C1 step accents affect upper-body phrasing, never landing
+                # coordinates or timing. The same route always bakes the same keys.
+                accent = step_variation(phases[i])
+                spine[2] += .45 * accent * w
+                for side in "LR":
+                    arm = list(rots[f"upper_arm.{side}"])
+                    arm[0] *= 1 + .035 * step_variation(phases[i], 1 if side == "L" else 2)
+                    rots[f"upper_arm.{side}"] = arm
+                pitch, loading = inertia[i]
+                rots["hips"] = (pitch*.28, 0, 0)
+                spine[0] += pitch*.72
+                up -= loading
                 rots["spine"] = spine
             if weight and phases is not None and ground is None:
                 # In-place steps: lean the trunk over the supporting foot mid-step and
@@ -621,13 +714,13 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                 rots["spine"] = (max(-3.0, min(7.0, math.degrees(slope)*0.2)), 0, 0)
                 rots["toe.L"] = rots["toe.R"] = (0, 0, 0)
                 up = pos.z - rig.matrix_world.translation.z + up*0.2*w - 0.035*_smoothstep(i/half)
-                root_heights.append(root_rest.z + up)
+                root_heights.append(root_rest.z + up + sole_lift)
             # _drive retargets offsets from the proxy rest onto the target rest.
             # Rigify's torso control need not share the proxy pelvis' rest head.
             moved = pos + sway[i]
             offset = undo @ Vector((moved.x - root_rest.x, moved.y - root_rest.y, 0.0))
             anim._key_basic(basic, f, rots,
-                            (offset.x, up if ground else up*w, -offset.y))
+                            (offset.x, (up if ground else up*w) + sole_lift, -offset.y))
             bpy.context.view_layer.update()
             hp = basic.pose.bones["hips"]
             world = mw @ hp.matrix
@@ -675,16 +768,26 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
             if ground is not None or _world_route:
                 hp.keyframe_insert("location", frame=f, group=hips_name)
         bpy.context.view_layer.update()
+    toe_roll, support_events = {}, []
     targets, contacts, footfalls = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run",
                                    ground=ground, phases=phases, runs=runs,
                                    arrive=gait.get("arrive", False), roll=gait.get("roll", False),
                                    roll_scale=gait.get("roll_scale", 1.0), stance=gait.get("stance"),
-                                   track_width=gait.get("track"))
+                                   track_width=gait.get("track"), toe_targets=toe_roll,
+                                   support_events=support_events)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
                      ground=ground)
+    _articulate_toes(rig, start, targets, toe_roll)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],
-                         "hips_lowered_max_m": lock["hips_lowered_max_m"]}
+                         "hips_lowered_max_m": lock["hips_lowered_max_m"],
+                         "sole_clearance_m": round(sole_lift, 5)}
     info["footfalls"] = [{"frame": f, "side": side, "character": rig.name} for f, side in footfalls]
+    info["support_events"] = sorted(support_events, key=lambda e: (e["land"], e["side"]))
+    if pelvis_gait:
+        info["momentum"] = {"model": "critical_spring", "omega_rad_s": SPRING_OMEGA,
+                            "lean_deg": [round(min(v[0] for v in inertia), 3),
+                                         round(max(v[0] for v in inertia), 3)],
+                            "brake_drop_m": round(max(v[1] for v in inertia), 4)}
     if ground is not None:
         info["foot_lock"].update({k: lock[k] for k in
             ("ground_heights", "max_penetration_m", "min_swing_clearance_m")})
@@ -742,10 +845,53 @@ def _fk_dependencies(rig):
     return needed
 
 
+def _shoe_clearance(rig):
+    """Fit the native MPFB shoe's neutral outsole, without changing mesh or weights.
+
+    The analytical foot probes otherwise assume a barefoot Z=0 plane, whereas
+    shoes03 extends ~26 mm below it. A small sole-flex margin covers skinning
+    variation at the toe hinge. REST evaluation also works on a posed/chained rig.
+    """
+    kind = str(rig.get("c3d_rig_type", ""))
+    if not (kind.startswith("mpfb_") or kind == "rigify"):
+        return float(rig.get('c3d_sole_clearance_m', 0.0))
+    shoes = [o for o in bpy.context.scene.objects if o.type == "MESH" and not o.hide_render
+             and o.get("c3d_garment_category") == "shoes"
+             and any(m.type == "ARMATURE" and m.object == rig for m in o.modifiers)]
+    if not shoes:
+        rig['c3d_sole_clearance_m'] = 0.0
+        return 0.0
+    saved = rig.data.pose_position
+    try:
+        rig.data.pose_position = "REST"
+        bpy.context.view_layer.update()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        lowest = 0.0
+        for shoe in shoes:
+            ev = shoe.evaluated_get(depsgraph)
+            mesh = ev.to_mesh()
+            try:
+                if mesh.vertices:
+                    lowest = min(lowest, min((ev.matrix_world @ v.co).z - rig.matrix_world.translation.z
+                                             for v in mesh.vertices))
+            finally:
+                ev.to_mesh_clear()
+        lift = max(0.0, -lowest)
+        if lift > .001:
+            lift += .003 * rig.matrix_world.to_scale().length / math.sqrt(3)
+        rig['c3d_sole_clearance_m'] = lift
+        return lift
+    finally:
+        rig.data.pose_position = saved
+        bpy.context.view_layer.update()
+
+
 def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
           phases=None, runs=None, _world_route=False, gait=None):
     """Generated FK rigs need bone evaluation, not repeated skin deformation."""
     began = time.perf_counter()
+    gait = dict(gait or {}, sole_lift=_shoe_clearance(rig))
+    gait["phase_offset"] = _phase_offset(rig, initial_feet)
     hidden, muted, drivers = [], [], []
     kind = rig.get("c3d_rig_type", "")
     if ground is not None and kind == "rigify":
@@ -765,7 +911,9 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
                     if not c.mute:
                         muted.append(c)
                         c.mute = True
-    if ground is not None and (kind in ("basic", "rigify") or kind.startswith("mpfb_")):
+    # All navigation baking uses joints/rest sole probes, never the skinned surface.
+    # Defer skin evaluation on flat routes too (notably the per-frame toe pass).
+    if kind in ("basic", "rigify") or kind.startswith("mpfb_"):
         for obj in bpy.context.scene.objects:
             if obj.type == "MESH" and not obj.hide_viewport and any(
                     m.type == "ARMATURE" and m.object == rig for m in obj.modifiers):
@@ -805,7 +953,7 @@ def _phase_offset(rig, feet):
 
 QUICK_TURN_S = 1.4                    # seconds for an in-place 180-degree turn_to
 STOP_SECONDS = .45                    # cruise speed to standstill on flat walks
-BRAKE_STEP_S = .32                    # each of the two braking steps
+BRAKE_STEP_S = .40                    # ~.32 s swing plus ~.08 s double support when braking
 PELVIS_YAW = 5.0                      # degrees, peaks at heel strike with the forward leg
 PELVIS_SWAY = .03                     # metres toward the supporting foot at mid-stance
 SHOULDER_COUNTER = 6.0                # degrees the shoulders turn against the pelvis
@@ -813,13 +961,12 @@ STANCE = .115                         # relaxed stop: ankle centres ~0.2 m apart
 TRACK = .09                           # walking step width: ankle centres ~0.16 m apart
 TURN_STEP_S = .33                     # in-place turns take short, quick steps
 GAZE_LIMIT = math.radians(60)         # anticipation never exceeds a comfortable head yaw
-# (role, lead seconds, share of the heading change still to come at that lead).
-# Eyes/head lead, the neck follows ~3 frames later and the chest ~6 frames later;
-# the pelvis follows the route itself. A 90-degree corner peaks near 45 degrees of head yaw.
-GAZE_CHAIN = (("chest", .25, .15), ("neck", .38, .30), ("head", .50, .45))
+# (role, lead in half-steps, share of the heading change still to come).
+# One step of head anticipation scales with local cadence, including braking/turns.
+GAZE_CHAIN = (("chest", .50, .15), ("neck", .76, .30), ("head", 1.0, .45))
 
 
-def _lead_gaze(rig, start, samples, fps):
+def _lead_gaze(rig, start, samples, fps, phases=None, half=None):
     """Turn head, then neck, then chest toward the heading the body reaches later.
 
     The body still follows the route; only the upper chain anticipates bends,
@@ -829,23 +976,27 @@ def _lead_gaze(rig, start, samples, fps):
     chain = [(rig.pose.bones[smap[r]], lead, w) for r, lead, w in GAZE_CHAIN
              if smap.get(r) and smap[r] in rig.pose.bones]
     n = len(samples)
+    phases = phases if phases is not None else [i / (half or .5*fps) for i in range(n)]
+    lead_s = 0.0
     if not chain or n < 3:
-        return {"lead_s": GAZE_CHAIN[-1][1], "max_deg": 0.0}
-    width = max(1, round(.1 * fps))
+        return {"lead_steps": 1.0, "lead_s": lead_s, "max_deg": 0.0}
+    windows = [(bisect.bisect_left(phases, p-.2), bisect.bisect_right(phases, p+.2)) for p in phases]
     signals = []
     for bone, lead, share in chain:
-        ahead = max(1, round(lead * fps))
-        raw = [max(-GAZE_LIMIT, min(GAZE_LIMIT, _angle(samples[i][1], samples[min(n - 1, i + ahead)][1])))
+        ahead = [min(n-1, bisect.bisect_left(phases, min(phases[-1], p+lead), lo=i))
+                 for i, p in enumerate(phases)]
+        lead_s = max(lead_s, max((a-i)/fps for i, a in enumerate(ahead)))
+        raw = [max(-GAZE_LIMIT, min(GAZE_LIMIT, _angle(samples[i][1], samples[ahead[i]][1])))
                for i in range(n)]
         # Smooth twice with a short box so each joint eases in/out instead of snapping.
         for _ in range(2):
-            raw = [sum(raw[max(0, i - width):i + width + 1]) / len(raw[max(0, i - width):i + width + 1])
-                   for i in range(n)]
-        signals.append([v * share for v in raw])
+            raw = [sum(raw[a:b]) / max(1, b-a) for a, b in windows]
+        signals.append([v * share * _smoothstep((n-4-i)/max(1, round(.15*fps)))
+                        for i, v in enumerate(raw)])
     head_total = [sum(sig[i] for sig in signals) for i in range(n)]
     peak = max(abs(v) for v in head_total)
     if peak < math.radians(.5):
-        return {"lead_s": GAZE_CHAIN[-1][1], "max_deg": 0.0}
+        return {"lead_steps": 1.0, "lead_s": round(lead_s, 3), "max_deg": 0.0}
     sc = bpy.context.scene
     mw = rig.matrix_world
     previous = {}
@@ -861,7 +1012,7 @@ def _lead_gaze(rig, start, samples, fps):
             bpy.context.view_layer.update()
             anim._key_rot(bone, frame, previous)
     bpy.context.view_layer.update()
-    return {"lead_s": GAZE_CHAIN[-1][1], "max_deg": round(math.degrees(peak), 2)}
+    return {"lead_steps": 1.0, "lead_s": round(lead_s, 3), "max_deg": round(math.degrees(peak), 2)}
 
 
 def _settle_chest(rig, brake, end, yaw, fps):
@@ -967,9 +1118,9 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
                       {"avoided": False, "detours": 0, "path_points": [list(p)[:2] for p in route],
                        "clearance_m": None, "warnings": []})
         navigation["planning_seconds"] = round(planning_seconds, 6)
-        result["gaze_lead"] = _lead_gaze(rig, start, samples, fps)
+        result["gaze_lead"] = _lead_gaze(rig, start, samples, fps, phases, half)
         footfalls = result["footfalls"]
-        if flat and footfalls and footfalls[-1]["frame"] < result["frames"][1]:
+        if flat and clip != "walk" and footfalls and footfalls[-1]["frame"] < result["frames"][1]:
             _settle_chest(rig, footfalls[-1]["frame"], result["frames"][1], samples[-1][1], fps)
         return {**result, "clip": clip, "distance_m": round(distance, 4),
                 "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2],
@@ -1025,7 +1176,7 @@ def turn_to(armature, target, start_frame=None, avoid="auto", ignore=None, _worl
         result = _bake(rig, start, samples, active, feet, "walk", 1.0, ground=ground,
                        phases=phases, _world_route=_world_route, gait=gait)
         result.pop("_sway", None)
-        result["gaze_lead"] = _lead_gaze(rig, start, samples, fps)
+        result["gaze_lead"] = _lead_gaze(rig, start, samples, fps, phases, half)
         return {**result, "distance_m": 0.0, "turn_degrees": round(math.degrees(_angle(yaw, heading)), 3),
                 **navigation}
     finally:

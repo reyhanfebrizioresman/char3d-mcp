@@ -76,6 +76,9 @@ def _sole_points(rig, leg, floor):
     mw = rig.matrix_world
     if rig.get('c3d_vrm_ground_local') is not None:
         floor = (mw @ Vector(rig['c3d_vrm_ground_local'])).z
+    # Navigation can calibrate an authored shoe outsole below the anatomical
+    # barefoot plane. Keep later locks/detection on that same physical sole.
+    floor -= float(rig.get('c3d_sole_clearance_m', 0.0))
     B = rig.data.bones
     foot = B[leg["foot"]]
     ankle = mw @ foot.head_local
