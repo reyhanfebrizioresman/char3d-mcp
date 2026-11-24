@@ -1912,7 +1912,7 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   each support foot's world position **and rotation** throughout its contact, including
   turns. Walks, runs, terrain routes and turns put the clip's widest stride, lowest bob
   and full counter arm swing at double support. On flat ground a walk uses steps of about
-  0.37 x stature on a narrow track (ankle centres ~0.055 x stature apart while cruising,
+  min(0.37 x stature, 0.75 x native hip-to-ankle length) on a narrow track (ankle centres ~0.055 x stature apart while cruising,
   opening toward the ~0.115 x stature stance in bends and while slowing). Flat walking
   targets 7° anatomical heel-to-toe yaw outward: positive world yaw on left
   (+X at -Y facing), negative on right. The rest sole axis is calibrated per rig.
@@ -1924,7 +1924,7 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   support lasts ~10% of a cycle (stance ~60%, frame-rounded): the rear toe lifts
   after the opposite heel lands. Flat walks have a 12° heel strike and a 52° heel
   rise starting at 43% of the cycle (frame-rounded). Initial standing pushes retain
-  the gentler 22° preparation limit. The last 4° of heel rise are reserved for
+  the gentler 22° preparation limit. The last 17° of heel rise are reserved for
   the final 30% of the push window, after opposite loading. A predicted 45° stance yaw excursion lowers
   the push toward 26° and starts its rise at 30%, avoiding a rapid knee release
   while transferring support through a turn (in-place rolls scale this by 0.5). The heel rotates around the anatomical ball
@@ -1932,8 +1932,10 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   push-off. A standing start eases the first push over a 0.20 s preparation
   window; nominal walk swing clearance starts at 4.5 cm, reduced for quick shuffles,
   then the flat-walk knee arc can raise the airborne ankle further. Cruise
-  footprints use 0.48 half-step lookahead, so the pelvis progresses over the rear
-  anchor before opposite loading; terrain/runs retain their prior placement.
+  footprints fit their continuous lookahead from native thigh/shin lengths,
+  ankle-to-ball roll displacement and the rounded opposite-loading interval.
+  The two-leg reach triangle selects a common fraction for both sides, allowing
+  the trailing knee to release naturally while the front foot accepts weight; terrain/runs retain their prior placement.
   MPFB footwear calibrates the neutral evaluated outsole with a scaled 5.5 mm
   skin-flex margin, lifting the body and foot targets together. The saved
   `c3d_sole_clearance_m` keeps subsequent foot locks on the same sole plane;
@@ -1957,19 +1959,19 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   reach bounds retaining at least ~5.6° flexion. This replaces the clip bob and the
   generic foot-lock's broad future reach drop during active support. An airborne
   ankle follows a ~60° peak knee arc; no contact anchor moves. The sole calibration
-  continues to lift pelvis and ankle together. The adult fixture measures
-  ~17.7° loading, ~7–8° at 20–30%, ~10° at 40%, ~39.2° at 55%, and ~36.4° at
-  60% of a same-foot cycle (~35.1° at the actual frame-rounded toe-off). These are measured IK results; the knee target
-  curves remain unchanged from Round 6. The later, larger ball push and shorter
-  landing lookahead produce the terminal extension and pre-swing release. If the
+  continues to lift pelvis and ankle together. Cruise placement uses an interpolated route sample, avoiding a one-frame
+  forward/backward bias on odd-duration steps. The staged ball push releases the
+  knee through pre-swing without directly forcing its joint angle. If the
   leg leaves support near full reach, its ankle joins the inherited airborne
   clearance over the first 35% of swing (at least four frames when available).
   This blends effective hip-to-ankle length from the actual release to clearance,
   avoiding an abrupt lift of an almost extended turning leg. The existing
   mid-swing requirement and contact anchors stay fixed.
-  Deterministic, normalized ±4.5% cruise timing weights vary both duration and
-  resulting stride length, with frame rounding. Route duration, braking boundaries
-  and destinations stay fixed. Deterministic, smoothly interpolated per-step
+  Cruise half-steps share the planned integer duration, with a short residual
+  transition into braking (normally at least four frames, borrowed from the
+  preceding interval when needed). Independent ±4.5% timing accents were removed:
+  together with frame-rounded footprint lookahead they biased alternate sides.
+  Route duration, braking boundaries and destinations stay fixed. Deterministic, smoothly interpolated per-step
   accents vary arm swing by at most
   3.5% and spine roll by 0.45°, preserving every foot target and landing time.
   Head, neck and chest anticipate heading changes by 1.0/.76/.50 local half-steps
@@ -2057,7 +2059,7 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   `tests/walk_gait_checks.py` gates actual heel-to-toe FPA on basic, Rigify,
   MPFB game_engine and MPFB Mixamo. The benchmark hard-gates toe-in at every
   new landing/final pose, 5–10° cruise FPA, straight cruise heel width 8–12 cm and knee
-  jumps below 15°/frame, alongside the existing contact/heading/hold limits.
+  jumps below the cadence-scaled Round 10 bound, alongside the existing contact/heading/hold limits.
   Cruise width excludes an acceleration footprint on either side of the pair.
   Rigify hold checks include deform/control bones; unused non-deforming MCH
   IK mechanisms can swivel in FK mode and are excluded from the joint hold gate.
@@ -2084,14 +2086,41 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   alpha-card overlaps and the shared eyebrow albedo/bump sRGB finding were
   already retained in Round 7; a regression pass does not mean absolute asset
   QA is clean. Review `asset_qa.json` for both versions and remaining warnings.
-  The Round 8 flat-walk pelvis fit additionally anticipates supported knee
-  changes in angular space (336 degrees/s, 14 degrees/frame at 24 fps).
-  Short airborne arcs are bounded by actual release/landing angles, reducing
-  the peak only when the available time cannot accommodate it. An articulated
-  sole bound permits lowering excess swing height without crossing the floor;
-  floor-limited incoming reach also informs the landing pelvis height.
-  Foot anchors/rotations, root XY, timing and the final four-frame hold remain
-  fixed. Heel-rise, MTP push and nominal knee phase targets are unchanged.
+  Round 10 swing feet use signed shin-relative ankle pitch: about 15°
+  plantarflexion after release, easing to neutral by mid-swing, then joining the
+  exact 12° heel strike. Three coupled IK/sole passes account for the changed shin
+  and foot orientations; contact targets, rotations and touchdown frames stay fixed
+  within that solve. Swing toe extension releases instead of holding the old
+  floor-level toe direction. The articulated sole keeps >=1 cm toe clearance over
+  the middle 35–65% of each swing, including quick closing steps. Floor runs and
+  terrain retain their previous ankle orientation path.
+  The knee safety envelope is 408 deg/s at speed <=1, growing with cadence to a
+  maximum 504 deg/s (17–21°/frame at 24 fps). The independent baked-pose gate allows
+  <17.5–21.5°/frame, scaled by 24/fps; it still rejects Round 7's ~23.8°/frame
+  braking pop. This is an engineering safety bound, not a clinical normal range.
+  The broad swing extension arc and backward/forward lower cones anticipate the
+  entire articulated clearance requirement, rather than clipping a late isolated
+  sample. Short swings may reduce their peak to meet exact release/landing poses.
+  `engine.walk_gait.knee_velocity_limit` is shared with the unit regression guard.
+  `walk_benchmark.py --label v12` records per-side toe clearance, knee-cap occupancy
+  (within 0.05°/frame), angular acceleration diagnostics, and signed evaluated
+  footwear lows on every frame. Normalized phase probes interpolate neighboring
+  frames, so 55% does not alias to toe-off in a fast 24 fps cycle. Cruise statistics
+  exclude a fixed 30-frame acceleration window: the root acceleration time is
+  independent of speed. Cycles containing the shortened pre-braking remainder are
+  transitions; the cadence check permits one frame or 5% for legacy timing
+  accents. Some fixed 5 m routes have no complete cruise cycle on
+  both sides; `tests/walk_round10_steady.py` supplies a separate 10 m diagnostic.
+  `tests/walk_round10_outsole.py` traces evaluated sole extrema to native vertex
+  weights on cached poses. `tests/walk_round10_evidence.py --report` compares the untouched v11 telemetry
+  with v12 and reports every remaining target flag, including footwear limits.
+  `--render` makes side-on swing/contact crops from cached projects without baking.
+  The native soft outsole can flex across a wider height interval than the combined
+  3 mm gap / 2 mm penetration budget while the ankle is fixed. A smaller constant
+  `c3d_sole_clearance_m` can trade floating for penetration; it does not repair that
+  skin deformation. Inspect signed per-frame mesh lows and the static-offset
+  feasibility interval in `walk_round10_contracts.json`; do not call skeletal
+  contact precision a pass of the visible-footwear target.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - **Static obstacle avoidance** — `walk_path(..., avoid="auto", ignore=None)` snapshots
   evaluated visible mesh footprints at the start frame, including furniture and other

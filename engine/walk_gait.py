@@ -117,3 +117,12 @@ def support_headings(samples, phases, fps, limit):
         # Suppress accumulated floating point error at the preserved touchdown.
         result[last] = samples[last]
     return result
+
+
+def knee_velocity_limit(speed=1.0, fps=24):
+    """Angular safety bound (radians/frame), cadence-scaled, below R7's pop.
+
+    408 deg/s nominal, at most 504 deg/s for fast cadence. This engineering
+    bound accommodates normal swing; it is not a clinical percentile.
+    """
+    return math.radians(min(21.0, 17.0*max(1.0, speed))) * 24 / fps

@@ -4,12 +4,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine.walk_gait import contact_phase, momentum, spring_step, step_variation, support_headings
+from engine.walk_gait import contact_phase, momentum, spring_step, step_variation, support_headings, knee_velocity_limit
 
 
 def main():
     assert [contact_phase(u) for u in (0, .10, .30, .50, .60, .999, 1)] == [
         'loading_response', 'mid_stance', 'terminal_stance', 'pre_swing', 'swing', 'swing', 'loading_response']
+    # R7 braking pop remains rejected at every supported cadence/FPS;
+    # normal 400 deg/s swing is admitted, unlike the previous 336 deg/s cap.
+    for fps in (24, 30, 60):
+        for speed in (.6, 1., 1.6, 4.):
+            cap = math.degrees(knee_velocity_limit(speed, fps))
+            assert 400/fps < cap < 23.8*24/fps
+        assert abs(math.degrees(knee_velocity_limit(1.,fps))*fps-408) < 1e-9
     for dt in (1/240, 1/24, .5, 10):
         value = speed = 0.0
         for _ in range(100):

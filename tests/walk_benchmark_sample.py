@@ -148,6 +148,8 @@ def sample(rig_name, nav):
                 side_ids = np.argmin(((points[:,None,:]-ankles[None,:,:])**2).sum(axis=2),axis=1)
                 for si,s in enumerate('LR'):
                     chosen = points[side_ids == si,2]
+                    if len(chosen):
+                        row['feet'][s]['mesh_low_m'] = float(chosen.min())
                     if len(chosen) and row['feet'][s]['support'] == 'flat':
                         mesh_flat_gap = max(mesh_flat_gap,abs(float(chosen.min())))
             finally:

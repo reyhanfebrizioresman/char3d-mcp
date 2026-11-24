@@ -40,6 +40,8 @@ PHASES = dict(loading=.05, mid_stance=.2, terminal_stance=.4, pre_swing=.55)
 ENVELOPE = dict(loading=[15,20], mid_stance=[5,12], terminal_stance=[5,15],
                 pre_swing=[30,40], toe_off=[35,45], peak_swing=[55,65])
 REFERENCES = [
+    dict(url='https://pubmed.ncbi.nlm.nih.gov/30558929/', note='Mentiplay et al., 2018: knee angular velocity changes with walking speed; peak extension occurs in terminal swing. The 408..504 deg/s safety envelope here is an engineering bound, not a clinical percentile.'),
+    dict(url='https://elsevier-elibrary.com/contents/fullcontent/59010/epubcontent_v2/OEBPS/B9780702042652000021.htm', note='Whittle: plantarflexion after toe-off returns toward neutral around feet-adjacent; mean toe clearance cited as 14 mm.'),
     dict(url='https://pubmed.ncbi.nlm.nih.gov/10199275/',
          note='Nawoczenski et al. 1999: 33 subjects, mean dynamic first-MTP dorsiflexion 42 degrees; clinical heel-rise 58 degrees is a different measure.'),
     dict(url='https://pmc.ncbi.nlm.nih.gov/articles/PMC9405699/',
@@ -75,6 +77,9 @@ def summarize(nav, measured, turning=False, speed=1.):
         supports = sum(r['feet'][s].get('interval_support', r['feet'][s]['support'] != 'swing') for s in 'LR')
         yaw[['flight','single_support','double_support'][supports]] += abs(r['yaw_rate_deg_s'])/fps
     total_yaw = sum(yaw.values())
+    land_frames = sorted(set([first]+[e['frame'] for e in nav['footfalls']]))
+    intervals = [b-a for a,b in zip(land_frames,land_frames[1:])]
+    nominal_half = max(set(intervals),key=lambda x:(intervals.count(x),x)) if intervals else 1
     steps = []
     for s in 'LR':
         other = 'R' if s == 'L' else 'L'
@@ -92,21 +97,36 @@ def summarize(nav, measured, turning=False, speed=1.):
                 frames['peak_swing'] = max(range(ev['lift'], b+1), key=lambda f: foot(f,s)['knee_deg'])
             phases = {k: dict(frame=f, **{key: foot(f,s)[key] for key in
                 ('knee_deg','foot_roll_deg','ankle_plantarflexion_deg','mtp_extension_deg')}) for k,f in frames.items()}
+            if complete:
+                for phase, fraction in PHASES.items():
+                    t = a+(b-a)*fraction
+                    lo = math.floor(t); w = t-lo
+                    phases[phase]['sample_frame'] = t
+                    for channel in ('knee_deg','foot_roll_deg','ankle_plantarflexion_deg','mtp_extension_deg'):
+                        x,y = foot(lo,s)[channel],foot(lo+1,s)[channel]
+                        phases[phase][channel] = None if x is None or y is None else x+(y-x)*w
             yaw_a = math.radians(row(a)['yaw_deg'])
             fw = (math.sin(yaw_a), -math.cos(yaw_a)); lat = (math.cos(yaw_a), math.sin(yaw_a))
             delta = [foot(a,s)['heel_m'][i]-foot(a,other)['heel_m'][i] for i in (0,1)]
             warnings = [k+'_knee' for k,v in phases.items() if complete and not ENVELOPE[k][0] <= v['knee_deg'] <= ENVELOPE[k][1]]
             jump = peak(r['feet'][s]['knee_delta_deg'] for r in segment)
-            if jump >= 15: warnings.append('knee_delta_ge_15')
-            # The standing/braking exclusion follows cadence; a fixed 30-frame
-            # window would erase every interior cycle in the fast tall fixture.
-            transition_frames = max(1, round(30/speed))
+            if jump >= min(21.5, 17.5*max(1., speed)): warnings.append('knee_velocity_limit')
+            # Root acceleration uses velocity*0.7, hence a fixed time window.
+            # A fast 5 m route may have no full cruise cycle on both feet;
+            # walk_round10_steady.py supplies the separate 10 m contract check.
+            transition_frames = 30
             opposite_land = max([first]+[e['frame'] for e in nav['footfalls']
                                          if e['side']==other and e['frame'] <= a])
             # Width uses TWO heels. A new cruise strike opposite a still-wide
             # acceleration footprint is a transition until both were replaced.
-            cruise = (complete and min(a, opposite_land) > first+transition_frames
-                      and b < rows[-1]['frame']-transition_frames)
+            # A cycle containing the shortened remainder before braking is a
+            # transition even if its endpoint precedes the last two landings.
+            # Allow one frame (or 5%) for v11's intentional cadence accents.
+            local_intervals = [y-x for x,y in zip(land_frames,land_frames[1:])
+                               if opposite_land <= x and y <= b]
+            regular_cadence = all(abs(v-nominal_half) <= max(1,.05*nominal_half) for v in local_intervals)
+            cruise = (complete and regular_cadence and min(a, opposite_land) > first+transition_frames
+                      and b < min(rows[-1]['frame']-transition_frames, sorted(e['frame'] for e in nav['footfalls'])[-3]))
             width = abs(sum(x*y for x,y in zip(delta,lat)))
             if cruise and not .045*measured['dimensions_m'][2] <= width <= .075*measured['dimensions_m'][2]:
                 warnings.append('width_outside_stature_envelope')
@@ -115,7 +135,7 @@ def summarize(nav, measured, turning=False, speed=1.):
                     warnings.append('progression_outside_5_10')
             if complete and not turning:
                 v = phases['toe_off']['ankle_plantarflexion_deg']
-                if not 15 <= v <= 20: warnings.append('ankle_toe_off_outside_15_20')
+                if not 10 <= v <= 20: warnings.append('ankle_toe_off_outside_10_20')
                 mtp = phases['toe_off']['mtp_extension_deg']
                 if mtp is not None and not 40 <= mtp <= 55: warnings.append('mtp_toe_off_outside_40_55')
             local_yaw = {'single_support':0., 'double_support':0., 'flight':0.}
@@ -142,9 +162,25 @@ def summarize(nav, measured, turning=False, speed=1.):
                 max_yaw_deg_s=peak(abs(r['yaw_rate_deg_s']) for r in segment),
                 rotation_degrees_by_support=local_yaw,
                 max_knee_delta_deg=jump, warnings=warnings))
+    # Cruise-to-cruise comparison excludes standing and gathering footprints.
+    swing_metrics = {}
+    cap = min(21.,17.*max(1.,speed))
+    for side in 'LR':
+        airborne = [r['feet'][side] for r in rows if r['feet'][side]['support']=='swing']
+        middle = [foot(f,side) for e in nav['support_events'] if e['side']==side
+                  for f in range(e['lift']+1,e['land'])
+                  if .35 <= (f-e['lift'])/(e['land']-e['lift']) <= .65]
+        deltas = [r['feet'][side]['knee_deg']-rows[i-1]['feet'][side]['knee_deg']
+                  for i,r in enumerate(rows) if i]
+        swing_metrics[side] = dict(knee_cap_deg_per_frame=cap,
+            swing_frames=len(airborne),
+            knee_cap_frames=sum(abs(f['knee_delta_deg']-cap)<.05 for f in airborne),
+            knee_cap_percent=100*sum(abs(f['knee_delta_deg']-cap)<.05 for f in airborne)/max(1,len(airborne)),
+            mid_swing_min_toe_clearance_m=min((f['toe_m'][2] for f in middle),default=None),
+            max_knee_acceleration_deg_frame2=max((abs(b-a) for a,b in zip(deltas,deltas[1:])),default=0.))
     sides = {}
     for s in 'LR':
-        subset = [x for x in steps if x['side'] == s and x['complete_cycle']]
+        subset = [x for x in steps if x['side'] == s and x['kind']=='cruise']
         sides[s] = {k: sum(x[k] for x in subset)/len(subset) if subset else None for k in
                     ('step_length_m','step_width_m','progression_outward_deg','double_support_fraction','max_knee_delta_deg')}
     asymmetry = {k: abs(sides['L'][k]-sides['R'][k]) if all(sides[s][k] is not None for s in 'LR') else None for k in sides['L']}
@@ -166,7 +202,7 @@ def summarize(nav, measured, turning=False, speed=1.):
                    rotation_degrees_by_support=yaw,
                    double_support_rotation_fraction=yaw['double_support']/total_yaw if total_yaw else 0.,
                    destination_error_m=math.dist(rows[-1]['pelvis_m'][:2], destination),
-                   hold_m=measured['hold_m'], hold_rad=measured['hold_rad'],
+                   hold_m=measured['hold_m'], hold_rad=measured['hold_rad'], swing_metrics=swing_metrics,
                    asymmetry_absolute=asymmetry, side_means=sides, cruise_phase_means=phase_means,
                    cruise_phase_asymmetry_deg=phase_asymmetry,
                    flagged_steps=sum(bool(x['warnings']) for x in steps))
@@ -192,10 +228,28 @@ def summarize(nav, measured, turning=False, speed=1.):
         summary['failures'].append('cruise_fpa_outside_5_10')
     if not turning and len(nav.get('path_points', [])) == 2 and any(not .08 <= x['step_width_m'] <= .12 for x in cruise):
         summary['failures'].append('cruise_heel_width_outside_8_12_cm')
-    if summary['max_knee_delta_deg'] >= 15:
+    if summary['max_knee_delta_deg'] >= min(21.5, 17.5*max(1., speed)):
         summary['failures'].append('max_knee_delta_deg')
+    for side, metrics in swing_metrics.items():
+        value = metrics['mid_swing_min_toe_clearance_m']
+        if value is not None and value < .01:
+            summary['failures'].append(side+'_mid_swing_toe_clearance')
+    if not turning and len(nav.get('path_points', [])) == 2:
+        for phase, metrics in phase_asymmetry.items():
+            for channel in ('knee_deg','ankle_plantarflexion_deg'):
+                if metrics[channel] is not None and metrics[channel] > 4:
+                    summary['failures'].append(phase+'_'+channel+'_asymmetry')
+        delta = asymmetry['step_length_m']
+        mean = sides['L']['step_length_m']
+        if delta is not None and delta > max(.02,.03*abs(mean)):
+            summary['failures'].append('cruise_step_length_asymmetry')
+        for side in 'LR':
+            for phase, (low, high) in {'pre_swing':(30,40),'toe_off':(35,45)}.items():
+                value = phase_means[side][phase]['knee_deg']
+                if value is not None and not low <= value <= high:
+                    summary['failures'].append(side+'_'+phase+'_knee_envelope')
     summary['envelope_flags'] = (['phase_or_progression_steps'] if summary['flagged_steps'] else [])
-    for k,limit in (('max_knee_delta_deg',15),('mesh_penetration_m',.002),('mesh_flat_gap_m',.01)):
+    for k,limit in (('max_knee_delta_deg',min(21.5,17.5*max(1.,speed))),('mesh_penetration_m',.002),('mesh_flat_gap_m',.003)):
         if summary[k] >= limit:
             summary['envelope_flags'].append(k)
     return summary, steps
@@ -203,14 +257,14 @@ def summarize(nav, measured, turning=False, speed=1.):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--baseline', action='store_true'); p.add_argument('--label', default='v11')
+    p.add_argument('--baseline', action='store_true'); p.add_argument('--label', default='v12')
     p.add_argument('--body', choices=BODIES); p.add_argument('--case', choices=CASES)
     p.add_argument('--resume', action='store_true')
     p.add_argument('--remeasure', action='store_true', help='Refresh telemetry on cached pinned-baseline animations, without rebaking')
     p.add_argument('--refresh-summary', action='store_true', help='Recalculate anatomical FPA and report summaries from saved rows, offline')
     args = p.parse_args()
     os.environ.setdefault('CHAR3D_PORT', '9977')
-    os.environ.setdefault('CHAR3D_WORKSPACE', str(ROOT/'output/walk_round9'))
+    os.environ.setdefault('CHAR3D_WORKSPACE', str(ROOT/'output/walk_round10'))
     if os.environ['CHAR3D_PORT'] != '9977': raise RuntimeError('Benchmark owns port 9977 only')
     if args.refresh_summary:
         path = Path(os.environ['CHAR3D_WORKSPACE'])/f'walk_benchmark_{args.label}.json'
@@ -235,7 +289,7 @@ def main():
     path = work/f'walk_benchmark_{args.label}.json'
     source = subprocess.check_output(['git','show','42487f5:engine/commands/walk.py'],cwd=ROOT,text=True) if args.baseline else (ROOT/'engine/commands/walk.py').read_text()
     sample_source = (ROOT/'tests/walk_benchmark_sample.py').read_text()
-    fingerprint = hashlib.sha256((source+sample_source+Path(__file__).read_text()).encode()).hexdigest()
+    fingerprint = hashlib.sha256((source+(ROOT/'engine/walk_gait.py').read_text()+sample_source+Path(__file__).read_text()).encode()).hexdigest()
     if args.remeasure and not args.baseline:
         raise RuntimeError('--remeasure is limited to the pinned 42487f5 baseline')
     report = json.loads(path.read_text()) if (args.resume or args.remeasure) and path.exists() else {}

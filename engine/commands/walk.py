@@ -13,7 +13,7 @@ from .util import obj_or_raise
 from .terrain import GroundQuery, smooth_heights, sole_footprint
 from .navigation import Planner, validate_options
 from ..walk_gait import (DOUBLE_SUPPORT, LOADING_END, MID_STANCE_END, TOE_OFF, SPRING_OMEGA,
-                         momentum, step_variation, support_headings, spring_step)
+                         momentum, step_variation, support_headings, spring_step, knee_velocity_limit)
 
 TURN_RATE = math.radians(100)       # maximum body yaw per second, independent of speed
 SHARP_TURN = math.radians(100)      # stop and step around corners sharper than this
@@ -261,13 +261,15 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
         # Cruise steps fill the travel up to the two quick braking steps.
         cruise = final - 2 * brake
         # Never lengthen cruise strides to pay for double support in braking.
-        lead = max(1, math.ceil(cruise / half_step))
-        weights = [1 + .045*step_variation(k, 3) if vary else 1.0 for k in range(lead)]
-        edges = [0.0]
-        for weight in weights:
-            edges.append(edges[-1]+weight)
-        boundaries = ([round(cruise * e / edges[-1]) for e in edges] +
-                      [cruise + brake, final])
+        boundaries = list(range(0, cruise, half_step))
+        # A two-frame remainder has only one airborne sample after loading.
+        # Borrow from the previous interval, preserving the braking boundary.
+        minimum = min(4, half_step)
+        if cruise-boundaries[-1] < minimum and len(boundaries)>1:
+            boundaries[-1] = cruise-minimum
+            if boundaries[-1]-boundaries[-2] < 2:
+                boundaries.pop()
+        boundaries += [cruise, cruise + brake, final]
         count = len(boundaries) - 1
     else:
         weights = [1.0] * (count - 1) + [last_weight]
@@ -283,9 +285,9 @@ def _arrival_samples(keys, fps, half_step, count=None, last_weight=1.0, brake=No
 
 
 def _walk_half_step(d, velocity, fps, speed):
-    """Natural adult steps are ~0.37 x stature; keep that length as speed scales cadence."""
+    """Stature-sized steps, bounded by native leg reach; speed scales cadence."""
     natural = velocity / speed
-    return max(2, round(fps * .37 * d["H"] / natural / speed))
+    return max(2, round(fps * min(.37*d["H"], .75*d["leg"]) / natural / speed))
 
 
 def _terrain_samples(keys, fps, clip, speed, ground):
@@ -395,9 +397,9 @@ def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0, ball_
                 pose[i] = _pitched(p, q, heel, axis(i), angle)
             elif rises and end - i < rise_frames:
                 push = 1-(end-i)/rise_frames
-                # Reserve the last four degrees for the final ball push, after
+                # Reserve the final seventeen degrees for the final ball push, after
                 # opposite loading, rather than bending terminal stance earlier.
-                base_rise = min(stance_rise, math.radians(48)*scale*(1-.5*twisting))
+                base_rise = min(stance_rise, math.radians(35)*scale*(1-.5*twisting))
                 angle = (-base_rise*_smoothstep(push)
                          -(stance_rise-base_rise)*_smoothstep((push-.7)/.3))
                 pivot = ball_pivot if ball_pivot is not None else toe
@@ -428,6 +430,54 @@ def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps, scale=1.0, ball_
         track[i] = value
     # Rolling frames touch the floor on an edge; "contacts" stay the flat, fixed foot.
     return {i for i, (p, q) in pose.items() if q != flat[i][1]}, toe_roll
+
+
+def _release_lookahead(rig, smap, distance, duration):
+    """Fit symmetric footprints to the native leg/ball geometry at release.
+
+    A fixed fraction of a step ignores the foot/leg ratio and the rounded
+    opposite-loading interval. Solve the two-support triangle instead; bones
+    and support rotations are never edited to impose a joint angle.
+    """
+    if distance < .01:
+        return .5
+    mw = rig.matrix_world
+    forward = _terrain_forward(rig, smap)
+    up = Vector((0,0,1)); axis = forward.cross(up)
+    root = mw @ rig.data.bones[smap['hips']].head_local
+    measurements=[]
+    for side in 'LR':
+        h,k,a = [(mw @ rig.data.bones[smap[b+'.'+side]].matrix_local).translation
+                 for b in ('thigh','shin','foot')]
+        toe=smap.get('toe.'+side)
+        if not toe:
+            return .5
+        ball=mw @ rig.data.bones[toe].head_local
+        roll=Quaternion(axis,-HEEL_RISE)
+        offset=(ball-a)-roll @ (ball-a)
+        measurements.append(((h-k).length,(k-a).length,(h-root).dot(forward),
+                             offset.dot(forward),offset.z))
+    l1,l2,hip_forward,roll_forward,roll_up = [sum(v[i] for v in measurements)/2 for i in range(5)]
+    delay=max(0,round(.2*duration))/duration
+    u=delay/2
+    knots=((0,9),(.05,18),(.10,11),(.20,7))
+    front=11
+    for (a,x),(b,y) in zip(knots,knots[1:]):
+        if u<=b:
+            front=x+(y-x)*_smoothstep((u-a)/(b-a));break
+    front_reach=l1*l1+l2*l2+2*l1*l2*math.cos(math.radians(front))
+    rear_reach=l1*l1+l2*l2+2*l1*l2*math.cos(math.radians(38))
+    def reach(fraction):
+        x_front=(fraction-delay)*distance-hip_forward
+        x_rear=(fraction-1-delay)*distance+roll_forward-hip_forward
+        height=math.sqrt(max(0,front_reach-x_front*x_front))
+        return x_rear*x_rear+(height-roll_up)**2
+    lo,hi=.30,.70
+    for _ in range(32):
+        mid=(lo+hi)/2
+        if reach(mid)>rear_reach:lo=mid
+        else:hi=mid
+    return (lo+hi)/2
 
 
 def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None,
@@ -463,6 +513,8 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
     initial_height = {s: z+initial_lift for s, z in initial_height.items()}
     support = min(initial_height, key=initial_height.get)
     targets, contacts, footfalls = {}, {}, []
+    cruise_gait = cruise
+    lookaheads = {}
     cruise = max(((b[0] - a[0]).length for a, b in zip(samples, samples[1:])), default=0.0)
     for side in "LR":
         rest = mw @ rig.data.bones[smap[f"foot.{side}"]].matrix_local
@@ -506,9 +558,19 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             # progresses over the rear leg before opposite loading. This combines
             # with a late ball-joint push, rather than changing any knee target.
             # Runs and whole-sole terrain retain their previous placement.
-            ahead = ((duration-flight)//2 if flight else round((.48 if cruise else TOE_OFF)*duration))
-            index = min(frame + ahead, n - 1)
+            if cruise_gait and duration not in lookaheads:
+                lookaheads[duration] = _release_lookahead(rig, smap, cruise*duration, duration)
+            fraction = lookaheads.get(duration, .48)
+            ahead = ((duration-flight)//2 if flight else
+                     fraction*duration if cruise_gait else
+                     round((.48 if cruise else TOE_OFF)*duration))
+            position = min(frame + ahead, n - 1)
+            index = int(position)
             p, yaw = samples[index]
+            if position > index:
+                other_p, other_yaw = samples[index+1]
+                p = p.lerp(other_p, position-index)
+                yaw += _angle(yaw, other_yaw)*(position-index)
             q = Quaternion((0, 0, 1), yaw - rest_yaw)
             ankle = p + q @ (settled if final else stepping(index))
             if cruise and not final:
@@ -709,7 +771,7 @@ def _articulate_toes(rig, start, targets, toe_roll):
     bpy.context.view_layer.update()
 
 
-def _stance_height(rig, start, targets, events, toe_roll=None):
+def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
     """Vault over support, allowing loading flexion without a future swing drop.
 
     Fit the pelvis from a bent supporting leg and both legs' reach. Smooth its
@@ -739,7 +801,12 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
             if toe:
                 tq = (toe_roll or {}).get(side,{}).get(i,Quaternion()) @ q @ relative
                 offsets[1:] = [(q @ origin).z+(tq @ p).z for p in distal]
-            values.append(-min(offsets)+.00005)
+            airborne = next((e for e in events if e['side']==side and e['lift'] < start+i < e['land']), None)
+            margin = 0.0
+            if airborne:
+                u = (start+i-airborne['lift'])/(airborne['land']-airborne['lift'])
+                margin = .0101*_smoothstep(u/.3)*(1-_smoothstep((u-.7)/.3))
+            values.append(-min(offsets)+.00005+margin)
         clearance_z[side] = values
     lengths = {}
     for side in "LR":
@@ -805,7 +872,7 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
     # extension. Anticipate contact flexion in joint space: lower the pelvis
     # only where a neighbouring supported sample requires more knee bend.
     # Both feet's world targets, route XY and every landing time stay fixed.
-    knee_rate = math.radians(14.0) * 24 / fps
+    knee_rate = knee_velocity_limit(speed, fps)
 
     def contact_knee(i, side, floor_only=False):
         world, hips, _ = records[i]
@@ -820,6 +887,16 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
 
     for _ in range(8):
         changed = False
+        # Anticipate the entire articulated swing sole, including its 1 cm
+        # middle clearance. An immediate-neighbour bound misses a toe-down
+        # foot two frames away in a short closing shuffle.
+        required = {s: [contact_knee(i, s, floor_only=bool(records[i][2][s]))
+                        for i in range(len(heights))] for s in 'LR'}
+        for side in 'LR':
+            for indices in (range(1,len(heights)), range(len(heights)-2,-1,-1)):
+                for i in indices:
+                    j = i-1 if indices.step > 0 else i+1
+                    required[side][i] = max(required[side][i], required[side][j]-knee_rate)
         for indices in (range(1,len(heights)), range(len(heights)-2,-1,-1)):
             for i in indices:
                 j = i-1 if indices.step > 0 else i+1
@@ -829,7 +906,7 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
                     # A low incoming swing can still require slightly more
                     # flexion than the nominal heel-strike pose. Anticipate
                     # that floor-limited reach at the fixed landing too.
-                    angle = contact_knee(j, side, floor_only=bool(records[j][2][side]))-knee_rate
+                    angle = required[side][i]
                     if angle <= contact_knee(i, side)+1e-7:
                         continue
                     world, hips, _ = records[i]
@@ -855,7 +932,7 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
             H, A = hips[side], targets[side][i][0]
             l1, l2 = lengths[side]
             xy = (A.x-H.x)**2+(A.y-H.y)**2
-            angle = flex(((0,35),(.35,60),(.55,60),(.8,25),(1,9)), u)
+            angle = flex(((0,35),(.35,60),(.50,60),(1,9)), u)
             reach2 = l1*l1+l2*l2+2*l1*l2*math.cos(angle)
             z = max(A.z, heights[i]+H.z-world.translation.z-math.sqrt(max(0,reach2-xy)))
             airborne[side,i] = z
@@ -908,7 +985,13 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
             return math.acos(max(-1., min(1., (d2-l1*l1-l2*l2)/(2*l1*l2))))
         for ev in by_side[side]:
             a, b = max(0, ev['lift']-start), ev['land']-start
-            values = [angle_at(i) for i in range(a,b+1)]
+            minimum = [contact_knee(i, side, floor_only=True)
+                       if a < i < b else angle_at(i) for i in range(a,b+1)]
+            for indices in (range(1,len(minimum)), range(len(minimum)-2,-1,-1)):
+                for k in indices:
+                    j = k-1 if indices.step > 0 else k+1
+                    minimum[k] = max(minimum[k], minimum[j]-knee_rate)
+            values = [max(angle_at(i), minimum[i-a]) for i in range(a,b+1)]
             # Upper cones from fixed endpoints preserve a full peak whenever
             # swing duration permits it, but reduce unreachable quick shuffles.
             for k in range(1,len(values)-1):
@@ -925,6 +1008,46 @@ def _stance_height(rig, start, targets, events, toe_roll=None):
                 xy = (A.x-H.x)**2+(A.y-H.y)**2
                 A.z = max(clearance_z[side][i], H.z-math.sqrt(max(0.,reach2-xy)))
     bpy.context.view_layer.update()
+
+
+def _swing_ankles(rig, start, targets, events, toe_roll):
+    """Shin-relative sagittal swing, preserving authored support and touchdown.
+
+    Whittle, Gait Analysis (4th ed.), ch. 2: plantarflexion after toe-off
+    returns to neutral around feet-adjacent, then stays near neutral.
+    Solve after leg IK so a world-flat foot cannot masquerade as neutral ankle.
+    """
+    sm = anim.semantic_map(rig)
+    mw = rig.matrix_world
+    neutral = _terrain_forward(rig, sm).normalized()
+    up = Vector((0, 0, 1))
+    for side in 'LR':
+        fk, sk = sm['foot.'+side], sm['shin.'+side]
+        rest = mw @ rig.data.bones[fk].matrix_local
+        rest_shin = rest.translation-(mw @ rig.data.bones[sk].matrix_local).translation
+        def signed(a, b, axis):
+            a = a-axis*a.dot(axis); b = b-axis*b.dot(axis)
+            return math.atan2(axis.dot(a.cross(b)), a.dot(b))
+        reference = signed(rest_shin, neutral, neutral.cross(up))
+        for ev in (e for e in events if e['side']==side):
+            a, b = ev['lift']-start, ev['land']-start
+            for i in range(a+1, b):
+                bpy.context.scene.frame_set(start+i)
+                foot = mw @ rig.pose.bones[fk].matrix
+                shin = mw @ rig.pose.bones[sk].matrix
+                p, q = targets[side][i]
+                fw = q @ rest.to_quaternion().inverted() @ neutral
+                axis = Vector((fw.x, fw.y, 0)).normalized().cross(up)
+                actual = reference-signed(foot.translation-shin.translation, fw, axis)
+                u = (i-a)/(b-a)
+                desired = math.radians(15*(1-_smoothstep(u/.5)))
+                # Join exact release/heel strike over small end windows.
+                weight = _smoothstep(u/.18)*(1-_smoothstep((u-.82)/.18))
+                q = Quaternion(axis, (actual-desired)*weight) @ q
+                # Toe extension releases after support, rather than holding a ski tip.
+                toe_roll.get(side, {}).pop(i, None)
+                # The following knee/sole solve handles vertical clearance jointly.
+                targets[side][i] = p, q
 
 
 def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=None,
@@ -1125,9 +1248,15 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                                    support_events=support_events, cruise=pelvis_gait,
                                    toe_out=math.radians(7) if phases is not None and ground is None and clip == "walk" else 0.0)
     if pelvis_gait:
-        _stance_height(rig, start, targets, support_events, toe_roll)
+        _stance_height(rig, start, targets, support_events, toe_roll, speed)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
                      ground=ground, adjust_hips=not pelvis_gait)
+    if pelvis_gait:
+        for _ in range(3):
+            _swing_ankles(rig, start, targets, support_events, toe_roll)
+            _stance_height(rig, start, targets, support_events, toe_roll, speed)
+            lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
+                             adjust_hips=False)
     _articulate_toes(rig, start, targets, toe_roll)
     if phases is not None and ground is None and clip == "walk":
         _relax_fingers(rig, start, samples, phases, half)
