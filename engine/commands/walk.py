@@ -219,18 +219,32 @@ def _half_step(clip, fps, speed):
 
 
 def _arrival_samples(keys, fps, half_step):
-    """Place the final footfall at the end of travel, then hold the stance."""
+    """Finish stepping with the body instead of after it.
+
+    The lead foot lands at the final stance and the trailing foot closes beside it
+    about .3 s before the decelerating hips stop; the body then glides over both
+    planted feet. Steps are spread evenly over the travel (shorter as it slows).
+    """
     samples, arrival = _samples(keys, fps, half_step)
-    hold = max(4, round(fps / 6))
-    count = min(arrival, max(1, round(arrival / half_step)))
-    phases = [0.0] * (arrival + hold + 1)
-    if count:
-        boundaries = [round(step * arrival / count) for step in range(count + 1)]
-        for step, (first, last) in enumerate(zip(boundaries, boundaries[1:])):
-            for frame in range(first, last):
-                phases[frame] = step + (frame - first) / (last - first)
-        phases[arrival:] = [float(count)] * (hold + 1)
-    return samples[:len(phases)], max(0, arrival - half_step), phases
+    glide = max(2, round(.3 * fps))
+    hold = max(4, round(fps / 4))
+    shortest = max(2, round(.6 * half_step))
+    final = max(arrival - glide, 2 * shortest)
+    count = max(2, min(round(final / half_step), final // shortest))
+    length = max(arrival, final + glide) + hold + 1
+    samples = (samples + [samples[-1]] * length)[:length]
+    phases = [float(count)] * length
+    boundaries = [round(step * final / count) for step in range(count + 1)]
+    for step, (first, last) in enumerate(zip(boundaries, boundaries[1:])):
+        for frame in range(first, last):
+            phases[frame] = step + (frame - first) / (last - first)
+    return samples, max(0, final - half_step), phases
+
+
+def _walk_half_step(d, velocity, fps, speed):
+    """Natural adult steps are ~0.37 x stature; keep that length as speed scales cadence."""
+    natural = velocity / speed
+    return max(2, round(fps * .37 * d["H"] / natural / speed))
 
 
 def _terrain_samples(keys, fps, clip, speed, ground):
@@ -272,8 +286,92 @@ def _terrain_samples(keys, fps, clip, speed, ground):
     raise ValueError(f"route exceeds {MAX_FRAMES} frames; split it into shorter paths")
 
 
-def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None):
-    """Alternate planted supports and lifted swings; contacts freeze position AND yaw."""
+def _support_side(rig, initial):
+    """The lower initial foot keeps supporting first (see _footsteps)."""
+    legs, _smap = _legs(rig)
+    heights = {s: min((initial[s] @ p).z for p in _sole_points(rig, legs[s], 0.0)) for s in "LR"}
+    return min(heights, key=heights.get)
+
+
+HEEL_STRIKE = math.radians(12)      # toes up as the heel lands
+HEEL_RISE = math.radians(15)        # heel up about the toe edge before push-off
+
+
+def _pitched(position, rotation, pivot, axis, angle):
+    """Rotate a foot (ankle position, world rotation) about a sole point in foot space."""
+    turn = Quaternion(axis, angle)
+    point = position + rotation @ pivot
+    return point + turn @ (position - point), turn @ rotation
+
+
+def _roll_feet(track, swings, sole_points, rest, rest_yaw, fps):
+    """Heel strike -> flat foot -> heel rise, pivoting on the sole so planted edges never slip.
+
+    track holds (ankle, rotation) per frame with flat contacts; swings lists (lift, land).
+    """
+    n = len(track)
+    local_forward = rest.inverted() @ Vector((math.sin(rest_yaw), -math.cos(rest_yaw), 0))
+    heel = min(sole_points, key=local_forward.dot)
+    toe = max(sole_points, key=local_forward.dot)
+    flat = [(p.copy(), q.copy()) for p, q in track]
+
+    def axis(i):
+        forward = flat[i][1] @ local_forward
+        forward.z = 0
+        return forward.normalized().cross(Vector((0, 0, 1)))
+
+    # Contacts: before the first lift, between each land and the next lift, after the last land.
+    stances = []
+    edges = [None, *[land for _lift, land in swings]]
+    lifts = [lift for lift, _land in swings] + [None]
+    for land, lift in zip(edges, lifts):
+        stances.append((0 if land is None else land, n - 1 if lift is None else lift,
+                        land is not None, lift is not None))
+    pose = {}
+    for begin, end, strikes, rises in stances:
+        length = end - begin
+        if length <= 0:
+            continue
+        strike_frames = max(1, min(round(.1 * fps), length // 3))
+        rise_frames = max(1, min(round(.45 * length), length - (strike_frames if strikes else 0)))
+        for i in range(begin, end + 1):
+            p, q = flat[i]
+            if strikes and i - begin < strike_frames:
+                angle = HEEL_STRIKE * (1 - _smoothstep((i - begin) / strike_frames))
+                pose[i] = _pitched(p, q, heel, axis(i), angle)
+            elif rises and end - i < rise_frames:
+                angle = -HEEL_RISE * _smoothstep(1 - (end - i) / rise_frames)
+                pose[i] = _pitched(p, q, toe, axis(i), angle)
+            else:
+                pose[i] = (p.copy(), q.copy())
+    for lift, land in swings:
+        if land <= lift:
+            continue
+        started = lift > 0 or lift in pose and pose[lift][1] != flat[lift][1]
+        start_offset = pose[lift][0] - flat[lift][0] if started and lift in pose else Vector()
+        start_angle = -HEEL_RISE if started else 0.0
+        end_offset = pose[land][0] - flat[land][0] if land in pose else Vector()
+        for i in range(lift + 1, land):
+            u = (i - lift) / (land - lift)
+            angle = (start_angle * (1 - _smoothstep(u / .4)) +
+                     HEEL_STRIKE * _smoothstep((u - .45) / .55))
+            p, q = flat[i]
+            w = _smoothstep(u)
+            turn = Quaternion(axis(i), angle)
+            pose[i] = (p + start_offset.lerp(end_offset, w), turn @ q)
+    for i, value in pose.items():
+        track[i] = value
+    # Rolling frames touch the floor on an edge; "contacts" stay the flat, fixed foot.
+    return {i for i, (p, q) in pose.items() if q != flat[i][1]}
+
+
+def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phases=None, runs=None,
+               arrive=False, roll=False):
+    """Alternate planted supports and lifted swings; contacts freeze position AND yaw.
+
+    arrive lands the last two steps side by side at the final stance. roll adds a
+    heel strike and a heel rise about the sole's heel/toe edges (flat ground only).
+    """
     smap = anim.semantic_map(rig)
     mw = rig.matrix_world
     root = (mw @ rig.data.bones[smap["hips"]].matrix_local).translation
@@ -291,7 +389,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
     initial_height = {s: min((initial[s] @ p).z for p in _sole_points(rig, legs[s], 0.0))
                       for s in "LR"}
     support = min(initial_height, key=initial_height.get)
-    targets, contacts = {}, {}
+    targets, contacts, footfalls = {}, {}, []
     for side in "LR":
         rest = mw @ rig.data.bones[smap[f"foot.{side}"]].matrix_local
         sole = _sole_points(rig, legs[side], mw.translation.z)
@@ -331,6 +429,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
         first_land = 2 if side == support else 1
         track, mask = [None]*n, [True]*n
         cursor = 0
+        swings = []
         for step in range(first_land, len(boundaries), 2):
             land = boundaries[step]
             duration = land - boundaries[step-1]
@@ -339,7 +438,9 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             lift = max(0, boundaries[step-1] - flight)
             for i in range(cursor, lift + 1):
                 track[i] = anchor
-            goal = landing(land, duration)
+            # The last two steps gather at the final stance while the hips still glide.
+            goal = landing(n - 1 if arrive and step >= len(boundaries) - 2 else land, duration)
+            swings.append((lift, land))
             swing = []
             for i in range(lift, land + 1):
                 u = (i - lift) / (land - lift)
@@ -371,19 +472,25 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             anchor, cursor = goal, land + 1
         for i in range(cursor, n):
             track[i] = anchor
+        if roll and ground is None and swings:
+            for i in _roll_feet(track, swings, sole_points=sole,
+                                rest=rest.to_quaternion(), rest_yaw=rest_yaw, fps=fps):
+                mask[i] = False
+        footfalls.extend((start + land, side) for _lift, land in swings)
         # An incoming locomotion clip can leave the first swinging foot airborne.
         mask[0] = True if ground is not None else abs(initial_height[side]) < 0.02
         targets[side] = track
         contacts[side] = [[start+a, start+b] for a, b in _intervals(mask, fill=0, min_len=1)]
-    return targets, contacts
+    return targets, contacts, sorted(footfalls)
 
 
 def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=None,
-                 phases=None, runs=None, _world_route=False):
+                 phases=None, runs=None, _world_route=False, gait=None):
     began = time.perf_counter()
     sc = bpy.context.scene
     fps = sc.render.fps / sc.render.fps_base
-    half = _half_step(clip, fps, speed)
+    gait = gait or {}
+    half = gait.get("half") or _half_step(clip, fps, speed)
     end = start + len(samples) - 1
     prev = anim._sample_pose(rig, start)
     hips_name = anim.semantic_map(rig)["hips"]
@@ -414,6 +521,9 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
             f = start + i
             sc.frame_set(f)
             phase = phases[i]*half if phases is not None else i
+            # Footsteps land on half-step boundaries; with "align" the clip's widest
+            # stride, lowest bob and full arm swing coincide with that double support.
+            phase += gait.get("phase_offset", 0.0) * half
             rots, (_x, up, _fwd) = anim.CLIPS[clip][0](phase, 2*half, d, rest_deg, 1.0)
             if clip == "run" and runs is not None:
                 walk, (_x, walk_up, _fwd) = anim.CLIPS["walk"][0](phase, 2*half, d, rest_deg, 1.0)
@@ -485,12 +595,14 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
             if ground is not None or _world_route:
                 hp.keyframe_insert("location", frame=f, group=hips_name)
         bpy.context.view_layer.update()
-    targets, contacts = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run",
-                                   ground=ground, phases=phases, runs=runs)
+    targets, contacts, footfalls = _footsteps(rig, samples, initial_feet, half, start, run=clip == "run",
+                                   ground=ground, phases=phases, runs=runs,
+                                   arrive=gait.get("arrive", False), roll=gait.get("roll", False))
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
                      ground=ground)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],
                          "hips_lowered_max_m": lock["hips_lowered_max_m"]}
+    info["footfalls"] = [{"frame": f, "side": side, "character": rig.name} for f, side in footfalls]
     if ground is not None:
         info["foot_lock"].update({k: lock[k] for k in
             ("ground_heights", "max_penetration_m", "min_swing_clearance_m")})
@@ -548,7 +660,7 @@ def _fk_dependencies(rig):
 
 
 def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
-          phases=None, runs=None, _world_route=False):
+          phases=None, runs=None, _world_route=False, gait=None):
     """Generated FK rigs need bone evaluation, not repeated skin deformation."""
     began = time.perf_counter()
     hidden, muted, drivers = [], [], []
@@ -578,7 +690,7 @@ def _bake(rig, start, samples, active, initial_feet, clip, speed, ground=None,
                 obj.hide_viewport = True
     try:
         result = _bake_motion(rig, start, samples, active, initial_feet, clip, speed,
-                              ground, phases, runs, _world_route)
+                              ground, phases, runs, _world_route, gait)
     finally:
         for fc in drivers:
             fc.mute = False
@@ -597,6 +709,30 @@ def _speed(value):
     if isinstance(value, bool) or not math.isfinite(value) or not 0.1 <= value <= 4.0:
         raise ValueError("speed must be finite and between 0.1 and 4.0")
     return float(value)
+
+
+def _settle_chest(rig, brake, end, yaw, fps):
+    """After the closing step the chest carries forward ~3.5 degrees, then rights itself."""
+    name = anim.semantic_map(rig).get("chest") or anim.semantic_map(rig).get("spine")
+    if not name or name not in rig.pose.bones:
+        return
+    sc = bpy.context.scene
+    bone = rig.pose.bones[name]
+    mw = rig.matrix_world
+    forward = Vector((math.sin(yaw), -math.cos(yaw), 0))
+    left = Vector((0, 0, 1)).cross(forward)
+    lead, follow = max(1, round(.13 * fps)), max(1, round(.30 * fps))
+    previous = {}
+    for frame in range(max(sc.frame_start, brake - lead), end + 1):
+        inertia = (_smoothstep((frame - brake + lead) / follow) *
+                   (1 - _smoothstep((frame - brake + lead - follow) / max(1, end - brake + lead - follow))))
+        if inertia <= 1e-4:
+            continue
+        sc.frame_set(frame)
+        current = (mw @ bone.matrix).to_quaternion()
+        anim._set_world_rot(rig, bone, Quaternion(left, math.radians(3.5 * inertia)) @ current)
+        anim._key_rot(bone, frame, previous)
+    bpy.context.view_layer.update()
 
 
 @command("walk_path")
@@ -651,20 +787,30 @@ def walk_path(armature, points, clip="walk", start_frame=None, speed=1.0, face_e
         if face_end is not None:
             target = _target_yaw(face_end, route[-1], start + math.ceil(keys[-1][0]*fps), keys[-1][2])
             _turn(keys, target, terrain=ground is not None)
-        half = _half_step(clip, fps, speed)
+        # Flat walks use stature-scaled cadence, heel-to-toe feet and an arrival that
+        # finishes stepping as the body settles. Terrain keeps whole-sole treads.
+        # (_plant_at_arrival is retained for callers; flat ground always arrives.)
+        flat = ground is None
+        half = (_walk_half_step(d, velocity, fps, speed) if flat and clip == "walk"
+                else _half_step(clip, fps, speed))
         phases = runs = None
-        if ground is not None:
+        if not flat:
             samples, active, phases, runs = _terrain_samples(keys, fps, clip, speed, ground)
-        elif _plant_at_arrival:
-            samples, active, phases = _arrival_samples(keys, fps, half)
         else:
-            samples, active = _samples(keys, fps, half)
+            samples, active, phases = _arrival_samples(keys, fps, half)
+        gait = {"half": half, "arrive": flat, "roll": flat and clip == "walk"}
+        if flat and clip == "walk":
+            # The support foot lands on even boundaries: put its thigh forward there.
+            gait["phase_offset"] = .5 if _support_side(rig, feet) == "L" else -.5
         navigation = (planner.report(route, samples, avoided) if planner else
                       {"avoided": False, "detours": 0, "path_points": [list(p)[:2] for p in route],
                        "clearance_m": None, "warnings": []})
         navigation["planning_seconds"] = round(planning_seconds, 6)
         result = _bake(rig, start, samples, active, feet, clip, speed, ground=ground,
-                       phases=phases, runs=runs, _world_route=_world_route)
+                       phases=phases, runs=runs, _world_route=_world_route, gait=gait)
+        footfalls = result["footfalls"]
+        if flat and footfalls and footfalls[-1]["frame"] < result["frames"][1]:
+            _settle_chest(rig, footfalls[-1]["frame"], result["frames"][1], samples[-1][1], fps)
         return {**result, "clip": clip, "distance_m": round(distance, 4),
                 "natural_speed_m_s": round(velocity, 3), "destination": list(route[-1])[:2],
                 **navigation}

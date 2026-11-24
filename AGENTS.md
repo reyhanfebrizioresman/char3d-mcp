@@ -1910,17 +1910,24 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   and slow down, and corners sharper than 100° stop for an in-place stepping turn.
   Cadence and natural travel speed scale together with `speed` (0.1..4). Foot IK holds
   each support foot's world position **and rotation** throughout its contact, including
-  turns. Two gathering steps finish in a still standing pose.
+  turns. On flat ground a walk uses steps of about 0.37 x stature, a heel strike (toes up
+  12°) and a heel rise onto the toe edge (15°) pivoting on the sole, and the body bob,
+  widest stride and counter arm swing coincide with double support. Its last two steps
+  land side by side at the destination about .3 s before the decelerating hips stop; the
+  body glides over the planted feet while the chest carries ~3.5° forward and rights
+  itself. Runs and terrain routes keep whole-sole contacts and two gathering steps.
   `face_end` optionally faces an XY/XYZ point, object name or `"camera"`, sampled when the
   final turn begins. `turn_to("Maya_rig", "camera", start_frame=None)` turns in place
   by the shortest angle with alternating steps, then stands. Targets at the root's XY
   position leave its heading unchanged; `"camera"` requires a scene camera/shot.
   Both tools support basic, Rigify and MPFB rigs through the same proxy as `animate`;
   `start_frame=None` appends after the rig's existing action (otherwise scene start).
-  Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`, and
-  `foot_lock.contacts`. Check `render_frames(..., view="top")` with waypoint markers
-  for the route and `view="three_quarter"` for steps. Z follows walkable terrain (see below);
-  static obstacle avoidance is described below; feet use flat contacts rather than heel/toe rolls.
+  Results include `frames`, `next_start_frame`, `distance_m`, `duration_seconds`,
+  `foot_lock.contacts` (flat, fixed-foot frames; heel/toe roll frames are excluded) and
+  `footfalls` (heel-strike frames; pass them to `auto_sfx(footfalls=...)`). Check
+  `render_frames(..., view="top")` with waypoint markers for the route and
+  `view="right"`/`"three_quarter"` for steps. Z follows walkable terrain (see below);
+  static obstacle avoidance is described below.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - **Static obstacle avoidance** — `walk_path(..., avoid="auto", ignore=None)` snapshots
   evaluated visible mesh footprints at the start frame, including furniture and other
