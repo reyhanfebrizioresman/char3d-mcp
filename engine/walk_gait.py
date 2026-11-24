@@ -78,3 +78,42 @@ def momentum(samples, fps):
     for i in range(last, n):
         signals[i] *= 1-smooth((i-last)/max(1, end-last))
     return [(v, BRAKE_DROP_M*max(0.0, -v)/MAX_LEAN_DEG) for v in signals]
+
+
+def support_headings(samples, phases, fps, limit):
+    """Share each step's yaw budget with single support, keeping route endpoints.
+
+    The first fifth of a step is double support. Rotation builds as the unloaded
+    foot travels toward its predicted landing; a bounded water fill preserves the
+    heading at every touchdown and the angular speed contract. Root XY is intact.
+    """
+    result = list(samples)
+    edges = [0] + [i for i in range(1, len(phases)) if int(phases[i]) != int(phases[i-1])]
+    edges.append(len(phases)-1)
+    cap = limit/fps
+    for first, last in zip(edges, edges[1:]):
+        if last <= first:
+            continue
+        delta = [((samples[i][1]-samples[i-1][1]+math.pi) % (2*math.pi)-math.pi)
+                 for i in range(first+1, last+1)]
+        budget = sum(delta)
+        if abs(budget) < 1e-9 or any(d*budget < -1e-9 for d in delta):
+            continue
+        weights = []
+        for i, d in enumerate(delta, first+1):
+            u = max(0.0, min(1.0, ((phases[i]+phases[i-1])/2 % 1-.2)/.8))
+            weights.append(abs(d)*(.65+.7*math.sin(math.pi*u)**2))
+        low, high = 0.0, 4.0
+        for _ in range(40):
+            mid = (low+high)/2
+            if sum(min(cap, w*mid) for w in weights) < abs(budget):
+                low = mid
+            else:
+                high = mid
+        yaw = samples[first][1]
+        for i, w in enumerate(weights, first+1):
+            yaw += math.copysign(min(cap, w*high), budget)
+            result[i] = (samples[i][0], yaw)
+        # Suppress accumulated floating point error at the preserved touchdown.
+        result[last] = samples[last]
+    return result

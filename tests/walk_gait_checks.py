@@ -108,7 +108,7 @@ for ev in nav.get('support_events', []):
     assert gaps[other][a-nav['frames'][0]] < .002, ev
 # Round 6: measure actual baked straight-walk joint angles and heel centres.
 # Exclude the standing start and the two gathering/braking steps.
-cycles = []
+cycles, toe_off_knees = [], []
 heel_widths, progression = [], []
 route = nav.get('path_points', [])
 straight = (len(route) >= 2 and route[-1][1] < route[0][1]
@@ -118,10 +118,12 @@ for side in ('LR' if straight else ''):
     for a,b in zip(lands, lands[1:]):
         if a < nav['frames'][0]+20 or b > nav['frames'][1]-30:
             continue
+        off = next(e['lift'] for e in nav['support_events'] if e['side']==side and e['land']==b)
+        toe_off_knees.append(knees[side][off-nav['frames'][0]])
         cycles.append({{str(u): knees[side][round(a+(b-a)*u)-nav['frames'][0]]
-                       for u in (0,.05,.2,.3,.4,.55,.8)}})
+                       for u in (0,.05,.2,.3,.4,.5,.55,.6,.8)}})
     for frame in lands:
-        if nav['frames'][0]+20 < frame < nav['frames'][1]-30:
+        if nav['frames'][0]+30 < frame < nav['frames'][1]-30:
             i = frame-nav['frames'][0]
             heels = {{s: feet[s][i] @ sole[s][0] for s in 'LR'}}
             heel_widths.append(abs(heels['L'].x-heels['R'].x))
@@ -133,7 +135,7 @@ curve = {{u: sum(c[u] for c in cycles)/len(cycles) for u in cycles[0]}} if cycle
 end_motion = max((p-roots[-1]).length for p in roots[-4:])
 # Ankle and all upper/lower body joints must settle in the final four frames.
 settled = settled_rotation = 0.0
-for name in smap.values():
+for name in rig.pose.bones.keys():
     sc.frame_set(nav['frames'][1])
     anchor = (mw @ rig.pose.bones[name].matrix).copy()
     for f in range(nav['frames'][1]-3, nav['frames'][1]+1):
@@ -149,7 +151,7 @@ result = dict(flat_drift_m=flat_drift, flat_floor_m=flat_floor, penetration_m=pe
               mesh_penetration_m=mesh_penetration, mesh_flat_gap_m=mesh_flat_gap,
               destination_error_m=math.dist(roots[-1][:2], nav.get('destination', roots[-1][:2])),
               momentum=nav.get('momentum'), gaze=nav.get('gaze_lead'),
-              knee_curve_deg=curve, cruise_heel_width_m=heel_widths, progression_deg=progression)
+              knee_curve_deg=curve, toe_off_knee_deg=sum(toe_off_knees)/len(toe_off_knees) if toe_off_knees else None, cruise_heel_width_m=heel_widths, progression_deg=progression)
 ''')['result']
 
 
@@ -172,7 +174,7 @@ def main():
         measured = check(call, rig, nav)
         (evidence/'gait_metrics.json').write_text(json.dumps({'route':nav,'measured':measured}, indent=2))
         print('GAIT', json.dumps(measured), flush=True)
-        call('save_project', path='walk_gait_round6.blend')
+        call('save_project', path='walk_gait_round7.blend')
         if '--baseline' in sys.argv:
             print('WALK GAIT BASELINE MEASURED', flush=True)
             return
@@ -184,7 +186,7 @@ def main():
         assert measured['destination_error_m'] < .01, measured
         assert measured['root_hold_m'] < .001 and measured['joint_hold_m'] < .001, measured
         assert measured['joint_hold_rotation_rad'] < .002, measured
-        assert 20 < measured['toe_bend_deg'] < 23, measured
+        assert 51 < measured['toe_bend_deg'] < 53, measured
         assert min(measured['overlap_frames']) >= 1, measured
         for ev in nav['support_events']:
             half = ev['land']-ev['opposite_land']
@@ -195,13 +197,21 @@ def main():
         assert all(5 <= angle <= 10 for angle in measured['progression_deg']), measured
         assert 5 <= measured['knee_curve_deg']['0.2'] <= 12, measured
         assert 5 <= measured['knee_curve_deg']['0.3'] <= 12, measured
+        # Round 7 delays heel rise and advances pelvis relative to the rear
+        # anchor. The staged 52 degree ball push preserves reach through late stance.
+        assert 5 <= measured['knee_curve_deg']['0.4'] <= 15, measured
+        assert 30 <= measured['knee_curve_deg']['0.55'] <= 40, measured
+        # Use the actual support event: the normalized 60% sample may already
+        # be airborne after contact rounding and release-height interpolation.
+        assert 35 <= measured['toe_off_knee_deg'] <= 45, measured
+        assert 15 <= measured['knee_curve_deg']['0.05'] <= 20, measured
         assert 55 <= measured['knee_curve_deg']['0.8'] <= 65, measured
         assert measured['momentum']['lean_deg'][0] < -1 and measured['momentum']['lean_deg'][1] > 1, measured
         frames = [nav['support_events'][2]['opposite_land']+k for k in (0,1,2,3,5,8)]
         call('render_frames', frames=frames, view='right', size=512, engine='workbench', objects=[rig])
         for view in ('front','right','back','three_quarter'):
             call('render_preview', objects=[rig], view=view, frame=nav['support_events'][2]['lift'], width=384, height=384, engine='workbench')
-        call('save_project', path='walk_gait_round6.blend')
+        call('save_project', path='walk_gait_round7.blend')
         # A preceding gait can finish with one foot in flight. The initial
         # overlap must never turn that airborne pose into a reported contact.
         call('new_scene')

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine.walk_gait import contact_phase, momentum, spring_step, step_variation
+from engine.walk_gait import contact_phase, momentum, spring_step, step_variation, support_headings
 
 
 def main():
@@ -41,6 +41,18 @@ def main():
         assert max(v for v, _ in signal) > 2 and min(v for v, _ in signal) < -2
         assert max(abs(v) for v, _ in signal) <= 7
         assert signal[-4:] == [(0, 0)]*4, signal[-4:]
+    for fps in (24,30,60):
+        phases = [i/(fps*.5) for i in range(2*fps+1)]
+        samples = [((0,0,0),math.radians(70)*i/fps) for i in range(2*fps+1)]
+        planned = support_headings(samples,phases,fps,math.radians(100))
+        assert planned[-1] == samples[-1] and planned[0] == samples[0]
+        assert planned != samples
+        assert all(p[0] == q[0] for p,q in zip(planned,samples))
+        assert max(abs(b[1]-a[1])*fps for a,b in zip(planned,planned[1:])) <= math.radians(100)+1e-8
+        for i in range(1,len(phases)):
+            if int(phases[i]) != int(phases[i-1]):
+                assert planned[i] == samples[i]
+        assert support_headings(samples,phases,fps,math.radians(100)) == planned
     print('WALK GAIT UNIT OK (phases, critical damping, 24/30/60 fps, deterministic step accents)')
 
 
