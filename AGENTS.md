@@ -143,6 +143,20 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
   weighted vertex on that part (body fallback if the whole part lacks weights);
   authored nonzero weights and delete groups stay intact. `weights_repaired` reports
   counts per mesh. This does not repair intersecting geometry or clothing design.
+- Round 14 rebuilds footwear deform weights only, after the shared MPFB build,
+  style and look fitting. Below the ankle collar, heel/arch follow semantic foot
+  and the front smoothly changes to semantic toe across +/-10% of ankle-to-ball
+  length. The collar blends back to authored weights from 20% below to 10% above
+  ankle height (same length unit); a boot shaft above that band is unchanged.
+  Rigify uses the existing DEF map; other MPFB skeletons use the semantic map.
+  Non-deform groups, body/other garment weights, vertices, morphs and rest bones
+  remain native. `sole_weights` reports changed/rigid/collar vertex counts;
+  each shoe saves versioned `c3d_rigid_sole`. Existing characters must be rebuilt;
+  opening a saved character never changes its footwear weights.
+  Native `default` split limbs now have an explicit semantic map (its spine
+  numbering differs from the generic aliases); its separate toe roots share
+  the walking toe roll through their authored rest frames, without reweighting
+  body toes or adding bones.
 - ~1.5–3.5 s to build; ~19k vertices + clothes. Use Eevee to see skin/clothes; workbench
   shows untextured grey. glTF export with textures is ~20 MB per character.
 - MPFB weights use up to ~7 influences per vertex. For Unity/Unreal/glTF games use
@@ -2151,6 +2165,26 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   lifts only affected foot targets by <=1.94 mm: the correction is constant
   throughout each flat contact, without a body-wide offset or asset edits.
   Remaining active-area gaps are target failures, not waived contact passes.
+  Round 14 rigid footwear additionally calibrates a static heel/ball pitch and
+  neutral toe-break bias from the native sole. Heel and distal probes follow the
+  measured outsole instead of a flat anatomical plane extending beyond a short
+  shoe. Its rest-floor allowance is -1.6 mm (inside the 2 mm penetration budget),
+  replacing the legacy +5.5 mm flex margin; old soft footwear keeps that margin.
+  `engine.rigid_sole` directly projects the two-bone lower surface onto this
+  floor tolerance before the existing IK/knee passes: flat anchors receive one
+  constant height, rolling supports use their actual hull, and joins ease only
+  in swing. This is analytical skinning/height projection, with no per-frame
+  optimizer or route-wide pelvis lift. The original bounded Round 11 mesh guard
+  remains the final safety check. Rear double-support knees also retain the
+  pre-swing envelope when a physical heel strike is below the old probe plane.
+  Active regions use nominal heel/flat/toe phase, subtracting the measured static
+  shoe pitch; a calibrated neutral foot is not classified as a heel roll.
+  `tests/walk_round14_final.py` runs the full serial Devodo acceptance suite;
+  build identity, five MPFB skeletons shod/unshod, posed native QA and a matched
+  original/new footwear Eevee matrix are separate checks. Evidence lives under
+  `output/walk_round14/`, port 9977, software GL. Missed 3 mm active gap, 2 mm
+  penetration, 6 mm native contact drift, 8 mm mid-swing clearance, 3 mm/frame
+  pelvis correction and 1.3x bake targets remain explicit failures in the report.
   The analytical sole still gates 2 mm; the measured visible shoe independently
   gates 2 mm penetration. Swing mesh lows use frozen anatomical vertex IDs:
   grouping by the nearest *posed* ankle misattributes the other shoe when feet

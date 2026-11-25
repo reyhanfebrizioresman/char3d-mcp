@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -258,6 +259,8 @@ def summarize(nav, measured, turning=False, speed=1.):
         from walk_round11_metrics import metrics
         nav = dict(nav, rhythm_speed=speed)
         summary['round11'] = metrics(nav,measured)
+        from walk_round14_metrics import metrics as mesh_metrics
+        summary['round14'] = mesh_metrics(nav,measured)
         for side,m in summary['round11']['sides'].items():
             if m['swing_min_mesh_clearance_m'] is not None and m['swing_min_mesh_clearance_m']<0:
                 summary['failures'].append(side+'_swing_mesh_penetration')
@@ -305,7 +308,7 @@ def main():
     if args.sample_cached and args.label=='v12':
         source = subprocess.check_output(['git','show','1365363:engine/commands/walk.py'],cwd=ROOT,text=True)
     sample_source = (ROOT/'tests/walk_benchmark_sample.py').read_text()
-    fingerprint = hashlib.sha256((source+''.join((ROOT/f).read_text() for f in ('engine/walk_gait.py','engine/shoe_contact.py','engine/body_mass.py','tests/walk_round11_metrics.py'))+sample_source+Path(__file__).read_text()).encode()).hexdigest()
+    fingerprint = hashlib.sha256((source+''.join((ROOT/f).read_text() for f in ('engine/walk_gait.py','engine/commands/mpfb.py','engine/commands/footlock.py','engine/rigid_sole.py','engine/shoe_contact.py','engine/body_mass.py','tests/walk_round11_metrics.py','tests/walk_round14_metrics.py'))+sample_source+Path(__file__).read_text()).encode()).hexdigest()
     if args.remeasure and not args.baseline:
         raise RuntimeError('--remeasure is limited to the pinned 42487f5 baseline')
     report = json.loads(path.read_text()) if (args.resume or args.remeasure or args.sample_cached) and path.exists() else {}
@@ -406,7 +409,9 @@ result=True
 ''')
                     call('open_project', path=str(work/'projects'/project))
                 else:
+                    bake_began = time.perf_counter()
                     nav = call('turn_to' if turning else 'walk_path', armature='Gait_rig', start_frame=1, avoid=False, **settings, **({} if turning else {'rhythm_seed':None if args.rhythm=='symmetric' else 0}))
+                    nav['bake_wall_seconds'] = time.perf_counter()-bake_began
                 measured = call('run_python',code=sample_source+f"\nresult=sample('Gait_rig', {nav!r})")['result']
                 summary, steps = summarize(nav, measured, turning,settings.get('speed',1.))
                 if not args.remeasure and not args.sample_cached:

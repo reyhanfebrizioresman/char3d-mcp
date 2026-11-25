@@ -11,6 +11,10 @@ import os
 from pathlib import Path
 import subprocess
 import struct
+import shutil
+from urllib.parse import quote
+import re
+import math
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,21 @@ from mcp_server.blender_client import BlenderClient
 
 
 def montage(paths, labels, output, tile, geometry):
+    if not shutil.which('montage'):
+        from walk_round11_evidence import svg_plot,txt
+        w,h,px,py=map(int,re.fullmatch(r'(\d+)x(\d+)\+(\d+)\+(\d+)',geometry).groups())
+        cols=int(tile.split('x')[0]);rows=math.ceil(len(paths)/cols)
+        lines=max((len(v.splitlines()) for v in labels),default=1)
+        cw=w+2*px;ch=h+2*py+lines*18;parts=[]
+        for i,(path,label) in enumerate(zip(paths,labels)):
+            x=(i%cols)*cw+px;y=(i//cols)*ch+py
+            # Relative local images avoid librsvg's large embedded-document
+            # limit on the complete footwear matrix; the PNG is standalone.
+            source=quote(os.path.relpath(Path(path).resolve(),Path(output).resolve().parent))
+            parts.append(f'<image x="{x}" y="{y}" width="{w}" height="{h}" href="{source}"/>')
+            parts.extend(txt(x,y+h+16+18*j,line,13) for j,line in enumerate(label.splitlines()))
+        svg_plot(Path(output),cw*cols,ch*rows,parts)
+        return
     command = ['montage','-font','DejaVu-Sans','-pointsize','13',
                '-background','#ededed','-fill','#222222']
     for path,label in zip(paths, labels):
@@ -29,7 +48,7 @@ def montage(paths, labels, output, tile, geometry):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--prepare', action='store_true'); p.add_argument('--render', action='store_true')
-    p.add_argument('--label', default='v10', choices=('v10','v11','v12','v13'))
+    p.add_argument('--label', default='v10', choices=('v10','v11','v12','v13','v16'))
     p.add_argument('--resume', action='store_true', help='Reuse movie PNGs newer than the prepared project, with matching dimensions')
     args = p.parse_args()
     label = args.label

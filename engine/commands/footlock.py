@@ -17,6 +17,7 @@ A post-process that works on any humanoid rig and any animation already keyed on
    are lowered just enough (smoothed) instead of letting the foot slide.
 """
 import math
+import json
 
 import bpy
 from mathutils import Matrix, Vector
@@ -93,7 +94,18 @@ def _sole_points(rig, leg, floor):
     length = max(fwd.length, 1e-3)
     fwd.normalize()
     heel = ankle - fwd * (0.25 * length)
+    if rig.get('c3d_sole_heel_local'):
+        side = next((s for s in 'LR' if _legs(rig)[0].get(s,{}).get('foot') == leg['foot']), None)
+        point = json.loads(rig['c3d_sole_heel_local']).get(side)
+        if point is not None:
+            heel = mw @ Vector(point)
     pts = [Vector((p.x, p.y, floor)) for p in (heel, ball, tip)]
+    if rig.get('c3d_sole_heel_local') and point is not None:
+        pts[0].z = heel.z
+    if rig.get('c3d_sole_distal_local'):
+        side = next((s for s in 'LR' if _legs(rig)[0].get(s,{}).get('foot') == leg['foot']), None)
+        distal = json.loads(rig['c3d_sole_distal_local']).get(side)
+        if distal is not None:pts[1:] = [mw @ Vector(p) for p in distal]
     inv = (mw @ foot.matrix_local).inverted()
     return [inv @ p for p in pts]
 

@@ -9,7 +9,7 @@ import bpy
 from mathutils import Vector, Quaternion
 from engine.commands import anim, walk
 from engine.commands.footlock import _legs, _sole_points
-from engine.shoe_contact import calibrate as shoe_patches, measure as shoe_measure
+from engine.shoe_contact import calibrate as shoe_patches, measure as shoe_measure, vertices as shoe_vertices, touching_points
 from engine.body_mass import estimate as body_com
 
 
@@ -153,11 +153,21 @@ def sample(rig_name, nav):
     shoes = [o for o in hidden if o.get('c3d_garment_category') == 'shoes']
     for o in shoes: o.hide_viewport = False
     mesh_penetration = mesh_flat_gap = 0.
+    probes={s:{} for s in 'LR'}
     for row in rows if shoes else []:
         sc.frame_set(row['frame'])
-        regions = shoe_measure(patches)
+        xyzs={name:shoe_vertices(bpy.data.objects[name]) for name,_ in patches}
+        regions = shoe_measure(patches,xyzs)
         for side in 'LR':
             p = row['feet'][side]
+            roll=nav.get('shoe_guard',{}).get('nominal_roll_deg',{}).get(side,[r['feet'][side]['foot_roll_deg'] for r in rows])[row['frame']-nav['frames'][0]]
+            active=() if p['support']=='swing' else ('heel',) if roll < -1 else ('ball','toe') if roll > 1 else ('heel','ball')
+            touching=touching_points(patches,xyzs,side,active,previous=probes[side])
+            probes[side]=touching
+            points={k:v[3].tolist() for k,v in touching.items()}
+            identities={k:[v[1],v[2]] for k,v in touching.items()}
+            p['contact_mesh_points_m']=points;p['contact_mesh_vertex_ids']=identities
+            p['active_contact_regions']=list(active)
             p['contact_regions_m'] = regions[side]
             p['arch_clearance_m'] = regions[side].get('arch')
             if not regions[side]: continue
@@ -168,5 +178,5 @@ def sample(rig_name, nav):
         o.hide_viewport = False
     return dict(rows=rows, hold_m=hold_m, hold_rad=hold_rad,
                 mesh_penetration_m=mesh_penetration, mesh_flat_gap_m=mesh_flat_gap,
-                shoe_objects=[o.name for o in shoes], outsole_patches=patches, com_model='de Leva 1996 male fractions; approximate joint endpoints; kinematic estimate',
+                shoe_objects=[o.name for o in shoes], contact_point_sampling=dict(floor_band_m=.002,entry_patch_band_m=.00025,exit_patch_band_m=.00075,native_vertex_episodes=True), outsole_patches=patches, com_model='de Leva 1996 male fractions; approximate joint endpoints; kinematic estimate',
                 dimensions_m=list(rig.dimensions), bones=len(rig.data.bones))

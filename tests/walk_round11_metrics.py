@@ -29,7 +29,8 @@ def metrics(nav, measured, fps=24):
             if p['support'] != 'swing':
                 if 'arch' in regions: arch_stance.append(regions['arch'])
                 roll = p['foot_roll_deg']
-                areas = ('heel',) if roll < -1 else ('ball','toe') if roll > 1 else ('heel','ball')
+                areas = p.get('active_contact_regions',
+                              ('heel',) if roll < -1 else ('ball','toe') if roll > 1 else ('heel','ball'))
                 p['active_contact_regions'] = list(areas)
                 for k in areas:
                     if k in regions: active[k].append((f,regions[k]))

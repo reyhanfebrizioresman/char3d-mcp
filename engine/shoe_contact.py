@@ -91,10 +91,10 @@ def calibrate(rig):
         bpy.context.view_layer.update()
 
 
-def measure(patches):
+def measure(patches, xyzs=None):
     out = {s: {} for s in 'LR'}
     for name, sides in patches:
-        xyz = vertices(bpy.data.objects[name])
+        xyz = xyzs[name] if xyzs is not None else vertices(bpy.data.objects[name])
         for side, data in sides.items():
             if not data['all']: continue
             values = {'mesh':float(xyz[data['all'],2].min())}
@@ -102,3 +102,24 @@ def measure(patches):
             for region,z in values.items():
                 out[side][region] = min(out[side].get(region,float('inf')),z)
     return out
+
+
+def touching_points(patches, xyzs, side, active, tolerance=.002, previous=()):
+    """Native material points actually in the active floor-contact band.
+
+    A vertex episode ends when it leaves the floor band or its region stops
+    supporting. A raised heel-strike vertex is not a flat-stance drift probe.
+    """
+    result={}
+    for name,sides in patches:
+        for area in active:
+            ids=sides[side]['regions'].get(area,[])
+            if not ids:continue
+            low=float(xyzs[name][ids,2].min())
+            for idx in ids:
+                p=xyzs[name][idx]
+                key=f'{area}:{name}:{idx}'
+                band=.00075 if key in previous else .00025
+                if abs(float(p[2]))<=tolerance and float(p[2])<=low+band:
+                    result[key]=(area,name,idx,p)
+    return result

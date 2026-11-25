@@ -64,6 +64,17 @@ def heuristic_map(rig):
     """basic bone name -> bone name in `rig`, guessed from common naming schemes."""
     if rig.get('c3d_bone_map'):
         return {k:v for k,v in json.loads(rig['c3d_bone_map']).items() if v in rig.pose.bones}
+    if str(rig.get('c3d_rig_type','')).startswith('mpfb_default'):
+        # MPFB's native split-limb skeleton has numbered segments and a
+        # reversed spine numbering; generic Unreal/Mixamo aliases cannot
+        # identify its hip/knee/elbow joints or its central toe branch.
+        native={'hips':'root','spine':'spine04','chest':'spine01','neck':'neck03','head':'head'}
+        for side in 'LR':
+            native.update({f'{key}.{side}':f'{bone}.{side}' for key,bone in
+                           [('shoulder','clavicle'),('upper_arm','upperarm01'),('forearm','lowerarm01'),
+                            ('hand','wrist'),('thigh','upperleg01'),('shin','lowerleg01'),
+                            ('foot','foot'),('toe','toe3-1')]})
+        return {k:v for k,v in native.items() if v in rig.pose.bones}
     if all(b in rig.pose.bones for b in BASIC_BONES):
         return {b: b for b in BASIC_BONES}
     lookup = {}

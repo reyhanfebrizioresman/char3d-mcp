@@ -1,6 +1,7 @@
 """Floor navigation: smooth root routes, rate-limited turns and planted footsteps."""
 import bisect
 import math
+import json
 import time
 
 import bpy
@@ -550,6 +551,7 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
     cruise = max(((b[0] - a[0]).length for a, b in zip(samples, samples[1:])), default=0.0)
     for side in "LR":
         rest = mw @ rig.data.bones[smap[f"foot.{side}"]].matrix_local
+        sole_pitch = float(json.loads(rig.get('c3d_sole_pitch_rad','{}')).get(side,0.)) if ground is None else 0.
         sole = _sole_points(rig, legs[side], mw.translation.z)
         # Calibrate from the anatomical heel-to-toe landmark axis, not bone
         # yaw: basic, Rigify and MPFB can have different rest foot directions.
@@ -632,6 +634,10 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                 foot_yaw = heading + (max(0., delta) if side == "L" else min(0., delta))
             rotation = (Quaternion((0, 0, 1), _angle(sole_yaw, foot_yaw)) @ rest.to_quaternion()
                         if toe_out else q @ rest.to_quaternion())
+            if sole_pitch:
+                fw = rotation @ rest.to_quaternion().inverted() @ Vector((math.sin(rest_yaw),-math.cos(rest_yaw),0))
+                fw.z=0;fw.normalize()
+                rotation = Quaternion(fw.cross(Vector((0,0,1))),sole_pitch) @ rotation
             if ground is None:
                 return ankle, rotation
             # Search along the heading for a whole-sole landing, never across a nosing.
@@ -646,6 +652,10 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
             raise ValueError("no whole-sole landing within 0.35 m; widen treads or adjust route")
 
         anchor = (initial[side].translation.copy(), initial[side].to_quaternion())
+        if sole_pitch and abs((anchor[1] @ rest.to_quaternion().inverted() @ forward).z)<1e-5:
+            fw = anchor[1] @ rest.to_quaternion().inverted() @ forward
+            fw.z=0;fw.normalize()
+            anchor = anchor[0],Quaternion(fw.cross(Vector((0,0,1))),sole_pitch) @ anchor[1]
         anchor[0].z += initial_lift
         if ground is not None:
             up = Vector((0, 0, 1))
@@ -728,6 +738,13 @@ def _footsteps(rig, samples, initial, half, start, run=False, ground=None, phase
                 toe_targets[side] = toes
             for i in rolling:
                 mask[i] = False
+        toe_bias = float(json.loads(rig.get('c3d_sole_toe_bias_rad','{}')).get(side,0.)) if ground is None else 0.
+        if toe_bias and toe_targets is not None:
+            for i,(_p,q) in enumerate(track):
+                fw=q @ rest.to_quaternion().inverted() @ Vector((math.sin(rest_yaw),-math.cos(rest_yaw),0))
+                fw.z=0;fw.normalize()
+                old=toe_targets.setdefault(side,{}).get(i,Quaternion())
+                toe_targets[side][i]=Quaternion(fw.cross(Vector((0,0,1))),toe_bias) @ old
         footfalls.extend((start + land, side) for _lift, land in swings)
         # An incoming locomotion clip can leave the first swinging foot airborne.
         mask[0] = True if ground is not None else abs(initial_height[side]) < 0.02
@@ -792,6 +809,14 @@ def _articulate_toes(rig, start, targets, toe_roll):
         relative = ((mw @ rig.data.bones[foot].matrix_local).to_quaternion().inverted() @
                     (mw @ rig.data.bones[toe].matrix_local).to_quaternion())
         joints.append((side, toe, foot, relative, rolls))
+        if str(rig.get('c3d_rig_type','')).startswith('mpfb_default'):
+            # The native default skeleton has five separate toe branches.
+            # Apply the same roll to its sibling toe roots without reweighting
+            # body toes or changing their authored rest frames.
+            for sibling in rig.data.bones[toe].parent.children:
+                if sibling.name != toe and sibling.name.startswith('toe'):
+                    rel=(mw @ rig.data.bones[foot].matrix_local).to_quaternion().inverted() @ (mw @ sibling.matrix_local).to_quaternion()
+                    joints.append((side,sibling.name,foot,rel,rolls))
     if not joints:
         return
     for i in range(len(next(iter(targets.values())))):
@@ -817,6 +842,8 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
     # Minimum airborne ankle height from the actual articulated sole, rather
     # than the inherited swing arc (which itself may cause the braking pop).
     legs, _ = _legs(rig)
+    from engine.rigid_sole import clearance
+    native_offsets = clearance(rig, targets, toe_roll or {})
     clearance_z = {}
     for side in 'LR':
         sole = _sole_points(rig, legs[side], 0)
@@ -838,7 +865,10 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
             if airborne:
                 u = (start+i-airborne['lift'])/(airborne['land']-airborne['lift'])
                 margin = .0101*_smoothstep(u/.3)*(1-_smoothstep((u-.7)/.3))
-            values.append(-min(offsets)+.00005+margin)
+            # Keep the legacy anatomical toe envelope too (it can extend
+            # beyond a short shoe), while adding the actual rigid surface.
+            low = min(min(offsets),native_offsets[side][i]) if side in native_offsets else min(offsets)
+            values.append(-low+.00005+margin)
         clearance_z[side] = values
     lengths = {}
     for side in "LR":
@@ -896,6 +926,26 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
     fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
     dz = .45/fps
     heights = [min(z, cap) for z, cap in zip(desired, ceilings)]
+    if native_offsets:
+        # The physical heel strike can be below the old anatomical plane.
+        # During double support retain the existing rear-knee envelope as well
+        # as the leading leg's loading curve, within both reach ceilings.
+        for i in range(len(heights)):
+            for side in 'LR':
+                previous = [e for e in by_side[side] if e['land'] <= start+i]
+                if not previous or records[i][2][side]:continue
+                land = previous[-1]['land']
+                following = next((e for e in by_side[side] if e['land'] > land),None)
+                if following is None:continue
+                u=(start+i-land)/(following['land']-land)
+                if not .50 <= u <= .60:continue
+                cap_angle=flex(((.50,30),(.55,39),(.60,44)),u)
+                world,hips,_ = records[i];H=hips[side];A=targets[side][i][0]
+                l1,l2=lengths[side]
+                d2=l1*l1+l2*l2+2*l1*l2*math.cos(cap_angle)
+                xy=(A.x-H.x)**2+(A.y-H.y)**2
+                lower=A.z+math.sqrt(max(0.,d2-xy))-(H.z-world.translation.z)
+                heights[i]=min(ceilings[i],max(heights[i],lower))
     for indices in (range(1,len(heights)), range(len(heights)-2,-1,-1)):
         for i in indices:
             j = i-1 if indices.step > 0 else i+1
@@ -1350,6 +1400,9 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
                                    track_width=gait.get("track"), toe_targets=toe_roll,
                                    support_events=support_events, cruise=pelvis_gait,
                                    toe_out=math.radians(7) if phases is not None and ground is None and clip == "walk" else 0.0)
+    if phases is not None and ground is None and clip == 'walk':
+        from engine.rigid_sole import project
+        info['rigid_sole_projection'] = project(rig,start,targets,contacts,support_events,toe_roll)
     if pelvis_gait:
         _stance_height(rig, start, targets, support_events, toe_roll, speed)
     lock = foot_lock(rig, start, end, floor=0.0, contacts=contacts, foot_targets=targets,
@@ -1363,6 +1416,8 @@ def _bake_motion(rig, start, samples, active, initial_feet, clip, speed, ground=
     _articulate_toes(rig, start, targets, toe_roll)
     if phases is not None and ground is None and clip == 'walk':
         info['shoe_guard'] = _mesh_floor_guard(rig,start,targets,contacts,support_events,toe_roll)
+        if info.get('rigid_sole_projection') and info['shoe_guard']:
+            info['shoe_guard']['nominal_roll_deg']=info['rigid_sole_projection']['nominal_roll_deg']
     if phases is not None and ground is None and clip == "walk":
         _relax_fingers(rig, start, samples, phases, half)
     info["foot_lock"] = {"contacts": contacts, "max_ik_error_m": lock["max_ik_error_m"],
@@ -1437,11 +1492,12 @@ def _fk_dependencies(rig):
 
 
 def _shoe_clearance(rig):
-    """Fit the native MPFB shoe's neutral outsole, without changing mesh or weights.
+    """Fit the native MPFB shoe's neutral outsole, without changing the asset.
 
     The analytical foot probes otherwise assume a barefoot Z=0 plane, whereas
-    shoes03 extends ~26 mm below it. A small sole-flex margin covers skinning
-    variation at the toe hinge. REST evaluation also works on a posed/chained rig.
+    shoes03 extends ~26 mm below it. Rebuilt rigid soles use a 1.6 mm contact tolerance
+    below the rest floor; legacy soft shoes retain their 5.5 mm flex allowance. REST evaluation
+    also works on a posed/chained rig.
     """
     kind = str(rig.get("c3d_rig_type", ""))
     if not (kind.startswith("mpfb_") or kind == "rigify"):
@@ -1451,6 +1507,10 @@ def _shoe_clearance(rig):
              and any(m.type == "ARMATURE" and m.object == rig for m in o.modifiers)]
     if not shoes:
         rig['c3d_sole_clearance_m'] = 0.0
+        if 'c3d_sole_heel_local' in rig:del rig['c3d_sole_heel_local']
+        if 'c3d_sole_pitch_rad' in rig:del rig['c3d_sole_pitch_rad']
+        if 'c3d_sole_toe_bias_rad' in rig:del rig['c3d_sole_toe_bias_rad']
+        if 'c3d_sole_distal_local' in rig:del rig['c3d_sole_distal_local']
         return 0.0
     saved = rig.data.pose_position
     try:
@@ -1469,8 +1529,78 @@ def _shoe_clearance(rig):
                 ev.to_mesh_clear()
         lift = max(0.0, -lowest)
         if lift > .001:
-            lift += .0055 * rig.matrix_world.to_scale().length / math.sqrt(3)
+            margin = -.0016 if all(o.get('c3d_rigid_sole') for o in shoes) else .0055
+            lift += margin * rig.matrix_world.to_scale().length / math.sqrt(3)
         rig['c3d_sole_clearance_m'] = lift
+        # Native rigid heels are shorter than the generic quarter-foot probe.
+        # Calibrate the heel-strike fulcrum once in rest space, without touching
+        # vertices or bones. Its height remains the shared analytical sole plane.
+        if all(o.get('c3d_rigid_sole') for o in shoes):
+            from engine.shoe_contact import calibrate, vertices
+            patches = calibrate(rig)
+            sm = anim.semantic_map(rig)
+            xyzs = {name:vertices(bpy.data.objects[name]) for name,_ in patches}
+            heels = {};pitches = {};toe_biases = {};distal = {}
+            for side in 'LR':
+                foot = rig.matrix_world @ rig.data.bones[sm['foot.'+side]].head_local
+                toe_bone = rig.data.bones.get(sm.get('toe.'+side,''))
+                ball = rig.matrix_world @ (toe_bone.head_local if toe_bone else rig.data.bones[sm['foot.'+side]].tail_local)
+                fw = ball-foot; fw.z = 0; fw.normalize()
+                rot = Quaternion(fw.cross(Vector((0,0,1))), HEEL_STRIKE)
+                candidates = [Vector(p) for name,sides in patches
+                              for p in xyzs[name][sides[side]['regions'].get('heel',[])]]
+                ball_candidates = [Vector(p) for name,sides in patches
+                                   for p in xyzs[name][sides[side]['regions'].get('ball',[])]]
+                toe_candidates = [Vector(p) for name,sides in patches
+                                  for p in xyzs[name][sides[side]['regions'].get('toe',[])]]
+                # Distal probes follow actual fully-toe-weighted outsole,
+                # rather than extending a flat plane beyond a short shoe.
+                toe_name = sm.get('toe.'+side)
+                if kind == 'rigify':
+                    from .mpfb import RIGIFY_DEF
+                    toe_name = RIGIFY_DEF.get('toe.'+side)
+                points = []
+                for region in ('ball','toe'):
+                    selected = []
+                    for name,sides in patches:
+                        ob=bpy.data.objects[name];group=ob.vertex_groups.get(toe_name or '')
+                        if group is None:continue
+                        for idx in sides[side]['regions'].get(region,[]):
+                            weight=sum(g.weight for g in ob.data.vertices[idx].groups if g.group==group.index)
+                            if weight>.999:selected.append(Vector(xyzs[name][idx]))
+                    if selected:
+                        p=min(selected,key=lambda p:p.z)
+                        centre=foot+fw*(p-foot).dot(fw);centre.z=p.z
+                        points.append(list(rig.matrix_world.inverted() @ centre))
+                if len(points)==2:distal[side]=points
+                if candidates and ball_candidates:
+                    h=min(candidates,key=lambda p:p.z);b=min(ball_candidates,key=lambda p:p.z)
+                    span=(b-h).dot(fw)
+                    pitches[side]=max(-math.radians(4),min(math.radians(4),math.atan2(h.z-b.z,max(span,.05))))
+                    if toe_candidates:
+                        t=min(toe_candidates,key=lambda p:p.z)
+                        absolute=math.atan2(b.z-t.z,max((t-b).dot(fw),.025))
+                        toe_biases[side]=max(-math.radians(10),min(math.radians(10),absolute-pitches[side]))
+                if candidates:
+                    # A virtual heel on the centreline matches the native lower
+                    # hull at both flat and full strike (not a rear upper vertex
+                    # projected onto an unrelated Z plane).
+                    import numpy as np
+                    angles = np.linspace(0.,HEEL_STRIKE,25)
+                    design = np.column_stack((np.cos(angles),np.sin(angles)))
+                    heights = np.array([min((Quaternion(fw.cross(Vector((0,0,1))),float(a)) @ (p-foot)).z
+                                            for p in candidates) for a in angles])
+                    z0,along = np.linalg.lstsq(design,heights,rcond=None)[0]
+                    # Keep the virtual probe above the curved native envelope;
+                    # the exact rigid hull, below, supplies floor projection.
+                    z0 += max((heights-design @ np.array([z0,along]))/np.cos(angles))
+                    point = foot+fw*along
+                    point.z = foot.z+z0
+                    heels[side] = list(rig.matrix_world.inverted() @ point)
+            rig['c3d_sole_heel_local'] = json.dumps(heels)
+            rig['c3d_sole_pitch_rad'] = json.dumps(pitches)
+            rig['c3d_sole_toe_bias_rad'] = json.dumps(toe_biases)
+            rig['c3d_sole_distal_local'] = json.dumps(distal)
         return lift
     finally:
         rig.data.pose_position = saved
