@@ -1991,7 +1991,7 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   final turn begins. `turn_to("Maya_rig", "camera", start_frame=None)` turns in place
   by the shortest angle with about one step per 60° plus a slower turning step (180° ->
   4 turning steps followed by 2 closing steps; 35% leg/arm swing, a light heel roll, the trunk leaning ~3.5° over the support
-  foot, a bounded 3 mm pelvis transfer and a ~1.2 cm dip per landing that releases as it stands). On flat ground it turns
+  foot, a bounded 2.5 cm pelvis transfer and a ~3 mm dip per landing that releases as it stands). On flat ground it turns
   180° in ~1.4 s (support-paced, capped at 195°/s; terrain turns keep the 100°/s limit),
   then takes two short closing steps at the completed heading before the 0.65 s
   hold. These avoid either a toe-in closing landing or a foot left sideways
@@ -2121,6 +2121,60 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   skin deformation. Inspect signed per-frame mesh lows and the static-offset
   feasibility interval in `walk_round10_contracts.json`; do not call skeletal
   contact precision a pass of the visible-footwear target.
+  Round 11 adds `walk_path(..., rhythm_seed=0)`: deterministic stride-duration
+  accents shared by the two feet, continuously reparameterizing root travel and
+  phase together before footprint lookahead. Raw +/-0.9% cycle factors are
+  normalized at the fixed braking boundary (<1.82% duration change); integer
+  scene frames quantize the small accents. Touchdowns use the nearest frame of
+  the continuous crossing. Route heading is projected back onto 100 deg/s before
+  support redistribution. `rhythm_seed=None` selects the symmetric benchmark;
+  no cadence variation applies to runs, terrain or in-place turns. Arm amplitude
+  and small spine accents share the cycle signal. Outside-leg support in bends
+  adds up to 1.8 cm pelvis transfer and an opposing 2-degree torso response.
+  In-place turns transfer up to 2.5 cm laterally, with a 3 mm landing dip instead
+  of 12 mm; native support anchors and toe/ball roll are retained. The navigation
+  checker subtracts the measured lateral transfer (after crossfade) when testing the stationary
+  route centre (<5 mm), separately bounding actual sway to 26 mm, declared
+  transfer to 25.01 mm and endpoint displacement to <5 mm.
+  A cruise residual of <=2 frames is absorbed into a preceding step of at
+  least 10 frames; other short remainders balance the final two transition
+  intervals. This avoids a 4-frame shuffle and deep hip anticipation while
+  preserving the route/braking boundary.
+  Four projected curvature-smoothing passes round airborne knee cone corners,
+  retaining clearance, fixed endpoints and the existing rate envelope. A hard
+  clearance constraint can still produce a sharp acceleration transition;
+  finite-difference acceleration/jerk and cap episodes remain explicit diagnostics.
+  `engine.shoe_contact` calibrates native vertex identities and a lower outsole
+  envelope per 5 mm cell in evaluated rest. Patch limits follow fitted ankle/ball
+  joint projections on each sole axis. Heel/ball/toe patches and the raised
+  arch are sampled independently on the deformed mesh. A bounded local IK guard
+  lifts only affected foot targets by <=1.94 mm: the correction is constant
+  throughout each flat contact, without a body-wide offset or asset edits.
+  Remaining active-area gaps are target failures, not waived contact passes.
+  The analytical sole still gates 2 mm; the measured visible shoe independently
+  gates 2 mm penetration. Swing mesh lows use frozen anatomical vertex IDs:
+  grouping by the nearest *posed* ankle misattributes the other shoe when feet
+  cross. The 10.1 mm skeletal mid-swing margin remains; actual native shoe
+  clearance is measured over the complete swing (two frames excluded at each end)
+  and separately over 35--65% (>=8 mm).
+  `engine.body_mass` estimates whole-body COM from de Leva (1996) male mass
+  fractions on approximate rig segment endpoints, consistently across fixtures.
+  It is a kinematic estimate, not COP, GRF, or a claim of dynamic stability.
+  Per-frame telemetry includes COM relative to support feet and approximate
+  support patches, planned root yaw rate, and signed lateral pelvis shift.
+  `tests/walk_benchmark.py --label v13` and `--rhythm symmetric` save separate
+  36-case reports (`v13` and `v13_symmetric`). `--sample-cached --label v12`
+  remeasures saved v12 animations without keying or saving them; pinned 1365363
+  planning alone recovers route XY, and its heading must match cached telemetry.
+  Original bake fingerprints and fixture hashes are preserved, with a separate
+  measurement fingerprint. `summary.round11` reports per-region gaps/penetration,
+  stance arch clearance, full/mid mesh swing lows, COM traces, turning support
+  knee flexion, angular velocity/acceleration/jerk and limiter episodes per side.
+  `target_failures` retains all missed area targets. The legacy `mesh_flat_gap_m`
+  remains for comparisons but no longer serves as an active-region gap gate.
+  `tests/walk_round11_evidence.py --report` writes the full paired tables and
+  cached telemetry plots; `--render` makes the coloured contact and multi-angle
+  asset review sheets. Use `output/walk_round11`, port 9977 and software GL.
   Calls are limited to 1000 targets / 24000 frames; split longer routes and chain them.
 - **Static obstacle avoidance** — `walk_path(..., avoid="auto", ignore=None)` snapshots
   evaluated visible mesh footprints at the start frame, including furniture and other

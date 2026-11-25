@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine.walk_gait import contact_phase, momentum, spring_step, step_variation, support_headings, knee_velocity_limit
+from engine.walk_gait import contact_phase, momentum, spring_step, step_variation, support_headings, knee_velocity_limit, stride_time_map, phase_edges
 
 
 def main():
@@ -60,6 +60,18 @@ def main():
             if int(phases[i]) != int(phases[i-1]):
                 assert planned[i] == samples[i]
         assert support_headings(samples,phases,fps,math.radians(100)) == planned
+    boundaries = list(range(0,481,12))
+    identity,cycles = stride_time_map(boundaries,500,None)
+    assert identity == list(range(500)) and not cycles
+    for seed in (0,1,37):
+        times,cycles = stride_time_map(boundaries,500,seed)
+        assert (times,cycles) == stride_time_map(boundaries,500,seed)
+        assert all(b>a for a,b in zip(times,times[1:]))
+        assert all(abs(times[i]-identity[i])<1e-9 for i in list(range(24))+list(range(456,500)))
+        assert all(abs(c['duration_ratio']-1)<.0182 for c in cycles)
+        assert max(c['duration_ratio'] for c in cycles)-min(c['duration_ratio'] for c in cycles)>.005
+    assert stride_time_map(boundaries,500,0) != stride_time_map(boundaries,500,1)
+    assert phase_edges([max(0,(i-.2)/12) for i in range(50)]) == [0,12,24,36,48]
     print('WALK GAIT UNIT OK (phases, critical damping, 24/30/60 fps, deterministic step accents)')
 
 

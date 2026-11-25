@@ -9,6 +9,8 @@ import bpy
 from mathutils import Vector, Quaternion
 from engine.commands import anim, walk
 from engine.commands.footlock import _legs, _sole_points
+from engine.shoe_contact import calibrate as shoe_patches, measure as shoe_measure
+from engine.body_mass import estimate as body_com
 
 
 def signed(a, b, axis):
@@ -56,6 +58,7 @@ def sample(rig_name, nav):
     neutral.normalize()
     up = Vector((0, 0, 1))
 
+    patches = shoe_patches(rig)
     # Bone telemetry must not evaluate every garment/face modifier each frame.
     hidden = [o for o in sc.objects if o.type == 'MESH' and not o.hide_viewport
               and any(m.type == 'ARMATURE' and m.object == rig for m in o.modifiers)]
@@ -76,6 +79,11 @@ def sample(rig_name, nav):
         row = dict(frame=f, pelvis_m=list(mats['hips'].translation), pelvis_yaw_deg=math.degrees(body_yaw),
                    yaw_deg=math.degrees(yaw), yaw_rate_deg_s=0 if last_yaw is None else
                    math.degrees(walk._angle(last_yaw, yaw)) * fps, feet={})
+        com = body_com(rig, sm)
+        row['com_m'] = list(com)
+        route = nav.get('weight_transfer', {}).get('route_xy_m', [])
+        origin = Vector((*route[f-nav['frames'][0]],0)) if route else mats['hips'].translation
+        row['pelvis_lateral_m'] = (mats['hips'].translation-origin).dot(lateral)
         last_yaw = yaw
         for s in 'LR':
             fk, sk, tk = 'foot.'+s, 'shin.'+s, 'toe.'+s
@@ -112,6 +120,23 @@ def sample(rig_name, nav):
                 sole_gap_m=min(p.z for p in points), interval_support=not interval_swing,
                 support='swing' if airborne else 'flat' if flat else 'rolling')
             last_knee[s] = knee
+        supports = [s for s in 'LR' if row['feet'][s]['support'] != 'swing']
+        row['support_feet'] = supports
+        row['com_relative_support_m'] = {s:list(com-Vector(row['feet'][s]['ankle_m'])) for s in supports}
+        row['support_segment_xy_m'] = [row['feet'][s]['ankle_m'][:2] for s in supports]
+        # Approximate finite support area from sole landmarks, not an ankle
+        # line. Width is an engineering footprint approximation, not measured COP.
+        area = []
+        for s in supports:
+            p = row['feet'][s]
+            a,b = Vector(p['heel_m']),Vector(p['toe_m'])
+            direction = b-a; direction.z=0; direction.normalize()
+            across = Vector((-direction.y,direction.x,0))*.045*rig.matrix_world.to_scale().x
+            if p['foot_roll_deg'] < -1: b = a+direction*.025
+            elif p['foot_roll_deg'] > 1: a = b-direction*.06
+            area.extend([list((v+offset))[:2] for v in (a,b) for offset in (across,-across)])
+        row['support_area_xy_m'] = area
+        row['com_relative_support_area_center_m'] = ([com[k]-sum(p[k] for p in area)/len(area) for k in (0,1)] if area else None)
         rows.append(row)
     hold_m = hold_rad = 0.
     for bone in rig.pose.bones:
@@ -123,40 +148,25 @@ def sample(rig_name, nav):
             hold_m = max(hold_m, (mat.translation-anchor.translation).length)
             q = anchor.to_quaternion().rotation_difference(mat.to_quaternion()).angle
             hold_rad = max(hold_rad, min(q, 2*math.pi-q))
-    # Evaluate only footwear for the visible outsole contract; keep expensive
-    # body/face modifiers hidden. Native buffers avoid Python vertex loops.
-    import numpy as np
+    # Preserve anatomical vertex identity through crossing feet. Nearest posed
+    # ankle classification can accidentally measure the opposite support shoe.
     shoes = [o for o in hidden if o.get('c3d_garment_category') == 'shoes']
-    for o in shoes:
-        o.hide_viewport = False
+    for o in shoes: o.hide_viewport = False
     mesh_penetration = mesh_flat_gap = 0.
     for row in rows if shoes else []:
         sc.frame_set(row['frame'])
-        dg = bpy.context.evaluated_depsgraph_get()
-        ankles = np.array([row['feet'][s]['ankle_m'] for s in 'LR'])
-        for shoe in shoes:
-            ev = shoe.evaluated_get(dg)
-            me = ev.to_mesh()
-            try:
-                points = np.empty(len(me.vertices)*3, dtype=np.float32)
-                me.vertices.foreach_get('co',points)
-                points = points.reshape(-1,3)
-                mat = np.array(ev.matrix_world)
-                points = points @ mat[:3,:3].T + mat[:3,3]
-                if not len(points): continue
-                mesh_penetration = max(mesh_penetration, -float(points[:,2].min()))
-                side_ids = np.argmin(((points[:,None,:]-ankles[None,:,:])**2).sum(axis=2),axis=1)
-                for si,s in enumerate('LR'):
-                    chosen = points[side_ids == si,2]
-                    if len(chosen):
-                        row['feet'][s]['mesh_low_m'] = float(chosen.min())
-                    if len(chosen) and row['feet'][s]['support'] == 'flat':
-                        mesh_flat_gap = max(mesh_flat_gap,abs(float(chosen.min())))
-            finally:
-                ev.to_mesh_clear()
+        regions = shoe_measure(patches)
+        for side in 'LR':
+            p = row['feet'][side]
+            p['contact_regions_m'] = regions[side]
+            p['arch_clearance_m'] = regions[side].get('arch')
+            if not regions[side]: continue
+            p['mesh_low_m'] = regions[side]['mesh']
+            mesh_penetration = max(mesh_penetration,-p['mesh_low_m'])
+            if p['support']=='flat': mesh_flat_gap=max(mesh_flat_gap,abs(p['mesh_low_m']))
     for o in hidden:
         o.hide_viewport = False
     return dict(rows=rows, hold_m=hold_m, hold_rad=hold_rad,
                 mesh_penetration_m=mesh_penetration, mesh_flat_gap_m=mesh_flat_gap,
-                shoe_objects=[o.name for o in shoes],
+                shoe_objects=[o.name for o in shoes], outsole_patches=patches, com_model='de Leva 1996 male fractions; approximate joint endpoints; kinematic estimate',
                 dimensions_m=list(rig.dimensions), bones=len(rig.data.bones))

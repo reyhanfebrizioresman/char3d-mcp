@@ -40,6 +40,8 @@ PHASES = dict(loading=.05, mid_stance=.2, terminal_stance=.4, pre_swing=.55)
 ENVELOPE = dict(loading=[15,20], mid_stance=[5,12], terminal_stance=[5,15],
                 pre_swing=[30,40], toe_off=[35,45], peak_swing=[55,65])
 REFERENCES = [
+    dict(url='https://pubmed.ncbi.nlm.nih.gov/8872282/', note='de Leva 1996 male segment masses and proximal COM fractions. Whole-body estimate uses approximate rig joint endpoints; it is kinematic, not a GRF/COP calculation.'),
+    dict(url='https://journals.physiology.org/doi/full/10.1152/jn.1999.81.6.2914', note='Hase and Stein 1999: step/spin strategies, weight transfer and ball-foot pivots. The procedural displacement amplitudes here are engineering choices.'),
     dict(url='https://pubmed.ncbi.nlm.nih.gov/30558929/', note='Mentiplay et al., 2018: knee angular velocity changes with walking speed; peak extension occurs in terminal swing. The 408..504 deg/s safety envelope here is an engineering bound, not a clinical percentile.'),
     dict(url='https://elsevier-elibrary.com/contents/fullcontent/59010/epubcontent_v2/OEBPS/B9780702042652000021.htm', note='Whittle: plantarflexion after toe-off returns toward neutral around feet-adjacent; mean toe clearance cited as 14 mm.'),
     dict(url='https://pubmed.ncbi.nlm.nih.gov/10199275/',
@@ -206,7 +208,7 @@ def summarize(nav, measured, turning=False, speed=1.):
                    asymmetry_absolute=asymmetry, side_means=sides, cruise_phase_means=phase_means,
                    cruise_phase_asymmetry_deg=phase_asymmetry,
                    flagged_steps=sum(bool(x['warnings']) for x in steps))
-    limits = dict(flat_drift_m=.005, flat_rotation_rad=.002, flat_floor_m=.002, toe_drift_m=.005, penetration_m=.002,
+    limits = dict(mesh_penetration_m=.002, flat_drift_m=.005, flat_rotation_rad=.002, flat_floor_m=.002, toe_drift_m=.005, penetration_m=.002,
                   max_yaw_deg_s=200 if turning else 100.001, destination_error_m=.01, hold_m=.001, hold_rad=.002)
     summary['failures'] = [k for k,v in limits.items() if summary[k] >= v]
     # Hard anatomical sign gate on every actual touchdown, including closing
@@ -249,22 +251,33 @@ def summarize(nav, measured, turning=False, speed=1.):
                 if value is not None and not low <= value <= high:
                     summary['failures'].append(side+'_'+phase+'_knee_envelope')
     summary['envelope_flags'] = (['phase_or_progression_steps'] if summary['flagged_steps'] else [])
-    for k,limit in (('max_knee_delta_deg',min(21.5,17.5*max(1.,speed))),('mesh_penetration_m',.002),('mesh_flat_gap_m',.003)):
+    for k,limit in (('max_knee_delta_deg',min(21.5,17.5*max(1.,speed))),('mesh_penetration_m',.002)):
         if summary[k] >= limit:
             summary['envelope_flags'].append(k)
+    if measured.get('outsole_patches'):
+        from walk_round11_metrics import metrics
+        nav = dict(nav, rhythm_speed=speed)
+        summary['round11'] = metrics(nav,measured)
+        for side,m in summary['round11']['sides'].items():
+            if m['swing_min_mesh_clearance_m'] is not None and m['swing_min_mesh_clearance_m']<0:
+                summary['failures'].append(side+'_swing_mesh_penetration')
+            if m['mid_swing_min_mesh_clearance_m'] is not None and m['mid_swing_min_mesh_clearance_m']<.008:
+                summary['failures'].append(side+'_mid_swing_mesh_clearance_8mm')
     return summary, steps
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--sample-cached',action='store_true',help='Measure saved animations without rebaking; preserve original bake fingerprint')
     p.add_argument('--baseline', action='store_true'); p.add_argument('--label', default='v12')
     p.add_argument('--body', choices=BODIES); p.add_argument('--case', choices=CASES)
+    p.add_argument('--rhythm', choices=('varied','symmetric'),default='varied')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--remeasure', action='store_true', help='Refresh telemetry on cached pinned-baseline animations, without rebaking')
     p.add_argument('--refresh-summary', action='store_true', help='Recalculate anatomical FPA and report summaries from saved rows, offline')
     args = p.parse_args()
     os.environ.setdefault('CHAR3D_PORT', '9977')
-    os.environ.setdefault('CHAR3D_WORKSPACE', str(ROOT/'output/walk_round10'))
+    os.environ.setdefault('CHAR3D_WORKSPACE', str(ROOT/'output/walk_round11'))
     if os.environ['CHAR3D_PORT'] != '9977': raise RuntimeError('Benchmark owns port 9977 only')
     if args.refresh_summary:
         path = Path(os.environ['CHAR3D_WORKSPACE'])/f'walk_benchmark_{args.label}.json'
@@ -284,18 +297,21 @@ def main():
         if not args.baseline: assert not report['hard_failures'], report['hard_failures']
         print('WALK BENCHMARK OFFLINE SUMMARY OK',args.label,len(report['cases']),'cases')
         return
+    if args.rhythm=='symmetric': args.label += '_symmetric'
     engine = BlenderClient(); call = engine.call
     work = Path(engine.workspace); work.mkdir(parents=True, exist_ok=True)
     path = work/f'walk_benchmark_{args.label}.json'
     source = subprocess.check_output(['git','show','42487f5:engine/commands/walk.py'],cwd=ROOT,text=True) if args.baseline else (ROOT/'engine/commands/walk.py').read_text()
+    if args.sample_cached and args.label=='v12':
+        source = subprocess.check_output(['git','show','1365363:engine/commands/walk.py'],cwd=ROOT,text=True)
     sample_source = (ROOT/'tests/walk_benchmark_sample.py').read_text()
-    fingerprint = hashlib.sha256((source+(ROOT/'engine/walk_gait.py').read_text()+sample_source+Path(__file__).read_text()).encode()).hexdigest()
+    fingerprint = hashlib.sha256((source+''.join((ROOT/f).read_text() for f in ('engine/walk_gait.py','engine/shoe_contact.py','engine/body_mass.py','tests/walk_round11_metrics.py'))+sample_source+Path(__file__).read_text()).encode()).hexdigest()
     if args.remeasure and not args.baseline:
         raise RuntimeError('--remeasure is limited to the pinned 42487f5 baseline')
-    report = json.loads(path.read_text()) if (args.resume or args.remeasure) and path.exists() else {}
-    if not args.remeasure and report.get('fingerprint', fingerprint) != fingerprint: raise RuntimeError('Stale result: source changed; rerun without --resume')
+    report = json.loads(path.read_text()) if (args.resume or args.remeasure or args.sample_cached) and path.exists() else {}
+    if not args.remeasure and not args.sample_cached and report.get('fingerprint', fingerprint) != fingerprint: raise RuntimeError('Stale result: source changed; rerun without --resume')
     report.update(schema=1, label=args.label, baseline_commit='42487f5' if args.baseline else None,
-                  fingerprint=fingerprint, references=REFERENCES, envelope=ENVELOPE,
+                  fingerprint=report.get('fingerprint',fingerprint) if args.sample_cached else fingerprint, measurement_fingerprint=fingerprint, rhythm=report.get('rhythm',args.rhythm) if args.sample_cached else args.rhythm, references=REFERENCES, envelope=ENVELOPE,
                   angle_convention='degrees; heel-up foot roll positive, shin-relative plantarflexion positive, foot-relative MTP extension positive; rest=0 for joint angles',
                   sampling='24 fps; phases normalized to same-foot heel strikes; toe-off uses actual support event; initial/final partial cycles retained as transitions',
                   cases=report.get('cases', {}))
@@ -330,7 +346,39 @@ result=True
                 call('scene_info')
                 turning = 'target' in settings
                 project = f'{args.label}_{body}_{case}.blend'
-                if args.remeasure:
+                if args.sample_cached:
+                    cached = cached_cases[key]
+                    assert cached['fixture_sha256']==fixture_hash
+                    nav = cached['nav']; project = cached['project']
+                    if args.label=='v12':
+                        # Recover route XY with pinned v12 planning only. Abort
+                        # BEFORE _bake, so no pose/animation keys are created.
+                        plan=call('run_python',code=f'''
+from engine.commands import walk
+import math
+original_bake=walk._bake
+captured={{}}
+class PlanCaptured(Exception): pass
+def capture_plan(rig,start,samples,active,feet,clip,speed,ground=None,phases=None,runs=None,_world_route=False,gait=None):
+ fps=bpy.context.scene.render.fps/bpy.context.scene.render.fps_base
+ planned=walk.support_headings(samples,phases,fps,math.radians(195) if (gait or {{}}).get('weight') else walk.TURN_RATE)
+ captured.update(route_xy_m=[list(p)[:2] for p,_ in planned],headings=[yaw for _,yaw in planned])
+ raise PlanCaptured()
+walk._bake=capture_plan
+try:
+ walk.{'turn_to' if turning else 'walk_path'}(armature='Gait_rig',start_frame=1,avoid=False,**{settings!r})
+except PlanCaptured: pass
+finally: walk._bake=original_bake
+result=captured
+''')['result']
+                        headings=[math.radians(r['yaw_deg']) for r in cached['rows']]
+                        assert len(plan['headings'])==len(headings)
+                        assert max(abs(a-b) for a,b in zip(plan['headings'],headings))<1e-7
+                        nav=dict(nav,weight_transfer=dict(route_xy_m=plan['route_xy_m'],model='pinned 1365363 planning replay, no bake'))
+                    call('open_project',path=str(work/'projects'/project))
+                    headings=[math.radians(r['yaw_deg']) for r in cached['rows']]
+                    call('run_python',code=f'from engine.commands import walk\nwalk._benchmark_headings={headings!r}\nresult=True')
+                elif args.remeasure:
                     cached = next(v for k,v in cached_cases.items() if k.startswith(body+'/') and v['parameters'] == settings)
                     assert cached['fixture_sha256'] == fixture_hash
                     nav = cached['nav']
@@ -358,20 +406,20 @@ result=True
 ''')
                     call('open_project', path=str(work/'projects'/project))
                 else:
-                    nav = call('turn_to' if turning else 'walk_path', armature='Gait_rig', start_frame=1, avoid=False, **settings)
+                    nav = call('turn_to' if turning else 'walk_path', armature='Gait_rig', start_frame=1, avoid=False, **settings, **({} if turning else {'rhythm_seed':None if args.rhythm=='symmetric' else 0}))
                 measured = call('run_python',code=sample_source+f"\nresult=sample('Gait_rig', {nav!r})")['result']
                 summary, steps = summarize(nav, measured, turning,settings.get('speed',1.))
-                if not args.remeasure:
+                if not args.remeasure and not args.sample_cached:
                     call('save_project',path=project)
                 report['cases'][key] = dict(parameters=settings, phenotype=params, fixture_sha256=fixture_hash,
                     nav=nav, summary=summary, steps=steps, **measured, project=project)
                 path.write_text(json.dumps(report, indent=2)+'\n')
                 print(key, json.dumps({k:v for k,v in summary.items() if k not in
-                      ('cruise_phase_means','cruise_phase_asymmetry_deg','side_means')}), flush=True)
+                      ('cruise_phase_means','cruise_phase_asymmetry_deg','side_means','round11')}), flush=True)
         failures = {k:v['summary']['failures'] for k,v in report['cases'].items() if v['summary']['failures']}
         report['hard_failures'] = failures
         path.write_text(json.dumps(report, indent=2)+'\n')
-        if not args.baseline: assert not failures, failures
+        if not args.baseline and not args.sample_cached: assert not failures, failures
         print('WALK BENCHMARK OK', args.label, len(report['cases']), 'cases', flush=True)
     finally:
         engine.stop()

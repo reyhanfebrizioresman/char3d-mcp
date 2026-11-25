@@ -80,6 +80,17 @@ def momentum(samples, fps):
     return [(v, BRAKE_DROP_M*max(0.0, -v)/MAX_LEAN_DEG) for v in signals]
 
 
+def phase_edges(phases):
+    """Nearest scene frame to each continuous half-step crossing."""
+    edges = [0]
+    for i in range(1,len(phases)):
+        lo,hi = phases[i-1],phases[i]
+        for boundary in range(math.floor(lo)+1,math.floor(hi)+1):
+            frame = round(i-1+(boundary-lo)/max(1e-12,hi-lo))
+            if frame>edges[-1]: edges.append(frame)
+    return edges
+
+
 def support_headings(samples, phases, fps, limit):
     """Share each step's yaw budget with single support, keeping route endpoints.
 
@@ -88,7 +99,7 @@ def support_headings(samples, phases, fps, limit):
     heading at every touchdown and the angular speed contract. Root XY is intact.
     """
     result = list(samples)
-    edges = [0] + [i for i in range(1, len(phases)) if int(phases[i]) != int(phases[i-1])]
+    edges = phase_edges(phases)
     edges.append(len(phases)-1)
     cap = limit/fps
     for first, last in zip(edges, edges[1:]):
@@ -126,3 +137,26 @@ def knee_velocity_limit(speed=1.0, fps=24):
     bound accommodates normal swing; it is not a clinical percentile.
     """
     return math.radians(min(21.0, 17.0*max(1.0, speed))) * 24 / fps
+
+
+def stride_time_map(boundaries, length, seed):
+    """Source times for a correlated two-foot cycle warp; None is identity.
+
+    Durations are continuous scene frames. Raw +/-0.9% stride factors are
+    normalized at the fixed braking boundary, hence <1.82% final variation.
+    A renderer's integer strike frames necessarily quantize these small accents.
+    """
+    times = [float(i) for i in range(length)]
+    groups = [(boundaries[j],boundaries[j+2]) for j in range(2,len(boundaries)-3,2)]
+    cycles = []
+    if seed is None or not groups: return times,cycles
+    durations = [(b-a)*(1+.009*step_variation(k+seed*17,7)) for k,(a,b) in enumerate(groups)]
+    ratio = sum(b-a for a,b in groups)/sum(durations)
+    edge = float(groups[0][0])
+    for (a,b),duration in zip(groups,durations):
+        stop = edge+duration*ratio
+        cycles.append(dict(source=[a,b],planned=[edge,stop],duration_ratio=duration*ratio/(b-a)))
+        for frame in range(math.ceil(edge),math.ceil(stop)):
+            times[frame] = a+(b-a)*(frame-edge)/(stop-edge)
+        edge = stop
+    return times,cycles

@@ -335,12 +335,14 @@ async def secondary_motion(character: str, parts: list[str] = ['hair'],
 async def walk_path(armature: str, points: list[list[float]],
                     clip: Literal["walk", "run"] = "walk", start_frame: int | None = None,
                     speed: float = 1.0, face_end: list[float] | str | None = None,
-                    avoid: Literal["auto"] | bool = "auto", ignore: list[str] | None = None) -> dict:
+                    avoid: Literal["auto"] | bool = "auto", ignore: list[str] | None = None,
+                    rhythm_seed: int | None = 0) -> dict:
     """Walk/run from the current position through absolute world XY points (meters).
     Curves pass through the points; duplicates are ignored. Body yaw is limited to 100
     degrees/s: tight bends slow down, corners over 100 degrees stop for stepping turns.
     speed (0.1..4) scales natural travel speed and cadence; shorter steps handle slowing.
     Foot IK keeps each planted foot's world position and rotation fixed through turns.
+    rhythm_seed selects repeatable shared-stride accents; None is the symmetric benchmark mode.
     Ends standing with both feet gathered. face_end optionally faces a world XY/XYZ point,
     object name or "camera" (sampled when the final turn begins). Works on basic, Rigify
     and MPFB rigs. start_frame=None appends after the rig's action, or uses the scene start.
@@ -363,7 +365,7 @@ async def walk_path(armature: str, points: list[list[float]],
     use rises <= 0.20 m and treads long enough for the whole sole. At most 1000 points and
     24000 frames per call. Reports contact heights, penetration and swing clearance."""
     return await run("walk_path", armature=armature, points=points, clip=clip,
-                     start_frame=start_frame, speed=speed, face_end=face_end, avoid=avoid, ignore=ignore)
+                     start_frame=start_frame, speed=speed, face_end=face_end, avoid=avoid, ignore=ignore, rhythm_seed=rhythm_seed)
 
 
 @mcp.tool()

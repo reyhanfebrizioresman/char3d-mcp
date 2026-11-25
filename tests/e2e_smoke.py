@@ -202,6 +202,28 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
             target = Vector({face!r}) - roots[-1]
             facing_error = abs(angle(yaws[-1], math.atan2(target.x, -target.y)))
         motion = max(math.hypot(p.x-roots[0].x, p.y-roots[0].y) for p in roots)
+        # R11 stationary pivots transfer the pelvis over the support feet.
+        # Measure the fixed route centre independently of that bounded sway.
+        transfer = nav.get('weight_transfer', {{}})
+        offsets = transfer.get('lateral_pelvis_m', [])
+        planned = transfer.get('route_xy_m', [])
+        centre_motion = motion
+        planned_motion = 0.0
+        transfer_max = actual_transfer_max = 0.0
+        if offsets:
+            assert len(offsets) == len(roots) == len(planned)
+            # Crossfade can attenuate planned sway. Remove the MEASURED
+            # lateral component, and independently bound that component below;
+            # longitudinal movement and endpoint drift remain visible.
+            actual_offsets = [(p.x-route[0])*math.cos(yaw)+(p.y-route[1])*math.sin(yaw)
+                              for p,yaw,route in zip(roots,yaws,planned)]
+            centres = [p-Vector((math.cos(yaw),math.sin(yaw),0))*d
+                       for p,yaw,d in zip(roots,yaws,actual_offsets)]
+            actual_transfer_max = max(abs(v) for v in actual_offsets)
+            centre_motion = max(math.hypot(p.x-centres[0].x,p.y-centres[0].y) for p in centres)
+            planned_motion = max(math.dist(p,planned[0]) for p in planned)
+            transfer_max = max(abs(v) for v in offsets)
+        endpoint_motion = math.hypot(roots[-1].x-roots[0].x,roots[-1].y-roots[0].y)
         stop = max((p - roots[-1]).length for p in roots[-4:])
         stop_feet = 0.0
         for side in 'LR':
@@ -215,7 +237,8 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
         result = dict(drift=drift, rotation_drift=rotation_drift, floor_error=floor_error,
                       turn_rate=rate, waypoint_errors=waypoint_errors,
                       waypoint_frames=waypoint_frames, first=list(roots[0]), last=list(roots[-1]),
-                      facing_error=facing_error, motion=motion, stop=stop, stop_feet=stop_feet)
+                      facing_error=facing_error, motion=motion, centre_motion=centre_motion, planned_motion=planned_motion,
+                      transfer_max=transfer_max, actual_transfer_max=actual_transfer_max, endpoint_motion=endpoint_motion, stop=stop, stop_feet=stop_feet)
     ''')
     measured = json.loads(text_of(await call("run_blender_python", code=code))[0])["result"]
     assert measured["drift"] < 0.02, measured
@@ -229,7 +252,9 @@ async def check_navigation(call, nav, points=(), face=None, stationary=False):
     assert nav["foot_lock"]["max_ik_error_m"] < 0.02, nav
     assert all(nav["foot_lock"]["contacts"].values()), nav
     if stationary:
-        assert measured["motion"] < 0.005, measured
+        assert measured["centre_motion"] < 0.005 and measured["planned_motion"] < 0.005, measured
+        assert measured["endpoint_motion"] < 0.005, measured
+        assert measured["transfer_max"] <= .02501 and measured["actual_transfer_max"] < .026 and measured["motion"] < .026, measured
     if points:
         import math
         assert math.dist(measured["last"][:2], points[-1]) < 0.01, measured
