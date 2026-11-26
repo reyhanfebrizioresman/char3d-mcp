@@ -1,5 +1,5 @@
 """Matched Eevee footwear weight review; original/new weights on identical poses."""
-import json,os,re,sys,time,hashlib,struct
+import argparse,json,os,re,sys,time,hashlib,struct
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT),str(ROOT/'tests')]
 from mcp_server.blender_client import BlenderClient
@@ -17,12 +17,22 @@ result=qa_check.run(objects=[o.name for o in rig.children_recursive if o.type=='
 CAPTURE='''
 from engine.commands import mpfb
 original=mpfb._rigid_sole_weights
+namespace=dict(vars(mpfb))
+exec(PINNED,namespace)
+v16_weights=namespace['_rigid_sole_weights']
 mpfb._review_weights={}
 def capture(parts,rig):
  old={o.name:[[(o.vertex_groups[g.group].name,g.weight) for g in v.groups] for v in o.data.vertices] for o in parts if o.get('c3d_garment_category')=='shoes'}
+ v16_weights(parts,rig)
+ middle={o.name:[[(o.vertex_groups[g.group].name,g.weight) for g in v.groups] for v in o.data.vertices] for o in parts if o.name in old}
+ for o in parts:
+  if o.name not in old:continue
+  for g in o.vertex_groups:g.remove(list(range(len(o.data.vertices))))
+  for i,weights in enumerate(old[o.name]):
+   for n,w in weights:o.vertex_groups[n].add([i],w,'REPLACE')
  result=original(parts,rig)
  new={o.name:[[(o.vertex_groups[g.group].name,g.weight) for g in v.groups] for v in o.data.vertices] for o in parts if o.name in old}
- mpfb._review_weights={'v13':old,'v16':new}
+ mpfb._review_weights={'v13':old,'v16':middle,'v17':new}
  return result
 mpfb._rigid_sole_weights=capture
 
@@ -92,6 +102,9 @@ def valid_png(path):
  except Exception:return False
 
 def main():
+ parser=argparse.ArgumentParser(description=__doc__)
+ parser.add_argument('--only',nargs='+');parser.add_argument('--qa-only',action='store_true');parser.add_argument('--resume',action='store_true')
+ args=parser.parse_args()
  assert os.environ['CHAR3D_PORT']=='9977';c=BlenderClient();w=Path(c.workspace);records={};paths=[];labels=[];began=time.perf_counter()
  try:
   c.call('scene_info');catalog=c.call('mpfb_assets');meta=catalog['clothing_metadata'];all_shoes=catalog['clothing_categories'].get('shoes',[])
@@ -111,7 +124,9 @@ def main():
   resume='--resume' in sys.argv
   if resume:assert stamp.exists() and json.loads(stamp.read_text())==signature,'Unverified/stale footwear render cache'
   stamp.write_text(json.dumps(signature,indent=2))
-  c.call('run_python',code=CAPTURE)
+  pinned=(ROOT/'tests/fixtures/sole_weights_v16.py').read_text()
+  c.call('run_python',code=CAPTURE.replace('PINNED',repr(pinned)))
+  if args.only:requested=[s for s in requested if s in args.only]
   for rig in ('game_engine','mixamo'):
    for shoe in requested:
     key=rig+'/'+shoe;record=dict(images=[],errors=[]);records[key]=record
@@ -150,22 +165,23 @@ result=values
      record['ankle_profile']=profile
      record['nav']=nav;record['frames']=frames
      c.call('set_lighting',preset='studio',subject=[built['armature']])
-     c.call('save_project',path=f'shoe_v16_{rig}_{shoe}.blend')
+     c.call('save_project',path=f'shoe_v17_{rig}_{shoe}.blend')
      for phase,f in frames.items():
       qa={}
       for angle in ('side','three_quarter'):
        c.call('run_python',code=CAMERA.replace('FRAME',repr(f)).replace('ANGLE',repr(angle)))
-       pair={label:w/'renders'/f'shoe_{rig}_{shoe}_{phase}_{angle}_{label}_f{f:04d}.png' for label in ('v13','v16')}
+       pair={label:w/'renders'/f'shoe_{rig}_{shoe}_{phase}_{angle}_{label}_f{f:04d}.png' for label in ('v16','v17')}
        cached=resume and all(valid_png(p) for p in pair.values())
-       for label in ('v13','v16'):
+       for label in ('v13','v16','v17'):
         c.call('run_python',code=SET_WEIGHTS.replace('LABEL',repr(label)))
         if angle=='side':qa[label]=c.call('run_python',code=QA)['result']
+        if label=='v13' or args.qa_only:continue
         output=str(pair[label]) if cached else c.call('render_frames',frames=[f],camera='scene',size=512,engine='eevee',prefix=f'shoe_{rig}_{shoe}_{phase}_{angle}_{label}')['frames'][0]['path']
         record['images'].append(dict(path=output,phase=phase,angle=angle,label=label,frame=f,cached=cached))
         paths.append(output);labels.append(f"{shoe} / {'game' if rig=='game_engine' else rig}\n{phase}\n{angle} / {label}")
       def categories(q):return {re.sub(r'\(\d+ overlapping coplanar tri pairs\)','(coplanar)',s) for s in q['errors']}
-      added=sorted(categories(qa['v16'])-categories(qa['v13']))
-      record.setdefault('qa',{})[phase]=dict(before=qa['v13'],after=qa['v16'],new_error_categories=added)
+      added=sorted(categories(qa['v17'])-categories(qa['v13']))
+      record.setdefault('qa',{})[phase]=dict(before=qa['v13'],v16=qa['v16'],after=qa['v17'],new_error_categories=added)
       record['errors'].extend(phase+': '+s for s in added)
      record['pass']=not record['errors']
     except Exception as exc:record['errors'].append(str(exc));record['pass']=False
@@ -175,7 +191,7 @@ result=values
              w/f'shoe_review_{rig}_{shoe}.png','4x','256x256+3+10')
     (w/'shoe_visuals.json').write_text(json.dumps(dict(seconds=time.perf_counter()-began,cases=records),indent=2))
     print(key,len(record['images']),'images',record['errors'],flush=True)
-  if paths:montage(paths,labels,w/'walk_shoe_weights_v13_v16.png','8x','256x256+3+10')
+  if paths:montage(paths,labels,w/'walk_shoe_weights_v16_v17.png','8x','256x256+3+10')
   assert all(r['pass'] for r in records.values()),'See shoe_visuals.json'
   print('SHOE EEVEE MATRIX FINISHED',len(paths),time.perf_counter()-began,flush=True)
  finally:c.stop()

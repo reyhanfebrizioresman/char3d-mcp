@@ -146,8 +146,9 @@ builds a textured human (skin, eyes, eyebrows, eyelashes, optional hair/clothes)
 - Round 14 rebuilds footwear deform weights only, after the shared MPFB build,
   style and look fitting. Below the ankle collar, heel/arch follow semantic foot
   and the front smoothly changes to semantic toe across +/-10% of ankle-to-ball
-  length. The collar blends back to authored weights from 20% below to 10% above
-  ankle height (same length unit); a boot shaft above that band is unchanged.
+  length. Round 14b (sole version 2) retains that width for contact stability
+  and blends the collar
+  back to authored weights from 40% to 15% below ankle height (same length unit); a boot shaft above that band is unchanged.
   Rigify uses the existing DEF map; other MPFB skeletons use the semantic map.
   Non-deform groups, body/other garment weights, vertices, morphs and rest bones
   remain native. `sole_weights` reports changed/rigid/collar vertex counts;
@@ -2175,20 +2176,38 @@ look the same and `walk` advances along the character's facing (any yaw, e.g. 35
   constant height, rolling supports use their actual hull, and joins ease only
   in swing. This is analytical skinning/height projection, with no per-frame
   optimizer or route-wide pelvis lift. The original bounded Round 11 mesh guard
-  remains the final safety check. Rear double-support knees also retain the
-  pre-swing envelope when a physical heel strike is below the old probe plane.
+  remains the final safety check. Round 14b removes the rear-support pelvis
+  floor: it raised the pelvis against the leading loading target. Rigid shoes
+  instead use a 35-degree rear reach budget (legacy 37.5 degrees) in the existing
+  footprint triangle, shifting placement before IK while leaving knee rotations
+  to the two-bone solve. A weak downward-only 2.5% neighbour filter rounds
+  rigid-shoe support height after reach/rate fitting and before airborne arcs;
+  ceilings remain respected. Rigid footwear recovers continuously from the
+  18-degree loading target at 5% to 7 degrees at 21% cycle, retaining about
+  15.45 degrees at 10% while the opposite toe releases. Landing times stay fixed.
+  Its internal knee-speed budget adds 0.25/max(1,speed) degrees/frame to
+  the existing rate at 24 fps: 17.25 at normal pace and 21.156 at 1.6x.
+  The unchanged external limits retain at least a quarter-degree reserve.
   Active regions use nominal heel/flat/toe phase, subtracting the measured static
   shoe pitch; a calibrated neutral foot is not classified as a heel roll.
   `tests/walk_round14_final.py` runs the full serial Devodo acceptance suite;
   build identity, five MPFB skeletons shod/unshod, posed native QA and a matched
   original/new footwear Eevee matrix are separate checks. Evidence lives under
   `output/walk_round14/`, port 9977, software GL. Missed 3 mm active gap, 2 mm
-  penetration, 6 mm native contact drift, 8 mm mid-swing clearance, 3 mm/frame
-  pelvis correction and 1.3x bake targets remain explicit failures in the report.
+  penetration, 6 mm native contact drift, 8 mm mid-swing clearance and 1.3x bake
+  targets remain explicit failures in the report. Round 14b uses
+  `tests/walk_round14b_final.py` and label v17. Each case gates absolute pelvis
+  max |delta Z| and max |delta² Z| at <=110% of its v13 path (1 micrometre numeric
+  tolerance). Mean lowering and changes relative to v13 are diagnostic, not
+  smoothness gates; a constant floor offset must not fail. The report preserves
+  v13/v16/v17 results; evidence is retained under `output/walk_round14b/`.
+  Footwear QA keeps native v13 errors as its regression
+  baseline and renders pinned v16 versus v17 weights on the same v17 poses.
   The analytical sole still gates 2 mm; the measured visible shoe independently
   gates 2 mm penetration. Swing mesh lows use frozen anatomical vertex IDs:
   grouping by the nearest *posed* ankle misattributes the other shoe when feet
-  cross. The 10.1 mm skeletal mid-swing margin remains; actual native shoe
+  cross. The 10.1 mm skeletal mid-swing margin remains; rigid mesh fitting
+  uses 9.1 mm, with the actual native shoe contract unchanged at >=8 mm. Native
   clearance is measured over the complete swing (two frames excluded at each end)
   and separately over 35--65% (>=8 mm).
   `engine.body_mass` estimates whole-body COM from de Leva (1996) male mass

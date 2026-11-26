@@ -37,12 +37,12 @@ for o in rig.children_recursive:
   p=transform @ v.co;s=min('LR',key=lambda s:(p-rig.data.bones[sm['foot.'+s]].head_local).length_squared)
   foot=rig.data.bones[sm['foot.'+s]];toe=rig.data.bones.get(sm.get('toe.'+s,''));axis=(toe.head_local if toe else foot.tail_local)-foot.head_local;axis.z=0;length=axis.length
   deform={b.name for b in rig.data.bones if b.use_deform};w={o.vertex_groups[g.group].name:g.weight for g in v.groups if o.vertex_groups[g.group].name in deform}
-  if p.z<foot.head_local.z+.1*length and abs(sum(w.values())-1)>1e-5:errors.append([o.name,v.index,'normalization'])
-  if p.z<=foot.head_local.z-.2*length:
+  if p.z<foot.head_local.z-.15*length and abs(sum(w.values())-1)>1e-5:errors.append([o.name,v.index,'normalization'])
+  if p.z<=foot.head_local.z-.4*length:
    counts['rigid']+=1
    allowed={sm['foot.'+s],sm.get('toe.'+s,sm['foot.'+s])}
    if any(n not in allowed and weight>1e-6 for n,weight in w.items()):errors.append([o.name,v.index,'non_distal_weight'])
-  elif p.z>=foot.head_local.z+.1*length:
+  elif p.z>=foot.head_local.z-.15*length:
    counts['shaft']+=1
    old=dict(original[o.name][v.index]);now={o.vertex_groups[g.group].name:g.weight for g in v.groups}
    if old!=now:errors.append([o.name,v.index,'shaft_changed'])

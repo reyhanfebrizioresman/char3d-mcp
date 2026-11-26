@@ -368,9 +368,10 @@ def _rigid_sole_weights(parts, rig):
             point = transform @ v.co
             side = min(joints, key=lambda s: (point-joints[s][2]).length_squared)
             foot, toe, ankle, ball, axis, length = joints[side]
-            # The collar band is 30% of ankle-to-ball length high, centered
-            # just below the ankle. Long boot shafts keep their original skin.
-            amount = 1-smooth((point.z-(ankle.z-.20*length))/(.30*length))
+            # Finish the collar blend below the ankle flexion crease. Leaving
+            # a rigid ring across that crease folds the upper into itself and
+            # the moving trouser cuff. Shafts retain the authored deformation.
+            amount = 1-smooth((point.z-(ankle.z-.40*length))/(.25*length))
             if amount <= 1e-8:
                 continue
             toe_weight = smooth(((point-ball).dot(axis)+.10*length)/(.20*length))
@@ -392,9 +393,10 @@ def _rigid_sole_weights(parts, rig):
             changed += 1
             if amount >= 1-1e-8: rigid += 1
             else: blended += 1
-        record = dict(version=1, changed_vertices=changed, rigid_vertices=rigid,
+        record = dict(version=2, changed_vertices=changed, rigid_vertices=rigid,
                       collar_vertices=blended, vertices=len(obj.data.vertices),
-                      method='semantic foot/toe; smooth toe break and ankle collar')
+                      method='semantic foot/toe; smooth toe break; collar ends below ankle crease',
+                      toe_half_width_ratio=.10, collar_start_ratio=-.40, collar_end_ratio=-.15)
         obj['c3d_rigid_sole'] = json.dumps(record)
         report[obj.name] = record
     return report

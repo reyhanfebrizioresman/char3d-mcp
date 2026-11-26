@@ -498,7 +498,11 @@ def _release_lookahead(rig, smap, distance, duration):
         if u<=b:
             front=x+(y-x)*_smoothstep((u-a)/(b-a));break
     front_reach=l1*l1+l2*l2+2*l1*l2*math.cos(math.radians(front))
-    rear_reach=l1*l1+l2*l2+2*l1*l2*math.cos(math.radians(37.5))
+    # Rigid heels sit on the physical floor rather than the former flex
+    # margin. Reserve a little more rear-leg reach in footprint planning so
+    # the leading support can absorb loading without a later pelvis lift.
+    rigid = any(o.get('c3d_rigid_sole') for o in rig.children_recursive)
+    rear_reach=l1*l1+l2*l2+2*l1*l2*math.cos(math.radians(35 if rigid else 37.5))
     def reach(fraction):
         x_front=(fraction-delay)*distance-hip_forward
         x_rear=(fraction-1-delay)*distance+roll_forward-hip_forward
@@ -867,8 +871,14 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
                 margin = .0101*_smoothstep(u/.3)*(1-_smoothstep((u-.7)/.3))
             # Keep the legacy anatomical toe envelope too (it can extend
             # beyond a short shoe), while adding the actual rigid surface.
-            low = min(min(offsets),native_offsets[side][i]) if side in native_offsets else min(offsets)
-            values.append(-low+.00005+margin)
+            z = -min(offsets)+.00005+margin
+            if side in native_offsets:
+                # Preserve the anatomical 10.1 mm envelope, while the actual
+                # rigid mesh needs 9.1 mm (contract: >=8 mm), not a second
+                # conservative 10.1 mm floor dragging the next support down.
+                mesh_margin = margin*(.0091/.0101)
+                z = max(z,-native_offsets[side][i]+.00005+mesh_margin)
+            values.append(z)
         clearance_z[side] = values
     lengths = {}
     for side in "LR":
@@ -877,7 +887,11 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
         lengths[side] = ((pts[1]-pts[0]).length, (pts[2]-pts[1]).length)
     lands = sorted(events, key=lambda e: e["land"])
     by_side = {s: [e for e in lands if e["side"] == s] for s in "LR"}
-    curve = ((0, 9), (.05, 18), (.10, 11), (.20, 7), (.30, 8), (.50, 12), (.60, 35))
+    # Retain loading compression until the opposite toe releases. This
+    # support-height timing avoids extending the trailing knee too early.
+    curve = (((0, 9), (.05, 18), (.21, 7), (.30, 8), (.50, 12), (.60, 35))
+             if native_offsets else
+             ((0, 9), (.05, 18), (.10, 11), (.20, 7), (.30, 8), (.50, 12), (.60, 35)))
 
     def flex(knots, u):
         for (a, x), (b, y) in zip(knots, knots[1:]):
@@ -926,26 +940,6 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
     fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
     dz = .45/fps
     heights = [min(z, cap) for z, cap in zip(desired, ceilings)]
-    if native_offsets:
-        # The physical heel strike can be below the old anatomical plane.
-        # During double support retain the existing rear-knee envelope as well
-        # as the leading leg's loading curve, within both reach ceilings.
-        for i in range(len(heights)):
-            for side in 'LR':
-                previous = [e for e in by_side[side] if e['land'] <= start+i]
-                if not previous or records[i][2][side]:continue
-                land = previous[-1]['land']
-                following = next((e for e in by_side[side] if e['land'] > land),None)
-                if following is None:continue
-                u=(start+i-land)/(following['land']-land)
-                if not .50 <= u <= .60:continue
-                cap_angle=flex(((.50,30),(.55,39),(.60,44)),u)
-                world,hips,_ = records[i];H=hips[side];A=targets[side][i][0]
-                l1,l2=lengths[side]
-                d2=l1*l1+l2*l2+2*l1*l2*math.cos(cap_angle)
-                xy=(A.x-H.x)**2+(A.y-H.y)**2
-                lower=A.z+math.sqrt(max(0.,d2-xy))-(H.z-world.translation.z)
-                heights[i]=min(ceilings[i],max(heights[i],lower))
     for indices in (range(1,len(heights)), range(len(heights)-2,-1,-1)):
         for i in indices:
             j = i-1 if indices.step > 0 else i+1
@@ -954,7 +948,9 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
     # extension. Anticipate contact flexion in joint space: lower the pelvis
     # only where a neighbouring supported sample requires more knee bend.
     # Both feet's world targets, route XY and every landing time stay fixed.
-    knee_rate = knee_velocity_limit(speed, fps)
+    # The external 17.5..21.5 degree/frame cap retains a quarter-degree
+    # reserve for height rounding and the final mesh guard on rigid shoes.
+    knee_rate = knee_velocity_limit(speed, fps) + (math.radians(.25/max(1.,speed)) if native_offsets else 0.)
 
     def contact_knee(i, side, floor_only=False):
         world, hips, _ = records[i]
@@ -1002,6 +998,12 @@ def _stance_height(rig, start, targets, events, toe_roll=None, speed=1.0):
                         changed = True
         if not changed:
             break
+    # A weak downward-only height filter rounds contact velocity reversals
+    # after the reach/rate envelope. It cannot raise a foot or cross a reach
+    # ceiling; airborne arcs below are fitted to this final support trajectory.
+    if native_offsets:
+        heights = [heights[0]] + [min(heights[i], .025*heights[i-1]+.95*heights[i]+.025*heights[i+1])
+                                   for i in range(1,len(heights)-1)] + [heights[-1]]
     # Retain the inherited airborne clearance, but join it continuously to
     # the actual release ankle. Per-frame projection at the first swing frame
     # otherwise snaps a nearly extended turning support into a bent leg.

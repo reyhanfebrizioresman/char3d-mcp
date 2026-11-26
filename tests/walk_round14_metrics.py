@@ -31,5 +31,30 @@ def metrics(nav, measured):
     result['max_transition_ankle_height_delta_m']=max((abs(v['ankle_height_delta_m']) for v in result['contact_transitions']),default=0.)
     result['max_transition_pelvis_height_delta_m']=max((abs(v['pelvis_height_delta_m']) for v in result['contact_transitions']),default=0.)
     result['failures']=[s+'_mesh_contact_drift_6mm' for s,m in result['sides'].items() if m['mesh_contact_drift_xy_m']>.006]
-    if guard.get('pelvis_correction_step_max_m',0)>.003:result['failures'].append('pelvis_correction_step_3mm')
+    result['pelvis'].update(pelvis_smoothness(measured['rows']))
     return result
+
+
+def pelvis_smoothness(rows):
+    """Absolute world pelvis Z differences at the common 24 fps sampling rate."""
+    z = [row['pelvis_m'][2] for row in rows]
+    velocity = [b-a for a,b in zip(z,z[1:])]
+    acceleration = [b-a for a,b in zip(velocity,velocity[1:])]
+    return dict(step_max_m=max(map(abs,velocity),default=0.),
+                second_difference_max_m=max(map(abs,acceleration),default=0.))
+
+
+def compare_pelvis(before, after):
+    """Compare smoothness, while retaining offset/change diagnostics separately.
+
+    A constant lowering is harmless. A new spike in the absolute trajectory is
+    not. Numerical tolerance is 1 micrometre; every case uses its own v13 path.
+    """
+    old, new = pelvis_smoothness(before), pelvis_smoothness(after)
+    previous = {row['frame']:row['pelvis_m'][2] for row in before}
+    delta = [row['pelvis_m'][2]-previous[row['frame']] for row in after if row['frame'] in previous]
+    assert len(delta)==len(after)==len(before), 'Pelvis comparisons require matching frames'
+    failures = [key for key in old if new[key]>1.1*old[key]+1e-6]
+    return dict(v13=old,candidate=new,failures=failures,
+                mean_delta_m=statistics.mean(delta),
+                correction_step_vs_v13_m=max((abs(b-a) for a,b in zip(delta,delta[1:])),default=0.))

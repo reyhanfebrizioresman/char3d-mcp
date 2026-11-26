@@ -48,7 +48,7 @@ def montage(paths, labels, output, tile, geometry):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--prepare', action='store_true'); p.add_argument('--render', action='store_true')
-    p.add_argument('--label', default='v10', choices=('v10','v11','v12','v13','v16'))
+    p.add_argument('--label', default='v10', choices=('v10','v11','v12','v13','v16','v17'))
     p.add_argument('--resume', action='store_true', help='Reuse movie PNGs newer than the prepared project, with matching dimensions')
     args = p.parse_args()
     label = args.label
